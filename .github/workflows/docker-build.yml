@@ -89,6 +89,6 @@ jobs:
         run: |
           echo "::warning::To make your package public, please follow these steps:"
           echo "::warning::1. Go to https://github.com/${{ github.repository }}/pkgs/container/aws-multi-eni-controller"
-          echo "::warning::2. Click on Package settings (gear icon)"
+          echo "::warning::2. Click on Package settings (⚙️ icon) at the bottom of the page"
           echo "::warning::3. Under 'Danger Zone', click 'Change visibility'"
           echo "::warning::4. Select 'Public' and confirm"

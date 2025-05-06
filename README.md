@@ -53,7 +53,7 @@ After the GitHub Actions workflow builds and pushes your container image, you'll
 1. Go to your GitHub repository
 2. Click on "Packages" in the right sidebar
 3. Find and click on your container package (aws-multi-eni-controller)
-4. Click on "Package settings" (gear icon)
+4. Click on "Package settings" (⚙️ icon) at the bottom of the page
 5. Under "Danger Zone", find "Change visibility"
 6. Select "Public" and confirm the change
 
