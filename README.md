@@ -1,0 +1,238 @@
+# ENI Controller for Kubernetes
+
+A Kubernetes controller that automatically creates and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels.
+
+## Overview
+
+The ENI Controller watches for NodeENI custom resources and nodes with matching labels. When a node matches the selector in a NodeENI resource, the controller creates an ENI in the specified subnet with the specified security groups and attaches it to the node at the specified device index.
+
+When a node no longer matches the selector or when the NodeENI resource is deleted, the controller automatically detaches and deletes the ENI, ensuring proper cleanup of AWS resources.
+
+## Features
+
+- **Dynamic ENI Management**: Automatically creates and attaches ENIs to nodes based on labels
+- **Proper Cleanup**: Uses finalizers to ensure ENIs are properly detached and deleted when no longer needed
+- **Configurable**: Supports custom subnet, security groups, device index, and more
+- **Cloud-Native**: Follows Kubernetes patterns for resource management
+
+## Building and Deploying
+
+### Prerequisites
+
+- Docker installed and configured
+- Access to a Kubernetes cluster (e.g., EKS)
+- AWS CLI configured with appropriate permissions
+- kubectl installed and configured
+
+### Building the Controller
+
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/example/eni-controller.git
+   cd eni-controller
+   ```
+
+2. Build and push the Docker image:
+
+   ```bash
+   # The deploy.sh script builds and pushes the Docker image
+   ./hack/deploy.sh
+   ```
+
+   The script will:
+   - Build the Docker image with a unique tag
+   - Push the image to DockerHub
+   - Apply the CRDs to the cluster
+   - Deploy the controller to the cluster
+
+### Manual Deployment Steps
+
+If you prefer to deploy manually:
+
+1. Build and push the Docker image:
+
+   ```bash
+   # Set a unique tag
+   TAG=$(date +%Y%m%d%H%M%S)
+   docker build -t yourrepo/eni-controller:v1-$TAG .
+   docker push yourrepo/eni-controller:v1-$TAG
+   ```
+
+2. Update the image in the deployment YAML:
+
+   ```bash
+   # Replace the image in deploy/deployment.yaml
+   sed -i '' "s|image: .*|image: yourrepo/eni-controller:v1-$TAG|" deploy/deployment.yaml
+   ```
+
+3. Apply the CRDs and deploy the controller:
+
+   ```bash
+   kubectl apply -f deploy/crds/networking.example.com_nodeenis_crd.yaml
+   kubectl apply -f deploy/rbac.yaml
+   kubectl apply -f deploy/deployment.yaml
+   ```
+
+## Using the Controller
+
+### Creating a NodeENI Resource
+
+1. Create a YAML file for your NodeENI resource:
+
+   ```yaml
+   apiVersion: networking.example.com/v1alpha1
+   kind: NodeENI
+   metadata:
+     name: multus-eni-config
+   spec:
+     nodeSelector:
+       ng: multi-eni
+     subnetID: subnet-0f59b4f14737be9ad
+     securityGroupIDs:
+     - sg-05da196f3314d4af8
+     deviceIndex: 2
+     deleteOnTermination: true
+     description: "Multus ENI for secondary network interfaces"
+   ```
+
+2. Apply the NodeENI resource:
+
+   ```bash
+   kubectl apply -f your-nodeeni.yaml
+   ```
+
+3. Label a node to match the selector:
+
+   ```bash
+   kubectl label node your-node-name ng=multi-eni
+   ```
+
+### Verifying ENI Creation and Attachment
+
+1. Check the status of the NodeENI resource:
+
+   ```bash
+   kubectl get nodeeni multus-eni-config -o yaml
+   ```
+
+2. Verify the ENI has been created and attached using AWS CLI:
+
+   ```bash
+   # Get the ENI ID from the NodeENI status
+   ENI_ID=$(kubectl get nodeeni multus-eni-config -o jsonpath='{.status.attachments[0].eniID}')
+
+   # Describe the ENI
+   aws ec2 describe-network-interfaces --network-interface-ids $ENI_ID
+
+   # Check the instance attachments
+   INSTANCE_ID=$(kubectl get nodeeni multus-eni-config -o jsonpath='{.status.attachments[0].instanceID}')
+   aws ec2 describe-instances --instance-ids $INSTANCE_ID --query "Reservations[*].Instances[*].NetworkInterfaces[*].[NetworkInterfaceId,Attachment.DeviceIndex,Status,SubnetId]" --output table
+   ```
+
+### Testing Cleanup
+
+1. Remove the label from the node:
+
+   ```bash
+   kubectl label node your-node-name ng-
+   ```
+
+2. Verify the ENI has been detached:
+
+   ```bash
+   aws ec2 describe-instances --instance-ids $INSTANCE_ID --query "Reservations[*].Instances[*].NetworkInterfaces[*].[NetworkInterfaceId,Attachment.DeviceIndex,Status,SubnetId]" --output table
+   ```
+
+3. Delete the NodeENI resource:
+
+   ```bash
+   kubectl delete nodeeni multus-eni-config
+   ```
+
+4. Verify the ENI has been deleted:
+
+   ```bash
+   aws ec2 describe-network-interfaces --network-interface-ids $ENI_ID
+   # Should return an error indicating the ENI doesn't exist
+   ```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **ENI not being created**:
+   - Check if the controller pod is running: `kubectl get pods -n eni-controller-system`
+   - Check the controller logs: `kubectl logs -n eni-controller-system deployment/eni-controller`
+   - Verify the node has the correct label: `kubectl get nodes --show-labels | grep your-label`
+   - Ensure the subnet and security group IDs are correct
+
+2. **ENI not being deleted**:
+   - Check if the finalizer is present on the NodeENI resource: `kubectl get nodeeni -o yaml`
+   - Check the controller logs for any errors during deletion
+   - Verify AWS permissions for the controller to delete ENIs
+
+3. **Controller pod not starting**:
+   - Check the pod status: `kubectl describe pod -n eni-controller-system eni-controller-xxx`
+   - Verify RBAC permissions are correctly configured
+   - Check if the Docker image is accessible
+
+### Debugging
+
+1. Enable more verbose logging by editing the controller deployment:
+
+   ```bash
+   kubectl edit deployment -n eni-controller-system eni-controller
+   # Add --v=5 to the command args
+   ```
+
+2. Check AWS API calls using CloudTrail:
+
+   ```bash
+   aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=CreateNetworkInterface
+   aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=DeleteNetworkInterface
+   ```
+
+3. Manually verify AWS permissions:
+
+   ```bash
+   # Test EC2 permissions
+   aws ec2 describe-instances
+   aws ec2 describe-network-interfaces
+   ```
+
+## Architecture
+
+The ENI Controller follows the Kubernetes operator pattern:
+
+1. **Custom Resource Definition (CRD)**: Defines the NodeENI resource
+2. **Controller**: Watches for NodeENI resources and nodes with matching labels
+3. **Reconciliation Loop**: Creates, attaches, detaches, and deletes ENIs as needed
+4. **Finalizers**: Ensures proper cleanup of AWS resources when NodeENI resources are deleted
+
+### Controller Logic
+
+1. When a NodeENI resource is created:
+   - Add a finalizer to the resource
+   - Find nodes matching the selector
+   - Create and attach ENIs to matching nodes
+   - Update the NodeENI status with attachment information
+
+2. When a node no longer matches the selector:
+   - Detach and delete the ENI
+   - Update the NodeENI status
+
+3. When a NodeENI resource is deleted:
+   - Detach and delete all ENIs created by this resource
+   - Remove the finalizer to allow the resource to be deleted
+
+## Reference
+
+The repository contains the following key components:
+
+- `pkg/apis/networking/v1alpha1/nodeeni_types.go`: NodeENI CRD definition
+- `pkg/controller/nodeeni_controller.go`: Controller implementation
+- `deploy/crds/networking.example.com_nodeenis_crd.yaml`: CRD YAML
+- `deploy/deployment.yaml`: Controller deployment
+- `deploy/rbac.yaml`: RBAC permissions
+- `deploy/samples/`: Sample NodeENI resources

@@ -1,0 +1,13 @@
+apiVersion: networking.example.com/v1alpha1
+kind: NodeENI
+metadata:
+  name: multus-eni-subnet-name
+spec:
+  nodeSelector:
+    ng: multi-eni
+  subnetName: eks-private-subnet-3
+  securityGroupIDs:
+  - sg-05da196f3314d4af8
+  deviceIndex: 2
+  deleteOnTermination: true
+  description: "Multus ENI using subnet name instead of ID"

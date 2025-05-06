@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: eni-controller-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eni-controller
+  namespace: eni-controller-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: eni-controller-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - networking.example.com
+  resources:
+  - nodeenis
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.example.com
+  resources:
+  - nodeenis/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: eni-controller-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: eni-controller-role
+subjects:
+- kind: ServiceAccount
+  name: eni-controller
+  namespace: eni-controller-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eni-controller
+  namespace: eni-controller-system
+  labels:
+    app: eni-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eni-controller
+  template:
+    metadata:
+      labels:
+        app: eni-controller
+    spec:
+      serviceAccountName: eni-controller
+      containers:
+      - name: manager
+        image: johnlam90/eni-controller:v1-20250505194248
+        args:
+        - --metrics-addr=:8080
+        - --enable-leader-election
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        env:
+        - name: AWS_REGION
+          value: us-east-1
+      terminationGracePeriodSeconds: 10
