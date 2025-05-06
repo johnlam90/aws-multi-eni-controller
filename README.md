@@ -20,6 +20,7 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 - **Cloud-Native**: Follows Kubernetes patterns for resource management
 - **Region Aware**: Works in any AWS region with configurable region settings
 - **Subnet Flexibility**: Supports both subnet IDs and subnet names (via AWS tags)
+- **Multi-Subnet Support**: Can attach ENIs from different subnets to the same or different nodes
 
 ## Building and Deploying
 
@@ -191,6 +192,29 @@ If you prefer to deploy manually:
    kubectl label node your-node-name ng=multi-eni
    ```
 
+### Multi-Subnet Configuration
+
+You can configure nodes to receive ENIs from multiple subnets using one of these approaches:
+
+1. **Multiple NodeENI Resources**: Create multiple NodeENI resources with different subnet IDs and device indices:
+
+   ```bash
+   kubectl apply -f deploy/samples/multi-subnet-example.yaml
+   ```
+
+2. **Subnet Selection via Node Labels**: Use node labels to determine which nodes get ENIs from which subnets:
+
+   ```bash
+   # Label nodes for specific subnets
+   kubectl label node node1 ng=multi-eni subnet=a
+   kubectl label node node2 ng=multi-eni subnet=b
+
+   # Apply the NodeENI resources that use these labels
+   kubectl apply -f deploy/samples/multi-subnet-example.yaml
+   ```
+
+For detailed examples, see the [multi-subnet sample configuration](deploy/samples/multi-subnet-example.yaml) and the [architecture documentation](docs/architecture.md).
+
 ### Verifying ENI Creation and Attachment
 
 1. Check the status of the NodeENI resource:
@@ -302,6 +326,8 @@ The ENI Controller follows the Kubernetes operator pattern:
 2. **Controller**: Watches for NodeENI resources and nodes with matching labels
 3. **Reconciliation Loop**: Creates, attaches, detaches, and deletes ENIs as needed
 4. **Finalizers**: Ensures proper cleanup of AWS resources when NodeENI resources are deleted
+
+For a detailed architecture diagram and workflow, see [Architecture Documentation](docs/architecture.md).
 
 ### Controller Logic
 
