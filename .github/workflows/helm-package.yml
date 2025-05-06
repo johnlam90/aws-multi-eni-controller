@@ -115,6 +115,8 @@ jobs:
       # Create GitHub release with chart as asset
       - name: Create GitHub Release for Helm Chart
         id: create_release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           # Find the chart file
           CHART_FILE=$(find .helm-charts -name "*.tgz" | head -n 1)
