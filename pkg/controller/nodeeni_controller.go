@@ -3,13 +3,14 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	networkingv1alpha1 "github.com/example/eni-controller/pkg/apis/networking/v1alpha1"
 	"github.com/go-logr/logr"
+	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +30,7 @@ import (
 
 const (
 	// NodeENIFinalizer is the finalizer added to NodeENI resources
-	NodeENIFinalizer = "nodeeni.networking.example.com/finalizer"
+	NodeENIFinalizer = "nodeeni.networking.johnlam90.github.io/finalizer"
 )
 
 // NodeENIReconciler reconciles a NodeENI object
@@ -43,9 +44,15 @@ type NodeENIReconciler struct {
 
 // NewNodeENIReconciler creates a new NodeENI controller
 func NewNodeENIReconciler(mgr manager.Manager) (*NodeENIReconciler, error) {
+	// Get AWS region from environment variable or use default
+	awsRegion := os.Getenv("AWS_REGION")
+	if awsRegion == "" {
+		awsRegion = "us-east-1"
+	}
+
 	// Create AWS session
 	sess, err := session.NewSession(&aws.Config{
-		Region: aws.String("us-east-1"), // TODO: Make this configurable
+		Region: aws.String(awsRegion),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AWS session: %v", err)
@@ -103,8 +110,8 @@ func (r *NodeENIReconciler) findNodeENIsForNode(obj client.Object) []reconcile.R
 }
 
 // Reconcile handles NodeENI resources
-// +kubebuilder:rbac:groups=networking.example.com,resources=nodeenis,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.example.com,resources=nodeenis/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=networking.johnlam90.github.io,resources=nodeenis,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.johnlam90.github.io,resources=nodeenis/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 func (r *NodeENIReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

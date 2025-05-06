@@ -4,8 +4,8 @@ import (
 	"flag"
 	"os"
 
-	networkingv1alpha1 "github.com/example/eni-controller/pkg/apis/networking/v1alpha1"
-	"github.com/example/eni-controller/pkg/controller"
+	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/controller"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"

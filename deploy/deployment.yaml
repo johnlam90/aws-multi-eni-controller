@@ -30,7 +30,7 @@ rules:
   - create
   - patch
 - apiGroups:
-  - networking.example.com
+  - networking.johnlam90.github.io
   resources:
   - nodeenis
   verbs:
@@ -42,7 +42,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - networking.example.com
+  - networking.johnlam90.github.io
   resources:
   - nodeenis/status
   verbs:
@@ -95,7 +95,7 @@ spec:
       serviceAccountName: eni-controller
       containers:
       - name: manager
-        image: johnlam90/eni-controller:v1-20250505194248
+        image: ${CONTROLLER_IMAGE}
         args:
         - --metrics-addr=:8080
         - --enable-leader-election

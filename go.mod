@@ -1,4 +1,4 @@
-module github.com/example/eni-controller
+module github.com/johnlam90/aws-multi-eni-controller
 
 go 1.19
 
