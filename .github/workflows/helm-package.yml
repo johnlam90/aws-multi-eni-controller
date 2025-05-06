@@ -75,6 +75,10 @@ jobs:
           mkdir -p .helm-charts
           helm package charts/aws-multi-eni-controller -d .helm-charts
 
+          # List the packaged chart for debugging
+          echo "Packaged chart files:"
+          ls -la .helm-charts/
+
       # Create index file for GitHub release
       - name: Create Helm repository index
         run: |
@@ -93,49 +97,70 @@ jobs:
       - name: Push Helm chart to GHCR
         run: |
           echo "Pushing Helm chart to GHCR as OCI artifact..."
-          helm push .helm-charts/aws-multi-eni-controller-${{ env.CHART_VERSION }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+
+          # Find the chart file
+          CHART_FILE=$(find .helm-charts -name "*.tgz" | head -n 1)
+          if [ -z "$CHART_FILE" ]; then
+            echo "Error: No chart file found in .helm-charts directory"
+            exit 1
+          fi
+
+          echo "Found chart file: $CHART_FILE"
+
+          # Push the chart to GHCR
+          helm push $CHART_FILE oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
 
           echo "Chart pushed to: ${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/aws-multi-eni-controller:${{ env.CHART_VERSION }}"
 
       # Create GitHub release with chart as asset
       - name: Create GitHub Release for Helm Chart
         id: create_release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: helm-chart-${{ env.CHART_VERSION }}
-          name: Helm Chart ${{ env.CHART_VERSION }}
-          body: |
-            # AWS Multi-ENI Controller Helm Chart ${{ env.CHART_VERSION }}
+        run: |
+          # Find the chart file
+          CHART_FILE=$(find .helm-charts -name "*.tgz" | head -n 1)
+          if [ -z "$CHART_FILE" ]; then
+            echo "Error: No chart file found in .helm-charts directory"
+            exit 1
+          fi
 
-            This release contains the Helm chart for AWS Multi-ENI Controller version ${{ env.APP_VERSION }}.
+          # Extract the chart filename
+          CHART_FILENAME=$(basename $CHART_FILE)
 
-            ## Installation Options
+          # Create release notes
+          cat > release_notes.md << EOF
+          # AWS Multi-ENI Controller Helm Chart ${{ env.CHART_VERSION }}
 
-            ### Option 1: Install from GitHub Release
+          This release contains the Helm chart for AWS Multi-ENI Controller version ${{ env.APP_VERSION }}.
 
-            ```bash
-            # Download the chart
-            wget https://github.com/${{ github.repository }}/releases/download/helm-chart-${{ env.CHART_VERSION }}/aws-multi-eni-controller-${{ env.CHART_VERSION }}.tgz
+          ## Installation Options
 
-            # Install the chart
-            helm install my-release ./aws-multi-eni-controller-${{ env.CHART_VERSION }}.tgz
-            ```
+          ### Option 1: Install from GitHub Release
 
-            ### Option 2: Install from OCI Registry (Recommended)
+          \`\`\`bash
+          # Download the chart
+          wget https://github.com/${{ github.repository }}/releases/download/helm-chart-${{ env.CHART_VERSION }}/$CHART_FILENAME
 
-            ```bash
-            # Add the OCI registry
-            helm install my-release oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/aws-multi-eni-controller --version ${{ env.CHART_VERSION }}
-            ```
+          # Install the chart
+          helm install my-release ./$CHART_FILENAME
+          \`\`\`
 
-            ## Configuration
+          ### Option 2: Install from OCI Registry (Recommended)
 
-            See the [Helm Chart README](https://github.com/${{ github.repository }}/blob/main/charts/aws-multi-eni-controller/README.md) for configuration options.
-          files: |
-            .helm-charts/*.tgz
-            .helm-charts/index.yaml
-          draft: false
-          prerelease: false
+          \`\`\`bash
+          # Install directly from OCI registry
+          helm install my-release oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/aws-multi-eni-controller --version ${{ env.CHART_VERSION }}
+          \`\`\`
+
+          ## Configuration
+
+          See the [Helm Chart README](https://github.com/${{ github.repository }}/blob/main/charts/aws-multi-eni-controller/README.md) for configuration options.
+          EOF
+
+          # Create GitHub release
+          gh release create helm-chart-${{ env.CHART_VERSION }} \
+            --title "Helm Chart ${{ env.CHART_VERSION }}" \
+            --notes-file release_notes.md \
+            $CHART_FILE .helm-charts/index.yaml
 
       # Display instructions for using the chart
       - name: Display instructions for using the Helm chart
