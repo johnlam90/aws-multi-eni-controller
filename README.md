@@ -32,6 +32,20 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 - kubectl installed and configured
 - Go 1.19 or later (for development)
 
+### Pre-built Container Images
+
+Pre-built container images are available on GitHub Container Registry:
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/johnlam90/aws-multi-eni-controller:latest
+
+# Or use a specific version
+docker pull ghcr.io/johnlam90/aws-multi-eni-controller:v1.0.0
+```
+
+You can find all available tags at [GitHub Container Registry](https://github.com/johnlam90/aws-multi-eni-controller/pkgs/container/aws-multi-eni-controller).
+
 ### Required AWS Permissions
 
 The controller requires the following AWS permissions:
@@ -84,16 +98,18 @@ For EKS clusters, you can use IAM roles for service accounts (IRSA):
    cd aws-multi-eni-controller
    ```
 
-2. Build and push the Docker image:
+2. Deploy using the script:
 
    ```bash
-   # The deploy.sh script builds and pushes the Docker image
+   # Build and push your own Docker image
    ./hack/deploy.sh
+
+   # Or use the pre-built GitHub Container Registry image
+   USE_GHCR=true ./hack/deploy.sh
    ```
 
    The script will:
-   - Build a unified Docker image containing both the controller and ENI manager
-   - Push the image to DockerHub
+   - Either use the pre-built GitHub Container Registry image or build your own
    - Apply the CRDs to the cluster
    - Deploy the controller and ENI manager to the cluster
 
@@ -101,21 +117,33 @@ For EKS clusters, you can use IAM roles for service accounts (IRSA):
 
 If you prefer to deploy manually:
 
-1. Build and push the unified Docker image:
+1. Use the pre-built image from GitHub Container Registry:
+
+   ```bash
+   # Use the latest image
+   IMAGE=ghcr.io/johnlam90/aws-multi-eni-controller:latest
+
+   # Or use a specific version
+   # IMAGE=ghcr.io/johnlam90/aws-multi-eni-controller:v1.0.0
+   ```
+
+   Alternatively, build and push your own Docker image:
 
    ```bash
    # Set a unique tag
    TAG=$(date +%Y%m%d%H%M%S)
    docker build -t yourrepo/aws-multi-eni:v1-$TAG .
    docker push yourrepo/aws-multi-eni:v1-$TAG
+
+   IMAGE=yourrepo/aws-multi-eni:v1-$TAG
    ```
 
 2. Update the image in the deployment YAMLs:
 
    ```bash
    # Replace the image in deployment files
-   sed -i '' "s|\${UNIFIED_IMAGE}|yourrepo/aws-multi-eni:v1-$TAG|g" deploy/deployment.yaml
-   sed -i '' "s|\${UNIFIED_IMAGE}|yourrepo/aws-multi-eni:v1-$TAG|g" deploy/eni-manager-daemonset.yaml
+   sed -i '' "s|\${UNIFIED_IMAGE}|$IMAGE|g" deploy/deployment.yaml
+   sed -i '' "s|\${UNIFIED_IMAGE}|$IMAGE|g" deploy/eni-manager-daemonset.yaml
    ```
 
 3. Apply the CRDs and deploy the components:
