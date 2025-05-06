@@ -42,6 +42,10 @@ jobs:
             echo "Warning: Go version mismatch between Dockerfile ($GO_VERSION_DOCKERFILE) and go.mod ($GO_VERSION_GOMOD)"
           fi
 
+          echo "GOTOOLCHAIN environment variable is set to: $GOTOOLCHAIN"
+        env:
+          GOTOOLCHAIN: auto
+
       - name: Log in to the Container registry
         uses: docker/login-action@v3
         with:
