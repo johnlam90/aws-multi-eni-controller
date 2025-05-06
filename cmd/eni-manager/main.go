@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
@@ -51,7 +52,7 @@ func main() {
 // It uses the default route to determine which interface is the primary one
 func detectPrimaryInterface() (string, error) {
 	// Get the default route
-	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+	routes, err := netlink.RouteList(nil, unix.AF_INET) // Use unix.AF_INET instead of netlink.FAMILY_V4
 	if err != nil {
 		return "", fmt.Errorf("failed to get routes: %v", err)
 	}
