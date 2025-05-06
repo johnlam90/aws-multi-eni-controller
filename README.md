@@ -1,6 +1,9 @@
-# ENI Controller for Kubernetes
+# AWS Multi-ENI Controller for Kubernetes
 
-A Kubernetes controller that automatically creates and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels.
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Go Report Card](https://goreportcard.com/badge/github.com/johnlam90/aws-multi-eni-controller)](https://goreportcard.com/report/github.com/johnlam90/aws-multi-eni-controller)
+
+A Kubernetes controller that automatically creates and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels. This controller is useful for workloads that require multiple network interfaces, such as networking plugins, security tools, or specialized applications.
 
 ## Overview
 
@@ -14,6 +17,8 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 - **Proper Cleanup**: Uses finalizers to ensure ENIs are properly detached and deleted when no longer needed
 - **Configurable**: Supports custom subnet, security groups, device index, and more
 - **Cloud-Native**: Follows Kubernetes patterns for resource management
+- **Region Aware**: Works in any AWS region with configurable region settings
+- **Subnet Flexibility**: Supports both subnet IDs and subnet names (via AWS tags)
 
 ## Building and Deploying
 
@@ -23,14 +28,58 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 - Access to a Kubernetes cluster (e.g., EKS)
 - AWS CLI configured with appropriate permissions
 - kubectl installed and configured
+- Go 1.19 or later (for development)
+
+### Required AWS Permissions
+
+The controller requires the following AWS permissions:
+
+- `ec2:CreateNetworkInterface`
+- `ec2:DeleteNetworkInterface`
+- `ec2:DescribeNetworkInterfaces`
+- `ec2:AttachNetworkInterface`
+- `ec2:DetachNetworkInterface`
+- `ec2:ModifyNetworkInterfaceAttribute`
+- `ec2:DescribeSubnets` (if using subnet names)
+
+#### Setting up IAM permissions
+
+For EKS clusters, you can use IAM roles for service accounts (IRSA):
+
+1. Create an IAM policy with the required permissions:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": [
+           "ec2:CreateNetworkInterface",
+           "ec2:DeleteNetworkInterface",
+           "ec2:DescribeNetworkInterfaces",
+           "ec2:AttachNetworkInterface",
+           "ec2:DetachNetworkInterface",
+           "ec2:ModifyNetworkInterfaceAttribute",
+           "ec2:DescribeSubnets"
+         ],
+         "Resource": "*"
+       }
+     ]
+   }
+   ```
+
+2. Create an IAM role and attach the policy
+
+3. Associate the IAM role with the service account used by the controller
 
 ### Building the Controller
 
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/example/eni-controller.git
-   cd eni-controller
+   git clone https://github.com/johnlam90/aws-multi-eni-controller.git
+   cd aws-multi-eni-controller
    ```
 
 2. Build and push the Docker image:
@@ -69,9 +118,24 @@ If you prefer to deploy manually:
 3. Apply the CRDs and deploy the controller:
 
    ```bash
-   kubectl apply -f deploy/crds/networking.example.com_nodeenis_crd.yaml
-   kubectl apply -f deploy/rbac.yaml
+   kubectl apply -f deploy/crds/networking.k8s.aws_nodeenis_crd.yaml
    kubectl apply -f deploy/deployment.yaml
+   ```
+
+4. Configure the AWS region (optional):
+
+   By default, the controller uses the `us-west-2` region. To use a different region, edit the deployment:
+
+   ```bash
+   kubectl edit deployment -n eni-controller-system eni-controller
+   ```
+
+   Update the `AWS_REGION` environment variable to your preferred region:
+
+   ```yaml
+   env:
+   - name: AWS_REGION
+     value: "your-preferred-region"  # e.g., eu-west-1, ap-southeast-1, etc.
    ```
 
 ## Using the Controller
@@ -81,19 +145,37 @@ If you prefer to deploy manually:
 1. Create a YAML file for your NodeENI resource:
 
    ```yaml
-   apiVersion: networking.example.com/v1alpha1
+   apiVersion: networking.k8s.aws/v1alpha1
    kind: NodeENI
    metadata:
      name: multus-eni-config
    spec:
      nodeSelector:
        ng: multi-eni
-     subnetID: subnet-0f59b4f14737be9ad
+     subnetID: subnet-0f59b4f14737be9ad  # Use your subnet ID
      securityGroupIDs:
-     - sg-05da196f3314d4af8
+     - sg-05da196f3314d4af8  # Use your security group ID
      deviceIndex: 2
      deleteOnTermination: true
      description: "Multus ENI for secondary network interfaces"
+   ```
+
+   Alternatively, you can use a subnet name instead of a subnet ID:
+
+   ```yaml
+   apiVersion: networking.k8s.aws/v1alpha1
+   kind: NodeENI
+   metadata:
+     name: multus-eni-subnet-name
+   spec:
+     nodeSelector:
+       ng: multi-eni
+     subnetName: my-subnet-name  # Subnet with this Name tag will be used
+     securityGroupIDs:
+     - sg-05da196f3314d4af8  # Use your security group ID
+     deviceIndex: 2
+     deleteOnTermination: true
+     description: "ENI using subnet name instead of ID"
    ```
 
 2. Apply the NodeENI resource:
@@ -201,6 +283,16 @@ If you prefer to deploy manually:
    aws ec2 describe-network-interfaces
    ```
 
+## AWS Region Configuration
+
+The controller needs to know which AWS region to use for creating and managing ENIs. There are several ways to configure this:
+
+1. **Environment Variable**: Set the `AWS_REGION` environment variable in the deployment (default method)
+2. **Instance Metadata**: When running on EC2, the controller can use the instance's region
+3. **EKS Annotation**: For EKS clusters, you can use the cluster's region annotation
+
+The default region is `us-west-2` if not specified. See the deployment instructions for how to change this.
+
 ## Architecture
 
 The ENI Controller follows the Kubernetes operator pattern:
@@ -232,7 +324,14 @@ The repository contains the following key components:
 
 - `pkg/apis/networking/v1alpha1/nodeeni_types.go`: NodeENI CRD definition
 - `pkg/controller/nodeeni_controller.go`: Controller implementation
-- `deploy/crds/networking.example.com_nodeenis_crd.yaml`: CRD YAML
-- `deploy/deployment.yaml`: Controller deployment
-- `deploy/rbac.yaml`: RBAC permissions
+- `deploy/crds/networking.k8s.aws_nodeenis_crd.yaml`: CRD YAML
+- `deploy/deployment.yaml`: Controller deployment (includes RBAC)
 - `deploy/samples/`: Sample NodeENI resources
+
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this project.
+
+## License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
