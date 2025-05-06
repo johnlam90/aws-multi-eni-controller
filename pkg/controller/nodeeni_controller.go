@@ -538,7 +538,7 @@ func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1
 						Value: aws.String("nodeeni-controller"),
 					},
 					{
-						Key:   aws.String("no-manage"),
+						Key:   aws.String("node.k8s.amazonaws.com/no_manage"),
 						Value: aws.String("true"),
 					},
 				},
