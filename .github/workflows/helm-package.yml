@@ -158,6 +158,12 @@ jobs:
           See the [Helm Chart README](https://github.com/${{ github.repository }}/blob/main/charts/aws-multi-eni-controller/README.md) for configuration options.
           EOF
 
+          # Check if release exists and delete it if it does
+          if gh release view helm-chart-${{ env.CHART_VERSION }} &>/dev/null; then
+            echo "Release helm-chart-${{ env.CHART_VERSION }} already exists, deleting it first..."
+            gh release delete helm-chart-${{ env.CHART_VERSION }} --yes
+          fi
+
           # Create GitHub release
           gh release create helm-chart-${{ env.CHART_VERSION }} \
             --title "Helm Chart ${{ env.CHART_VERSION }}" \
