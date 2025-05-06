@@ -32,7 +32,13 @@ type NodeENISpec struct {
 	SubnetName string `json:"subnetName,omitempty"`
 
 	// SecurityGroupIDs are the AWS Security Group IDs to attach to the ENI
-	SecurityGroupIDs []string `json:"securityGroupIDs"`
+	// +optional
+	SecurityGroupIDs []string `json:"securityGroupIDs,omitempty"`
+
+	// SecurityGroupNames are the AWS Security Group Names to attach to the ENI
+	// If SecurityGroupIDs is not provided, SecurityGroupNames will be used to look up the security groups
+	// +optional
+	SecurityGroupNames []string `json:"securityGroupNames,omitempty"`
 
 	// DeviceIndex is the device index for the ENI (default: 1)
 	// +optional

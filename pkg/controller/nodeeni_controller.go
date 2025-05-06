@@ -490,6 +490,51 @@ func (r *NodeENIReconciler) getSubnetIDByName(ctx context.Context, subnetName st
 	return *result.Subnets[0].SubnetId, nil
 }
 
+// getSecurityGroupIDByName looks up a security group ID by its Name or GroupName
+func (r *NodeENIReconciler) getSecurityGroupIDByName(ctx context.Context, securityGroupName string) (string, error) {
+	input := &ec2.DescribeSecurityGroupsInput{
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("group-name"),
+				Values: []*string{aws.String(securityGroupName)},
+			},
+		},
+	}
+
+	// Try with group-name first
+	result, err := r.EC2.DescribeSecurityGroups(input)
+	if err != nil {
+		return "", fmt.Errorf("failed to describe security groups: %v", err)
+	}
+
+	// If not found, try with the Name tag
+	if len(result.SecurityGroups) == 0 {
+		input = &ec2.DescribeSecurityGroupsInput{
+			Filters: []*ec2.Filter{
+				{
+					Name:   aws.String("tag:Name"),
+					Values: []*string{aws.String(securityGroupName)},
+				},
+			},
+		}
+
+		result, err = r.EC2.DescribeSecurityGroups(input)
+		if err != nil {
+			return "", fmt.Errorf("failed to describe security groups by Name tag: %v", err)
+		}
+
+		if len(result.SecurityGroups) == 0 {
+			return "", fmt.Errorf("no security group found with name or Name tag: %s", securityGroupName)
+		}
+	}
+
+	if len(result.SecurityGroups) > 1 {
+		r.Log.Info("Multiple security groups found with the same name, using the first one", "securityGroupName", securityGroupName)
+	}
+
+	return *result.SecurityGroups[0].GroupId, nil
+}
+
 // createENI creates a new ENI in AWS
 func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, node corev1.Node) (string, error) {
 	description := nodeENI.Spec.Description
@@ -513,10 +558,28 @@ func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1
 		return "", fmt.Errorf("neither subnetID nor subnetName provided")
 	}
 
+	// Determine the security group IDs to use
+	securityGroupIDs := nodeENI.Spec.SecurityGroupIDs
+	if len(securityGroupIDs) == 0 && len(nodeENI.Spec.SecurityGroupNames) > 0 {
+		// Look up security group IDs by name
+		for _, sgName := range nodeENI.Spec.SecurityGroupNames {
+			sgID, err := r.getSecurityGroupIDByName(ctx, sgName)
+			if err != nil {
+				return "", fmt.Errorf("failed to get security group ID from name %s: %v", sgName, err)
+			}
+			r.Log.Info("Resolved security group name to ID", "securityGroupName", sgName, "securityGroupID", sgID)
+			securityGroupIDs = append(securityGroupIDs, sgID)
+		}
+	}
+
+	if len(securityGroupIDs) == 0 {
+		return "", fmt.Errorf("neither securityGroupIDs nor securityGroupNames provided")
+	}
+
 	input := &ec2.CreateNetworkInterfaceInput{
 		Description: aws.String(description),
 		SubnetId:    aws.String(subnetID),
-		Groups:      aws.StringSlice(nodeENI.Spec.SecurityGroupIDs),
+		Groups:      aws.StringSlice(securityGroupIDs),
 		TagSpecifications: []*ec2.TagSpecification{
 			{
 				ResourceType: aws.String("network-interface"),

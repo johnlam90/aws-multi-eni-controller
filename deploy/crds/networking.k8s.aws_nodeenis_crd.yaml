@@ -54,6 +54,11 @@ spec:
                 items:
                   type: string
                 type: array
+              securityGroupNames:
+                description: AWS Security Group Names to attach to the ENI (used if securityGroupIDs is not provided)
+                items:
+                  type: string
+                type: array
               subnetID:
                 description: AWS Subnet ID where the ENI should be created
                 type: string
@@ -62,7 +67,6 @@ spec:
                 type: string
             required:
             - nodeSelector
-            - securityGroupIDs
             type: object
           status:
             properties:
