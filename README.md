@@ -46,6 +46,22 @@ docker pull ghcr.io/johnlam90/aws-multi-eni-controller:v1.0.0
 
 You can find all available tags at [GitHub Container Registry](https://github.com/johnlam90/aws-multi-eni-controller/pkgs/container/aws-multi-eni-controller).
 
+#### Making the Container Image Public
+
+The GitHub Actions workflow is configured to automatically make the container image public. To enable this functionality:
+
+1. Create a Personal Access Token (PAT) with `packages:write` permission:
+   - Go to GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)
+   - Generate a new token with the `packages:write` scope
+   - Copy the token
+
+2. Add the token as a repository secret:
+   - Go to your repository → Settings → Secrets and variables → Actions
+   - Create a new repository secret named `PACKAGE_PAT`
+   - Paste the token as the value
+
+The workflow will use this token to set the package visibility to public after it's pushed.
+
 ### Required AWS Permissions
 
 The controller requires the following AWS permissions:

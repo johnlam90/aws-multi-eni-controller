@@ -11,6 +11,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Set this to true to make the package public
+  PACKAGE_PUBLIC: true
 
 jobs:
   build-and-push:
@@ -18,6 +20,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Add additional permissions for package management
+      actions: read
 
     steps:
       - name: Checkout repository
@@ -51,7 +55,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.PACKAGE_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
@@ -82,3 +86,31 @@ jobs:
             GOTOOLCHAIN=auto
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Set package visibility to public
+        if: env.PACKAGE_PUBLIC == 'true' && github.event_name != 'pull_request'
+        run: |
+          # Extract the package name from the image name
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d '/' -f 2 | tr '[:upper:]' '[:lower:]')
+          echo "Setting package $REPO_NAME visibility to public"
+
+          # Use the GitHub API to set the package visibility to public
+          # Note: This requires a PAT with packages:write permission
+          curl -X PATCH \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: token ${{ secrets.PACKAGE_PAT }}" \
+            -d '{"visibility":"public"}' \
+            "https://api.github.com/orgs/$REPO_OWNER/packages/container/$REPO_NAME"
+
+          # If the above fails (for user accounts), try the user endpoint
+          if [ $? -ne 0 ]; then
+            echo "Trying user endpoint instead of org endpoint"
+            curl -X PATCH \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: token ${{ secrets.PACKAGE_PAT }}" \
+              -d '{"visibility":"public"}' \
+              "https://api.github.com/user/packages/container/$REPO_NAME"
+          fi
+
+          echo "Package visibility set to public"
