@@ -1,4 +1,4 @@
-FROM golang:1.19-alpine AS builder
+FROM golang:1.21-alpine AS builder
 
 WORKDIR /workspace
 
@@ -7,7 +7,8 @@ COPY go.mod go.mod
 COPY go.sum go.sum
 
 # Cache dependencies
-RUN go mod download
+# Remove any toolchain directive for compatibility with older Go versions
+RUN sed -i '/^toolchain/d' go.mod && go mod download
 
 # Copy the source code
 COPY cmd/ cmd/
@@ -20,7 +21,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager cmd/main.go
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o eni-manager cmd/eni-manager/main.go
 
 # Use a minimal base image for the final image
-FROM alpine:3.16
+FROM alpine:3.19
 
 # Install iproute2 for the ip command (used as fallback by ENI Manager)
 RUN apk --no-cache add iproute2

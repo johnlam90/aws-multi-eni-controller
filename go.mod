@@ -1,8 +1,6 @@
 module github.com/johnlam90/aws-multi-eni-controller
 
-go 1.23
-
-toolchain go1.23.8
+go 1.21
 
 require (
 	github.com/aws/aws-sdk-go v1.44.234
