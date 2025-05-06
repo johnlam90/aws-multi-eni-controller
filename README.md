@@ -1,7 +1,7 @@
 # AWS Multi-ENI Controller for Kubernetes
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-<!-- Go Report Card badge will be enabled once the repository is accessible to the service -->
+[![Go Report Card](https://goreportcard.com/badge/github.com/johnlam90/aws-multi-eni-controller)](https://goreportcard.com/report/github.com/johnlam90/aws-multi-eni-controller)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8.svg)](https://go.dev/)
 
 A Kubernetes controller that automatically creates and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels. This controller is useful for workloads that require multiple network interfaces, such as networking plugins, security tools, or specialized applications.
