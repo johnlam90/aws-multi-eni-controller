@@ -95,7 +95,14 @@ spec:
       serviceAccountName: eni-controller
       containers:
       - name: manager
-        image: ${CONTROLLER_IMAGE}
+        image: ${UNIFIED_IMAGE}
+        env:
+        - name: COMPONENT
+          value: "eni-controller"
+        # Users should set this to their preferred AWS region
+        # This is a placeholder that should be customized
+        - name: AWS_REGION
+          value: "us-west-2"
         args:
         - --metrics-addr=:8080
         - --enable-leader-election
@@ -106,11 +113,6 @@ spec:
           requests:
             cpu: 100m
             memory: 128Mi
-        env:
-        # Users should set this to their preferred AWS region
-        # This is a placeholder that should be customized
-        - name: AWS_REGION
-          value: "us-west-2"
         # Uncomment and use this for EKS clusters to auto-detect the region
         # - name: AWS_REGION
         #   valueFrom:

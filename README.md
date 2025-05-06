@@ -92,36 +92,38 @@ For EKS clusters, you can use IAM roles for service accounts (IRSA):
    ```
 
    The script will:
-   - Build the Docker image with a unique tag
+   - Build a unified Docker image containing both the controller and ENI manager
    - Push the image to DockerHub
    - Apply the CRDs to the cluster
-   - Deploy the controller to the cluster
+   - Deploy the controller and ENI manager to the cluster
 
 ### Manual Deployment Steps
 
 If you prefer to deploy manually:
 
-1. Build and push the Docker image:
+1. Build and push the unified Docker image:
 
    ```bash
    # Set a unique tag
    TAG=$(date +%Y%m%d%H%M%S)
-   docker build -t yourrepo/eni-controller:v1-$TAG .
-   docker push yourrepo/eni-controller:v1-$TAG
+   docker build -t yourrepo/aws-multi-eni:v1-$TAG .
+   docker push yourrepo/aws-multi-eni:v1-$TAG
    ```
 
-2. Update the image in the deployment YAML:
+2. Update the image in the deployment YAMLs:
 
    ```bash
-   # Replace the image in deploy/deployment.yaml
-   sed -i '' "s|image: .*|image: yourrepo/eni-controller:v1-$TAG|" deploy/deployment.yaml
+   # Replace the image in deployment files
+   sed -i '' "s|\${UNIFIED_IMAGE}|yourrepo/aws-multi-eni:v1-$TAG|g" deploy/deployment.yaml
+   sed -i '' "s|\${UNIFIED_IMAGE}|yourrepo/aws-multi-eni:v1-$TAG|g" deploy/eni-manager-daemonset.yaml
    ```
 
-3. Apply the CRDs and deploy the controller:
+3. Apply the CRDs and deploy the components:
 
    ```bash
    kubectl apply -f deploy/crds/networking.k8s.aws_nodeenis_crd.yaml
    kubectl apply -f deploy/deployment.yaml
+   kubectl apply -f deploy/eni-manager-daemonset.yaml
    ```
 
 4. Configure the AWS region (optional):
@@ -162,31 +164,64 @@ If you prefer to deploy manually:
      description: "Multus ENI for secondary network interfaces"
    ```
 
-   Alternatively, you can use a subnet name instead of a subnet ID:
+### Automatically Bringing Up Secondary Interfaces
 
-   ```yaml
-   apiVersion: networking.k8s.aws/v1alpha1
-   kind: NodeENI
-   metadata:
-     name: multus-eni-subnet-name
-   spec:
-     nodeSelector:
-       ng: multi-eni
-     subnetName: my-subnet-name  # Subnet with this Name tag will be used
-     securityGroupIDs:
-     - sg-05da196f3314d4af8  # Use your security group ID
-     deviceIndex: 2
-     deleteOnTermination: true
-     description: "ENI using subnet name instead of ID"
+When AWS attaches a secondary ENI to an EC2 instance, the interface is visible to the operating system but typically in a DOWN state. To automatically bring these interfaces up:
+
+1. Deploy the ENI Manager DaemonSet:
+
+   ```bash
+   kubectl apply -f deploy/eni-manager-daemonset.yaml
    ```
 
-2. Apply the NodeENI resource:
+The ENI Manager is a lightweight Go application that:
+
+- Runs on all nodes with the `ng=multi-eni` label
+- Monitors for newly attached network interfaces in DOWN state
+- Automatically brings them up when detected
+- Verifies interfaces are properly UP
+
+The ENI Manager ensures your secondary interfaces are ready to use as soon as they're attached, without requiring any manual intervention.
+
+#### Cross-Distribution Compatibility
+
+The ENI Manager is designed to work across all Linux distributions:
+
+- **Auto-detection**: Automatically detects the primary interface by examining the default route
+- **Fallback mechanisms**: If the primary method fails, falls back to using the standard `ip` command
+- **No assumptions**: Makes no distribution-specific assumptions about network configuration
+
+This makes it compatible with Amazon Linux, Ubuntu, Debian, CentOS, RHEL, and other Linux distributions commonly used in Kubernetes environments.
+
+### Alternative Configuration Options
+
+You can use a subnet name instead of a subnet ID:
+
+```yaml
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: multus-eni-subnet-name
+spec:
+  nodeSelector:
+    ng: multi-eni
+  subnetName: my-subnet-name  # Subnet with this Name tag will be used
+  securityGroupIDs:
+  - sg-05da196f3314d4af8  # Use your security group ID
+  deviceIndex: 2
+  deleteOnTermination: true
+  description: "ENI using subnet name instead of ID"
+```
+
+### Deploying Your Configuration
+
+1. Apply the NodeENI resource:
 
    ```bash
    kubectl apply -f your-nodeeni.yaml
    ```
 
-3. Label a node to match the selector:
+2. Label a node to match the selector:
 
    ```bash
    kubectl label node your-node-name ng=multi-eni
@@ -326,8 +361,20 @@ The ENI Controller follows the Kubernetes operator pattern:
 2. **Controller**: Watches for NodeENI resources and nodes with matching labels
 3. **Reconciliation Loop**: Creates, attaches, detaches, and deletes ENIs as needed
 4. **Finalizers**: Ensures proper cleanup of AWS resources when NodeENI resources are deleted
+5. **ENI Manager**: Brings secondary interfaces up automatically
 
 For a detailed architecture diagram and workflow, see [Architecture Documentation](docs/architecture.md).
+
+### Unified Image Architecture
+
+The project uses a unified Docker image approach:
+
+1. **Single Image**: Both the ENI Controller and ENI Manager components are packaged in a single Docker image
+2. **Component Selection**: The image determines which component to run based on the `COMPONENT` environment variable
+3. **Deployment Separation**: The controller runs as a Deployment, while the ENI Manager runs as a DaemonSet on labeled nodes
+4. **Shared Codebase**: Both components share common code and dependencies, ensuring they stay in sync
+
+This approach simplifies maintenance, reduces image storage requirements, and ensures consistent versioning across components.
 
 ### Controller Logic
 

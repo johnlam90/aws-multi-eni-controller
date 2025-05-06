@@ -2,18 +2,21 @@
 
 # Set the image name and tag with a timestamp to avoid caching
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
-IMAGE_NAME=${1:-"johnlam90/eni-controller:v1-$TIMESTAMP"}
+UNIFIED_IMAGE=${1:-"johnlam90/aws-multi-eni:v1-$TIMESTAMP"}
 
-# Build the Docker image
-docker build -t "$IMAGE_NAME" .
+# Build the unified Docker image
+echo "Building unified image: $UNIFIED_IMAGE"
+docker build -t "$UNIFIED_IMAGE" .
 
-# Push the Docker image (if it's a remote registry)
-if [[ $IMAGE_NAME == *"/"* ]]; then
-  docker push "$IMAGE_NAME"
+# Push the Docker image (if it's in a remote registry)
+if [[ $UNIFIED_IMAGE == *"/"* ]]; then
+  echo "Pushing unified image: $UNIFIED_IMAGE"
+  docker push "$UNIFIED_IMAGE"
 fi
 
-# Update the deployment manifest
-sed -i '' "s|\${CONTROLLER_IMAGE}|$IMAGE_NAME|g" deploy/deployment.yaml
+# Update the deployment manifests
+sed -i '' "s|\${UNIFIED_IMAGE}|$UNIFIED_IMAGE|g" deploy/deployment.yaml
+sed -i '' "s|\${UNIFIED_IMAGE}|$UNIFIED_IMAGE|g" deploy/eni-manager-daemonset.yaml
 
 # Apply the CRD
 kubectl apply -f deploy/crds/networking.k8s.aws_nodeenis_crd.yaml
@@ -23,6 +26,9 @@ kubectl apply -f deploy/deployment.yaml
 
 # Wait for the deployment to be ready
 kubectl -n eni-controller-system rollout status deployment/eni-controller
+
+# Apply the ENI Manager DaemonSet
+kubectl apply -f deploy/eni-manager-daemonset.yaml
 
 # Apply the sample NodeENI resource
 kubectl apply -f deploy/samples/networking_v1alpha1_nodeeni.yaml

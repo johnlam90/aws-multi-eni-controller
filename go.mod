@@ -7,6 +7,7 @@ toolchain go1.23.8
 require (
 	github.com/aws/aws-sdk-go v1.44.234
 	github.com/go-logr/logr v1.2.4
+	github.com/vishvananda/netlink v1.1.0
 	k8s.io/api v0.26.3
 	k8s.io/apimachinery v0.26.3
 	k8s.io/client-go v0.26.3

@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: eni-manager
+  namespace: eni-controller-system
+  labels:
+    app: eni-manager
+spec:
+  selector:
+    matchLabels:
+      app: eni-manager
+  template:
+    metadata:
+      labels:
+        app: eni-manager
+    spec:
+      serviceAccountName: eni-controller
+      hostNetwork: true
+      nodeSelector:
+        ng: multi-eni
+      containers:
+      - name: eni-manager
+        image: ${UNIFIED_IMAGE}
+        env:
+        - name: COMPONENT
+          value: "eni-manager"
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["NET_ADMIN"]
+        args:
+        - --check-interval=30s
+        - --debug=true
+        # Primary interface will be auto-detected
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        volumeMounts:
+        - name: host-sys
+          mountPath: /host/sys
+        - name: host-proc
+          mountPath: /host/proc
+        - name: host-run
+          mountPath: /host/run
+      volumes:
+      - name: host-sys
+        hostPath:
+          path: /sys
+      - name: host-proc
+        hostPath:
+          path: /proc
+      - name: host-run
+        hostPath:
+          path: /run
