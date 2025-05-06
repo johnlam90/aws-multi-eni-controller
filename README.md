@@ -135,17 +135,20 @@ For EKS clusters, you can use IAM roles for service accounts (IRSA):
 
 The easiest way to deploy the AWS Multi-ENI Controller is using Helm:
 
-1. Add the Helm repository:
+1. Download the Helm chart from the latest release:
 
    ```bash
-   helm repo add aws-multi-eni-controller https://johnlam90.github.io/aws-multi-eni-controller/
-   helm repo update
+   # Get the latest chart version
+   CHART_VERSION=$(curl -s https://api.github.com/repos/johnlam90/aws-multi-eni-controller/releases | grep "helm-chart-" | grep "tag_name" | head -n 1 | cut -d'"' -f4 | cut -d'-' -f3)
+
+   # Download the chart
+   wget https://github.com/johnlam90/aws-multi-eni-controller/releases/download/helm-chart-${CHART_VERSION}/aws-multi-eni-controller-${CHART_VERSION}.tgz
    ```
 
 2. Install the chart:
 
    ```bash
-   helm install my-release aws-multi-eni-controller/aws-multi-eni-controller
+   helm install my-release ./aws-multi-eni-controller-${CHART_VERSION}.tgz
    ```
 
 3. Customize the installation with values:
@@ -159,13 +162,13 @@ The easiest way to deploy the AWS Multi-ENI Controller is using Helm:
    EOF
 
    # Install with custom values
-   helm install my-release aws-multi-eni-controller/aws-multi-eni-controller -f values.yaml
+   helm install my-release ./aws-multi-eni-controller-${CHART_VERSION}.tgz -f values.yaml
    ```
 
 4. Upgrade an existing installation:
 
    ```bash
-   helm upgrade my-release aws-multi-eni-controller/aws-multi-eni-controller -f values.yaml
+   helm upgrade my-release ./aws-multi-eni-controller-${CHART_VERSION}.tgz -f values.yaml
    ```
 
 For more information about the Helm chart and its configuration options, see the [Helm Chart README](charts/aws-multi-eni-controller/README.md).

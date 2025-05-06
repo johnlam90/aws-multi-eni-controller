@@ -43,7 +43,7 @@ jobs:
           # Update Chart.yaml with the provided version and appVersion
           sed -i "s/^version:.*/version: ${{ github.event.inputs.version }}/" charts/aws-multi-eni-controller/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"${{ github.event.inputs.appVersion }}\"/" charts/aws-multi-eni-controller/Chart.yaml
-          
+
           # Display the updated Chart.yaml
           echo "Updated Chart.yaml:"
           cat charts/aws-multi-eni-controller/Chart.yaml
@@ -53,41 +53,49 @@ jobs:
           mkdir -p .helm-charts
           helm package charts/aws-multi-eni-controller -d .helm-charts
 
-      - name: Set up GitHub Pages
-        uses: actions/configure-pages@v3
+          # Get the chart version
+          CHART_VERSION=$(grep "^version:" charts/aws-multi-eni-controller/Chart.yaml | awk '{print $2}')
+          echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_ENV
 
       - name: Create Helm repository index
         run: |
-          # If there's an existing index.yaml, download it first
-          if curl -s -f -o index.yaml https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/index.yaml; then
-            echo "Existing index.yaml found, merging with new chart"
-            helm repo index .helm-charts --url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/ --merge index.yaml
-          else
-            echo "No existing index.yaml found, creating new index"
-            helm repo index .helm-charts --url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
-          fi
-          
-          # Move the index to the charts directory
-          mv .helm-charts/index.yaml .
+          # Create a simple index file for the chart
+          helm repo index .helm-charts --url https://github.com/${{ github.repository }}/releases/download/helm-chart-${{ env.CHART_VERSION }}/
 
-      - name: Upload chart as release asset
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create GitHub Release for Helm Chart
+        id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          files: .helm-charts/*.tgz
-          generate_release_notes: true
+          tag_name: helm-chart-${{ env.CHART_VERSION }}
+          name: Helm Chart ${{ env.CHART_VERSION }}
+          body: |
+            # AWS Multi-ENI Controller Helm Chart ${{ env.CHART_VERSION }}
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: .
-          keep_files: true
-          
+            This release contains the Helm chart for AWS Multi-ENI Controller.
+
+            ## Installation
+
+            ```bash
+            # Download the chart
+            wget https://github.com/${{ github.repository }}/releases/download/helm-chart-${{ env.CHART_VERSION }}/aws-multi-eni-controller-${{ env.CHART_VERSION }}.tgz
+
+            # Install the chart
+            helm install my-release ./aws-multi-eni-controller-${{ env.CHART_VERSION }}.tgz
+            ```
+
+            ## Configuration
+
+            See the [Helm Chart README](https://github.com/${{ github.repository }}/blob/main/charts/aws-multi-eni-controller/README.md) for configuration options.
+          files: |
+            .helm-charts/*.tgz
+            .helm-charts/index.yaml
+          draft: false
+          prerelease: false
+
       - name: Display instructions for using the Helm chart
         run: |
-          echo "::notice::Helm chart has been published to GitHub Pages."
-          echo "::notice::To use the chart, add the repository with:"
-          echo "::notice::helm repo add aws-multi-eni-controller https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          echo "::notice::Helm chart has been published as a GitHub Release."
+          echo "::notice::To use the chart, download it from:"
+          echo "::notice::https://github.com/${{ github.repository }}/releases/download/helm-chart-${{ env.CHART_VERSION }}/aws-multi-eni-controller-${{ env.CHART_VERSION }}.tgz"
           echo "::notice::Then install the chart with:"
-          echo "::notice::helm install my-release aws-multi-eni-controller/aws-multi-eni-controller"
+          echo "::notice::helm install my-release ./aws-multi-eni-controller-${{ env.CHART_VERSION }}.tgz"
