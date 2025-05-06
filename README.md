@@ -62,6 +62,17 @@ The GitHub Actions workflow is configured to automatically make the container im
 
 The workflow will use this token to set the package visibility to public after it's pushed.
 
+#### Manual Method (If Automatic Method Fails)
+
+If the automatic method fails to make the package public, you can do it manually:
+
+1. Go to your GitHub repository
+2. Click on "Packages" in the right sidebar
+3. Find and click on your container package (aws-multi-eni-controller)
+4. Click on "Package settings" (gear icon)
+5. Under "Danger Zone", find "Change visibility"
+6. Select "Public" and confirm the change
+
 ### Required AWS Permissions
 
 The controller requires the following AWS permissions:
