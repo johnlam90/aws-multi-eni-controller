@@ -1,4 +1,4 @@
-apiVersion: networking.example.com/v1alpha1
+apiVersion: networking.k8s.aws/v1alpha1
 kind: NodeENI
 metadata:
   name: multus-eni-final

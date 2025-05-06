@@ -30,7 +30,7 @@ rules:
   - create
   - patch
 - apiGroups:
-  - networking.johnlam90.github.io
+  - networking.k8s.aws
   resources:
   - nodeenis
   verbs:
@@ -42,7 +42,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - networking.johnlam90.github.io
+  - networking.k8s.aws
   resources:
   - nodeenis/status
   verbs:
@@ -107,6 +107,13 @@ spec:
             cpu: 100m
             memory: 128Mi
         env:
+        # Users should set this to their preferred AWS region
+        # This is a placeholder that should be customized
         - name: AWS_REGION
-          value: us-east-1
+          value: "us-west-2"
+        # Uncomment and use this for EKS clusters to auto-detect the region
+        # - name: AWS_REGION
+        #   valueFrom:
+        #     fieldRef:
+        #       fieldPath: metadata.annotations['eks.amazonaws.com/compute-region']
       terminationGracePeriodSeconds: 10

@@ -16,7 +16,7 @@ fi
 sed -i '' "s|\${CONTROLLER_IMAGE}|$IMAGE_NAME|g" deploy/deployment.yaml
 
 # Apply the CRD
-kubectl apply -f deploy/crds/networking.example.com_nodeenis_crd.yaml
+kubectl apply -f deploy/crds/networking.k8s.aws_nodeenis_crd.yaml
 
 # Apply the deployment
 kubectl apply -f deploy/deployment.yaml

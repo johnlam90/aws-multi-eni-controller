@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -30,7 +31,7 @@ import (
 
 const (
 	// NodeENIFinalizer is the finalizer added to NodeENI resources
-	NodeENIFinalizer = "nodeeni.networking.johnlam90.github.io/finalizer"
+	NodeENIFinalizer = "nodeeni.networking.k8s.aws/finalizer"
 )
 
 // NodeENIReconciler reconciles a NodeENI object
@@ -44,10 +45,13 @@ type NodeENIReconciler struct {
 
 // NewNodeENIReconciler creates a new NodeENI controller
 func NewNodeENIReconciler(mgr manager.Manager) (*NodeENIReconciler, error) {
-	// Get AWS region from environment variable or use default
+	// Get AWS region from environment variable
+	// This should be set in the deployment manifest
 	awsRegion := os.Getenv("AWS_REGION")
 	if awsRegion == "" {
+		// Default to us-east-1 if not specified, but log a warning
 		awsRegion = "us-east-1"
+		fmt.Fprintf(os.Stderr, "WARNING: AWS_REGION environment variable not set, defaulting to %s\n", awsRegion)
 	}
 
 	// Create AWS session
@@ -110,8 +114,8 @@ func (r *NodeENIReconciler) findNodeENIsForNode(obj client.Object) []reconcile.R
 }
 
 // Reconcile handles NodeENI resources
-// +kubebuilder:rbac:groups=networking.johnlam90.github.io,resources=nodeenis,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.johnlam90.github.io,resources=nodeenis/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=networking.k8s.aws,resources=nodeenis,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.aws,resources=nodeenis/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 func (r *NodeENIReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -381,11 +385,14 @@ func (r *NodeENIReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 // getInstanceIDFromProviderID extracts the EC2 instance ID from the provider ID
 func getInstanceIDFromProviderID(providerID string) string {
-	// Provider ID format: aws:///us-east-1a/i-0123456789abcdef0
+	// Provider ID format: aws:///zone/i-0123456789abcdef0
 	// We need to extract the i-0123456789abcdef0 part
-	var instanceID string
-	fmt.Sscanf(providerID, "aws:///us-east-1a/%s", &instanceID)
-	return instanceID
+	parts := strings.Split(providerID, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	// The instance ID should be the last part
+	return parts[len(parts)-1]
 }
 
 // getSubnetIDByName looks up a subnet ID by its Name tag
