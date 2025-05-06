@@ -14,7 +14,32 @@ The AWS Multi-ENI Controller manages multiple Elastic Network Interfaces (ENIs) 
 
 ## Installing the Chart
 
-To install the chart with the release name `my-release`:
+### Option 1: Install from OCI Registry (Recommended)
+
+```bash
+# Install the latest version
+helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 0.1.0
+
+# Or specify a specific version
+helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.1.1
+```
+
+### Option 2: Install from GitHub Release
+
+```bash
+# Get the latest chart version
+CHART_VERSION=$(curl -s https://api.github.com/repos/johnlam90/aws-multi-eni-controller/releases | grep "helm-chart-" | grep "tag_name" | head -n 1 | cut -d'"' -f4 | cut -d'-' -f3)
+
+# Download the chart
+wget https://github.com/johnlam90/aws-multi-eni-controller/releases/download/helm-chart-${CHART_VERSION}/aws-multi-eni-controller-${CHART_VERSION}.tgz
+
+# Install the chart
+helm install my-release ./aws-multi-eni-controller-${CHART_VERSION}.tgz
+```
+
+### Option 3: Install from Local Directory
+
+If you've cloned the repository:
 
 ```bash
 helm install my-release ./charts/aws-multi-eni-controller

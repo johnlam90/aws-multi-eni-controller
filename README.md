@@ -133,7 +133,45 @@ For EKS clusters, you can use IAM roles for service accounts (IRSA):
 
 ### Helm Installation (Recommended)
 
-The easiest way to deploy the AWS Multi-ENI Controller is using Helm:
+The easiest way to deploy the AWS Multi-ENI Controller is using Helm. You have two options for installing the chart:
+
+#### Option 1: Install from OCI Registry (Recommended)
+
+Helm charts are published to GitHub Container Registry (GHCR) as OCI artifacts:
+
+1. Install directly from the OCI registry:
+
+   ```bash
+   # Install the latest version
+   helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 0.1.0
+
+   # Or specify a specific version
+   helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.1.1
+   ```
+
+2. Customize the installation with values:
+
+   ```bash
+   # Create a values.yaml file
+   cat > values.yaml <<EOF
+   awsRegion: us-east-1
+   nodeSelector:
+     ng: multi-eni
+   EOF
+
+   # Install with custom values
+   helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 0.1.0 -f values.yaml
+   ```
+
+3. Upgrade an existing installation:
+
+   ```bash
+   helm upgrade my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 0.1.0 -f values.yaml
+   ```
+
+#### Option 2: Install from GitHub Release
+
+Alternatively, you can download the chart from GitHub releases:
 
 1. Download the Helm chart from the latest release:
 
@@ -154,21 +192,8 @@ The easiest way to deploy the AWS Multi-ENI Controller is using Helm:
 3. Customize the installation with values:
 
    ```bash
-   # Create a values.yaml file
-   cat > values.yaml <<EOF
-   awsRegion: us-east-1
-   nodeSelector:
-     ng: multi-eni
-   EOF
-
    # Install with custom values
    helm install my-release ./aws-multi-eni-controller-${CHART_VERSION}.tgz -f values.yaml
-   ```
-
-4. Upgrade an existing installation:
-
-   ```bash
-   helm upgrade my-release ./aws-multi-eni-controller-${CHART_VERSION}.tgz -f values.yaml
    ```
 
 For more information about the Helm chart and its configuration options, see the [Helm Chart README](charts/aws-multi-eni-controller/README.md).
