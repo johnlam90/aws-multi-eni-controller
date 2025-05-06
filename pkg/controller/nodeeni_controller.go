@@ -559,21 +559,39 @@ func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1
 	}
 
 	// Determine the security group IDs to use
-	securityGroupIDs := nodeENI.Spec.SecurityGroupIDs
-	if len(securityGroupIDs) == 0 && len(nodeENI.Spec.SecurityGroupNames) > 0 {
-		// Look up security group IDs by name
+	var securityGroupIDs []string
+
+	// First, use any explicitly provided security group IDs
+	if len(nodeENI.Spec.SecurityGroupIDs) > 0 {
+		securityGroupIDs = append(securityGroupIDs, nodeENI.Spec.SecurityGroupIDs...)
+	}
+
+	// Then, look up any security group names and add those IDs
+	if len(nodeENI.Spec.SecurityGroupNames) > 0 {
 		for _, sgName := range nodeENI.Spec.SecurityGroupNames {
 			sgID, err := r.getSecurityGroupIDByName(ctx, sgName)
 			if err != nil {
 				return "", fmt.Errorf("failed to get security group ID from name %s: %v", sgName, err)
 			}
 			r.Log.Info("Resolved security group name to ID", "securityGroupName", sgName, "securityGroupID", sgID)
-			securityGroupIDs = append(securityGroupIDs, sgID)
+
+			// Check if this ID is already in the list (to avoid duplicates)
+			isDuplicate := false
+			for _, existingID := range securityGroupIDs {
+				if existingID == sgID {
+					isDuplicate = true
+					break
+				}
+			}
+
+			if !isDuplicate {
+				securityGroupIDs = append(securityGroupIDs, sgID)
+			}
 		}
 	}
 
 	if len(securityGroupIDs) == 0 {
-		return "", fmt.Errorf("neither securityGroupIDs nor securityGroupNames provided")
+		return "", fmt.Errorf("neither securityGroupIDs nor securityGroupNames provided, or all lookups failed")
 	}
 
 	input := &ec2.CreateNetworkInterfaceInput{
