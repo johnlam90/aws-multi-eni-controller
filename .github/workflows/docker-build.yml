@@ -5,8 +5,13 @@ on:
     branches: [ main ]
     # Optionally trigger on tags for releases
     tags: [ 'v*' ]
-  # Allow manual triggering
+  # Allow manual triggering with version input
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 env:
   REGISTRY: ghcr.io
@@ -16,7 +21,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write  # Needed for creating releases
       packages: write
       # Add additional permissions for package management
       actions: read
@@ -68,6 +73,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ github.event.inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -92,3 +98,13 @@ jobs:
           echo "::warning::2. Click on Package settings (⚙️ icon) at the bottom of the page"
           echo "::warning::3. Under 'Danger Zone', click 'Change visibility'"
           echo "::warning::4. Select 'Public' and confirm"
+
+      - name: Create GitHub Release
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ github.event.inputs.version }}
+          tag_name: ${{ github.event.inputs.version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
