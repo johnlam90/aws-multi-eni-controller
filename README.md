@@ -48,23 +48,7 @@ You can find all available tags at [GitHub Container Registry](https://github.co
 
 #### Making the Container Image Public
 
-The GitHub Actions workflow is configured to automatically make the container image public. To enable this functionality:
-
-1. Create a Personal Access Token (PAT) with `packages:write` permission:
-   - Go to GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)
-   - Generate a new token with the `packages:write` scope
-   - Copy the token
-
-2. Add the token as a repository secret:
-   - Go to your repository → Settings → Secrets and variables → Actions
-   - Create a new repository secret named `PACKAGE_PAT`
-   - Paste the token as the value
-
-The workflow will use this token to set the package visibility to public after it's pushed.
-
-#### Manual Method (If Automatic Method Fails)
-
-If the automatic method fails to make the package public, you can do it manually:
+After the GitHub Actions workflow builds and pushes your container image, you'll need to manually make it public:
 
 1. Go to your GitHub repository
 2. Click on "Packages" in the right sidebar
@@ -72,6 +56,12 @@ If the automatic method fails to make the package public, you can do it manually
 4. Click on "Package settings" (gear icon)
 5. Under "Danger Zone", find "Change visibility"
 6. Select "Public" and confirm the change
+
+Once you've made the package public, anyone can pull it without authentication:
+
+```bash
+docker pull ghcr.io/johnlam90/aws-multi-eni-controller:latest
+```
 
 ### Required AWS Permissions
 
