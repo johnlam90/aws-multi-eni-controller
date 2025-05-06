@@ -90,27 +90,55 @@ jobs:
       - name: Set package visibility to public
         if: env.PACKAGE_PUBLIC == 'true' && github.event_name != 'pull_request'
         run: |
+          # Install GitHub CLI
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt update
+          sudo apt install gh
+
           # Extract the package name from the image name
-          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           REPO_NAME=$(echo "${{ github.repository }}" | cut -d '/' -f 2 | tr '[:upper:]' '[:lower:]')
           echo "Setting package $REPO_NAME visibility to public"
 
-          # Use the GitHub API to set the package visibility to public
-          # Note: This requires a PAT with packages:write permission
-          curl -X PATCH \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: token ${{ secrets.PACKAGE_PAT }}" \
-            -d '{"visibility":"public"}' \
-            "https://api.github.com/orgs/$REPO_OWNER/packages/container/$REPO_NAME"
+          # Authenticate with GitHub CLI using the PAT
+          echo "${{ secrets.PACKAGE_PAT }}" | gh auth login --with-token
 
-          # If the above fails (for user accounts), try the user endpoint
-          if [ $? -ne 0 ]; then
-            echo "Trying user endpoint instead of org endpoint"
-            curl -X PATCH \
-              -H "Accept: application/vnd.github.v3+json" \
-              -H "Authorization: token ${{ secrets.PACKAGE_PAT }}" \
-              -d '{"visibility":"public"}' \
-              "https://api.github.com/user/packages/container/$REPO_NAME"
+          # Check if the package already exists and is public
+          echo "Checking if package is already public..."
+          if gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /user/packages/container/$REPO_NAME 2>/dev/null | grep -q '"visibility":"public"'; then
+            echo "Package is already public, no need to change visibility"
+            exit 0
           fi
 
-          echo "Package visibility set to public"
+          # Set the package visibility to public (try user endpoint first)
+          echo "Trying user endpoint..."
+          if gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /user/packages/container/$REPO_NAME \
+            -f visibility=public; then
+            echo "Successfully set package visibility to public via user endpoint"
+          else
+            # If user endpoint fails, try organization endpoint
+            echo "User endpoint failed, trying organization endpoint..."
+            REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+            if gh api \
+              --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              /orgs/$REPO_OWNER/packages/container/$REPO_NAME \
+              -f visibility=public; then
+              echo "Successfully set package visibility to public via organization endpoint"
+            else
+              echo "Failed to set package visibility to public via API"
+              echo "::warning::Could not automatically set package visibility to public. Please do it manually:"
+              echo "::warning::1. Go to https://github.com/${{ github.repository }}/pkgs/container/$REPO_NAME"
+              echo "::warning::2. Click on Package settings"
+              echo "::warning::3. Under 'Danger Zone', click 'Change visibility'"
+              echo "::warning::4. Select 'Public' and confirm"
+            fi
+          fi
