@@ -1,0 +1,142 @@
+# AWS Multi-ENI Controller Helm Chart
+
+This Helm chart deploys the AWS Multi-ENI Controller to your Kubernetes cluster.
+
+## Introduction
+
+The AWS Multi-ENI Controller manages multiple Elastic Network Interfaces (ENIs) for AWS nodes in Kubernetes. It allows you to attach additional ENIs to your nodes based on node selectors.
+
+## Prerequisites
+
+- Kubernetes 1.16+
+- Helm 3.0+
+- AWS credentials with permissions to manage ENIs
+
+## Installing the Chart
+
+To install the chart with the release name `my-release`:
+
+```bash
+helm install my-release ./charts/aws-multi-eni-controller
+```
+
+## Configuration
+
+The following table lists the configurable parameters of the AWS Multi-ENI Controller chart and their default values.
+
+| Parameter | Description | Default |
+| --------- | ----------- | ------- |
+| `image.repository` | Image repository | `ghcr.io/johnlam90/aws-multi-eni-controller` |
+| `image.tag` | Image tag | `v1.1.1` |
+| `image.pullPolicy` | Image pull policy | `IfNotPresent` |
+| `namespace` | Namespace to deploy the controller | `eni-controller-system` |
+| `awsRegion` | AWS Region | `us-east-1` |
+| `resources.controller.limits.cpu` | CPU limits for the controller | `500m` |
+| `resources.controller.limits.memory` | Memory limits for the controller | `512Mi` |
+| `resources.controller.requests.cpu` | CPU requests for the controller | `100m` |
+| `resources.controller.requests.memory` | Memory requests for the controller | `128Mi` |
+| `resources.manager.limits.cpu` | CPU limits for the manager | `500m` |
+| `resources.manager.limits.memory` | Memory limits for the manager | `512Mi` |
+| `resources.manager.requests.cpu` | CPU requests for the manager | `100m` |
+| `resources.manager.requests.memory` | Memory requests for the manager | `128Mi` |
+| `nodeSelector` | Node selector for the ENI manager daemonset | `{}` |
+| `securityContext.runAsNonRoot` | Run as non-root | `true` |
+| `securityContext.runAsUser` | User ID to run as | `1000` |
+| `securityContext.fsGroup` | Group ID for filesystem | `2000` |
+| `serviceAccount.create` | Create service account | `true` |
+| `serviceAccount.name` | Service account name | `eni-controller` |
+| `serviceAccount.annotations` | Service account annotations | `{}` |
+| `rbac.create` | Create RBAC resources | `true` |
+| `podAnnotations` | Pod annotations | `{}` |
+| `podLabels` | Pod labels | `{}` |
+| `tolerations` | Tolerations for the ENI manager daemonset | `[]` |
+| `affinity` | Affinity for the controller deployment | `{}` |
+| `metrics.enabled` | Enable metrics server | `false` |
+| `metrics.port` | Metrics port | `8080` |
+| `metrics.service.type` | Metrics service type | `ClusterIP` |
+| `metrics.service.port` | Metrics service port | `8080` |
+| `logLevel` | Log level | `info` |
+
+## Example: Installing with Custom Values
+
+Create a `values.yaml` file:
+
+```yaml
+namespace: custom-namespace
+awsRegion: us-west-2
+nodeSelector:
+  role: worker
+  ng: multi-eni
+```
+
+Then install the chart:
+
+```bash
+helm install my-release ./charts/aws-multi-eni-controller -f values.yaml
+```
+
+## Creating a NodeENI Resource
+
+After installing the chart, you can create a NodeENI resource:
+
+```yaml
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: example-eni
+spec:
+  nodeSelector:
+    ng: multi-eni
+  subnetID: subnet-xxxxxxxx
+  securityGroupIDs:
+  - sg-xxxxxxxx
+  deviceIndex: 2
+  deleteOnTermination: true
+  description: "Example ENI"
+```
+
+Apply it with:
+
+```bash
+kubectl apply -f your-file.yaml
+```
+
+## Using Security Group Names
+
+You can use security group names instead of IDs:
+
+```yaml
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: example-eni
+spec:
+  nodeSelector:
+    ng: multi-eni
+  subnetID: subnet-xxxxxxxx
+  securityGroupNames:
+  - your-security-group-name
+  deviceIndex: 2
+  deleteOnTermination: true
+  description: "Example ENI"
+```
+
+## Using Subnet Names
+
+You can use subnet names instead of IDs:
+
+```yaml
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: example-eni
+spec:
+  nodeSelector:
+    ng: multi-eni
+  subnetName: your-subnet-name
+  securityGroupIDs:
+  - sg-xxxxxxxx
+  deviceIndex: 2
+  deleteOnTermination: true
+  description: "Example ENI"
+```

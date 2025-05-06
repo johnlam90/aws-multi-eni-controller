@@ -1,0 +1,23 @@
+apiVersion: v2
+name: aws-multi-eni-controller
+description: A Helm chart for AWS Multi-ENI Controller
+type: application
+version: 0.1.0
+appVersion: "v1.1.1"
+home: https://github.com/johnlam90/aws-multi-eni-controller
+sources:
+  - https://github.com/johnlam90/aws-multi-eni-controller
+maintainers:
+  - name: John Lam
+    email: johnlam90@gmail.com
+keywords:
+  - aws
+  - eni
+  - kubernetes
+  - networking
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/changes: |
+    - Add support for security group names in NodeENI resources
+    - Fix security group name handling in NodeENI controller
+    - Add proper tag format for node.k8s.amazonaws.com/no_manage

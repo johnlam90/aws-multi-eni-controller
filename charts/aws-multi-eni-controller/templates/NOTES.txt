@@ -1,0 +1,39 @@
+Thank you for installing {{ .Chart.Name }}.
+
+Your release is named {{ .Release.Name }}.
+
+The AWS Multi-ENI Controller has been deployed to your cluster.
+
+To verify that the controller is running, execute:
+
+  kubectl get pods -n {{ .Values.namespace }}
+
+To create a NodeENI resource, create a YAML file with the following content:
+
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: example-eni
+spec:
+  nodeSelector:
+    ng: multi-eni  # Replace with your node selector
+  subnetID: subnet-xxxxxxxx  # Replace with your subnet ID
+  # OR use subnetName: your-subnet-name
+  securityGroupIDs:
+  - sg-xxxxxxxx  # Replace with your security group ID
+  # OR use securityGroupNames:
+  # - your-security-group-name
+  deviceIndex: 2
+  deleteOnTermination: true
+  description: "Example ENI"
+
+Then apply it with:
+
+  kubectl apply -f your-file.yaml
+
+To check the status of your NodeENI resource:
+
+  kubectl get nodeeni
+
+For more information, visit:
+https://github.com/johnlam90/aws-multi-eni-controller

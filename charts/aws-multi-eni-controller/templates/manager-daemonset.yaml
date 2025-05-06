@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: eni-manager
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: aws-multi-eni-controller
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app: eni-manager
+spec:
+  selector:
+    matchLabels:
+      app: eni-manager
+  template:
+    metadata:
+      labels:
+        app: eni-manager
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+      - name: eni-manager
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+        - name: COMPONENT
+          value: "eni-manager"
+        - name: AWS_REGION
+          value: "{{ .Values.awsRegion }}"
+        - name: LOG_LEVEL
+          value: "{{ .Values.logLevel }}"
+        {{- if .Values.metrics.enabled }}
+        - name: METRICS_PORT
+          value: "{{ .Values.metrics.port }}"
+        {{- end }}
+        resources:
+          {{- toYaml .Values.resources.manager | nindent 10 }}
+        {{- if .Values.metrics.enabled }}
+        ports:
+        - name: metrics
+          containerPort: {{ .Values.metrics.port }}
+          protocol: TCP
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

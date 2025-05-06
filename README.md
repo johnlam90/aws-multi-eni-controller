@@ -31,6 +31,7 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 - AWS CLI configured with appropriate permissions
 - kubectl installed and configured
 - Go 1.19 or later (for development)
+- Helm 3.0+ (for Helm installation method)
 
 ### Pre-built Container Images
 
@@ -129,6 +130,45 @@ For EKS clusters, you can use IAM roles for service accounts (IRSA):
    - Either use the pre-built GitHub Container Registry image or build your own
    - Apply the CRDs to the cluster
    - Deploy the controller and ENI manager to the cluster
+
+### Helm Installation (Recommended)
+
+The easiest way to deploy the AWS Multi-ENI Controller is using Helm:
+
+1. Add the Helm repository:
+
+   ```bash
+   helm repo add aws-multi-eni-controller https://johnlam90.github.io/aws-multi-eni-controller/
+   helm repo update
+   ```
+
+2. Install the chart:
+
+   ```bash
+   helm install my-release aws-multi-eni-controller/aws-multi-eni-controller
+   ```
+
+3. Customize the installation with values:
+
+   ```bash
+   # Create a values.yaml file
+   cat > values.yaml <<EOF
+   awsRegion: us-east-1
+   nodeSelector:
+     ng: multi-eni
+   EOF
+
+   # Install with custom values
+   helm install my-release aws-multi-eni-controller/aws-multi-eni-controller -f values.yaml
+   ```
+
+4. Upgrade an existing installation:
+
+   ```bash
+   helm upgrade my-release aws-multi-eni-controller/aws-multi-eni-controller -f values.yaml
+   ```
+
+For more information about the Helm chart and its configuration options, see the [Helm Chart README](charts/aws-multi-eni-controller/README.md).
 
 ### Manual Deployment Steps
 
