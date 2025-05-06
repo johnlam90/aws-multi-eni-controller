@@ -1,4 +1,7 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.22-alpine AS builder
+
+# Set build arguments
+ARG GOTOOLCHAIN=auto
 
 WORKDIR /workspace
 
@@ -8,17 +11,18 @@ COPY go.sum go.sum
 
 # Cache dependencies
 # Remove any toolchain directive for compatibility with older Go versions
-RUN sed -i '/^toolchain/d' go.mod && go mod download
+# Use the GOTOOLCHAIN build argument
+RUN sed -i '/^toolchain/d' go.mod && GOTOOLCHAIN=${GOTOOLCHAIN} go mod download
 
 # Copy the source code
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 
 # Build the ENI Controller
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=${GOTOOLCHAIN} go build -a -o manager cmd/main.go
 
 # Build the ENI Manager
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o eni-manager cmd/eni-manager/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=${GOTOOLCHAIN} go build -a -o eni-manager cmd/eni-manager/main.go
 
 # Use a minimal base image for the final image
 FROM alpine:3.19

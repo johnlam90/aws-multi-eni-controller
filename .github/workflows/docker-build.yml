@@ -25,6 +25,8 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        env:
+          GOTOOLCHAIN: auto
 
       - name: Check Go version in Dockerfile and go.mod
         run: |
@@ -65,11 +67,14 @@ jobs:
         uses: docker/build-push-action@v5
         env:
           DOCKER_BUILDKIT: 1
+          GOTOOLCHAIN: auto
         with:
           context: .
           file: ./Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GOTOOLCHAIN=auto
           cache-from: type=gha
           cache-to: type=gha,mode=max
