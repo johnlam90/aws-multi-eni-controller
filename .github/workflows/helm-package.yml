@@ -91,7 +91,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GH_TOKEN || github.token }}
 
       # Push Helm chart to GHCR as OCI artifact
       - name: Push Helm chart to GHCR
@@ -116,7 +116,7 @@ jobs:
       - name: Create GitHub Release for Helm Chart
         id: create_release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
         run: |
           # Find the chart file
           CHART_FILE=$(find .helm-charts -name "*.tgz" | head -n 1)
