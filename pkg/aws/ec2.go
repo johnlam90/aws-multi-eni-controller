@@ -76,7 +76,7 @@ func (c *EC2Client) AttachENI(ctx context.Context, eniID, instanceID string, dev
 	log.Info("Attaching ENI to instance")
 
 	input := &ec2.AttachNetworkInterfaceInput{
-		DeviceIndex:        int32(deviceIndex),
+		DeviceIndex:        aws.Int32(int32(deviceIndex)),
 		InstanceId:         aws.String(instanceID),
 		NetworkInterfaceId: aws.String(eniID),
 	}
@@ -174,7 +174,7 @@ func (c *EC2Client) DescribeENI(ctx context.Context, eniID string) (*EC2v2Networ
 		eni.Attachment = &EC2v2NetworkInterfaceAttachment{
 			AttachmentID:        *result.NetworkInterfaces[0].Attachment.AttachmentId,
 			DeleteOnTermination: *result.NetworkInterfaces[0].Attachment.DeleteOnTermination,
-			DeviceIndex:         result.NetworkInterfaces[0].Attachment.DeviceIndex,
+			DeviceIndex:         *result.NetworkInterfaces[0].Attachment.DeviceIndex,
 			InstanceID:          *result.NetworkInterfaces[0].Attachment.InstanceId,
 			Status:              string(result.NetworkInterfaces[0].Attachment.Status),
 		}
@@ -284,11 +284,10 @@ func (c *EC2Client) WaitForENIDetachment(ctx context.Context, eniID string, time
 		return nil
 	}
 
-	// No need for type assertion anymore as we're returning the concrete type directly
-
-	if eni.Attachment != nil && eni.Status != EC2v2NetworkInterfaceStatusAvailable {
-		log.Info("ENI is still attached", "status", eni.Status)
-		return fmt.Errorf("ENI is still attached after timeout: %s", eni.Status)
+	// Use the eniInterface variable directly
+	if eniInterface.Attachment != nil && eniInterface.Status != EC2v2NetworkInterfaceStatusAvailable {
+		log.Info("ENI is still attached", "status", eniInterface.Status)
+		return fmt.Errorf("ENI is still attached after timeout: %s", eniInterface.Status)
 	}
 
 	log.Info("ENI is now detached")
