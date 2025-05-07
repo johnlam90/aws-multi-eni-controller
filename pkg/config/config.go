@@ -1,3 +1,10 @@
+// Package config provides configuration management for the AWS Multi-ENI Controller
+// and ENI Manager components.
+//
+// This package handles loading configuration from environment variables and command-line
+// flags, providing sensible defaults when values are not explicitly provided. It supports
+// configuration for both the controller (which runs in Kubernetes) and the ENI manager
+// (which runs on each node).
 package config
 
 import (

@@ -1,3 +1,8 @@
+// Package aws provides utilities for interacting with AWS services,
+// particularly EC2 for managing Elastic Network Interfaces (ENIs).
+//
+// This package uses AWS SDK v2 for all AWS interactions, providing improved
+// performance, better error handling, and more modern API design compared to v1.
 package aws
 
 import (
@@ -12,9 +17,13 @@ import (
 	"github.com/go-logr/logr"
 )
 
-// EC2Client wraps the AWS EC2 client with additional functionality using SDK v2
+// EC2Client wraps the AWS EC2 client with additional functionality using SDK v2.
+// It provides methods for creating, attaching, detaching, and deleting ENIs,
+// as well as looking up subnet and security group IDs by name.
 type EC2Client struct {
-	EC2    *ec2.Client
+	// EC2 is the underlying AWS SDK v2 EC2 client
+	EC2 *ec2.Client
+	// Logger is used for structured logging
 	Logger logr.Logger
 }
 

@@ -136,7 +136,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-contexts: |
-            golang:1.22-alpine=docker-image://golang:1.22-alpine
+            golang:1.23-alpine=docker-image://golang:1.23-alpine
 
       - name: Display image information
         run: |

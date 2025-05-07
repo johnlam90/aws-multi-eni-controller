@@ -1,3 +1,7 @@
+// Package util provides utility functions used throughout the AWS Multi-ENI Controller.
+//
+// This package contains helper functions for common operations such as string manipulation,
+// AWS resource identification, and other utility functions that don't fit elsewhere.
 package util
 
 import (
@@ -39,16 +43,16 @@ func RemoveString(slice []string, s string) []string {
 // MergeMaps merges two maps, with values from the second map taking precedence
 func MergeMaps(m1, m2 map[string]string) map[string]string {
 	result := make(map[string]string)
-	
+
 	// Copy all keys from m1
 	for k, v := range m1 {
 		result[k] = v
 	}
-	
+
 	// Copy all keys from m2, overwriting any from m1
 	for k, v := range m2 {
 		result[k] = v
 	}
-	
+
 	return result
 }

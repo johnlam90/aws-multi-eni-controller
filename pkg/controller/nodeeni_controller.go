@@ -1,3 +1,10 @@
+// Package controller implements the Kubernetes controller for managing
+// AWS Elastic Network Interfaces (ENIs) for nodes.
+//
+// The NodeENI controller watches NodeENI custom resources and automatically
+// creates, attaches, and manages ENIs for nodes that match the specified selectors.
+// It supports multiple subnets and security groups, and handles the lifecycle
+// of ENIs including creation, attachment, detachment, and deletion.
 package controller
 
 import (

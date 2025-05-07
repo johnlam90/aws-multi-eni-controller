@@ -1,4 +1,5 @@
 # IDE and editor files
+.history/
 .history
 .idea/
 .vscode/

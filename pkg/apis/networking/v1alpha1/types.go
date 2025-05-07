@@ -1,3 +1,9 @@
+// Package v1alpha1 contains API Schema definitions for the networking v1alpha1 API group.
+//
+// This package defines the NodeENI custom resource, which is used to specify which nodes
+// should have AWS Elastic Network Interfaces (ENIs) attached, and with what configuration.
+// The NodeENI controller watches these resources and automatically manages the lifecycle
+// of ENIs for matching nodes.
 package v1alpha1
 
 import (

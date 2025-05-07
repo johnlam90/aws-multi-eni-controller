@@ -1,3 +1,11 @@
+// Package main implements the AWS Multi-ENI Manager, which is responsible for
+// bringing up secondary network interfaces on AWS EC2 instances.
+//
+// The ENI Manager runs as a daemon on each node and periodically checks for
+// network interfaces that are in the DOWN state. When it finds such interfaces,
+// it attempts to bring them up using either the netlink library or the 'ip' command
+// as a fallback. This ensures that secondary ENIs attached by the controller are
+// properly configured and ready for use.
 package main
 
 import (

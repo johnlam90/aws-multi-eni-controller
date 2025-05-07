@@ -1,3 +1,9 @@
+// Package main implements the AWS Multi-ENI Controller, which manages the lifecycle
+// of AWS Elastic Network Interfaces (ENIs) for Kubernetes nodes.
+//
+// The controller watches NodeENI custom resources and automatically creates, attaches,
+// and manages ENIs for nodes that match the specified selectors. It supports multiple
+// subnets and security groups, and can be configured through environment variables.
 package main
 
 import (
@@ -8,7 +14,7 @@ import (
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/controller"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp" // Enable GCP authentication
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
