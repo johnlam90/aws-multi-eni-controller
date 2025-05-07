@@ -3,15 +3,13 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/go-logr/logr"
 	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
+	awsutil "github.com/johnlam90/aws-multi-eni-controller/pkg/aws"
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,34 +38,42 @@ type NodeENIReconciler struct {
 	Log      logr.Logger
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
-	EC2      *ec2.EC2
+	AWS      awsutil.EC2Interface
+	Config   *config.ControllerConfig
 }
 
 // NewNodeENIReconciler creates a new NodeENI controller
 func NewNodeENIReconciler(mgr manager.Manager) (*NodeENIReconciler, error) {
-	// Get AWS region from environment variable
-	// This should be set in the deployment manifest
-	awsRegion := os.Getenv("AWS_REGION")
-	if awsRegion == "" {
-		// Default to us-east-1 if not specified, but log a warning
-		awsRegion = "us-east-1"
-		fmt.Fprintf(os.Stderr, "WARNING: AWS_REGION environment variable not set, defaulting to %s\n", awsRegion)
+	// Load configuration from environment variables
+	cfg, err := config.LoadControllerConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load controller configuration: %v", err)
 	}
 
-	// Create AWS session
-	sess, err := session.NewSession(&aws.Config{
-		Region: aws.String(awsRegion),
-	})
+	// Create logger
+	log := ctrl.Log.WithName("controllers").WithName("NodeENI")
+
+	// Log configuration
+	log.Info("Controller configuration loaded",
+		"awsRegion", cfg.AWSRegion,
+		"reconcilePeriod", cfg.ReconcilePeriod,
+		"detachmentTimeout", cfg.DetachmentTimeout,
+		"maxConcurrentReconciles", cfg.MaxConcurrentReconciles)
+
+	// Create AWS EC2 client
+	ctx := context.Background()
+	awsClient, err := awsutil.CreateEC2Client(ctx, cfg.AWSRegion, log)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create AWS session: %v", err)
+		return nil, fmt.Errorf("failed to create AWS EC2 client: %v", err)
 	}
 
 	return &NodeENIReconciler{
 		Client:   mgr.GetClient(),
-		Log:      ctrl.Log.WithName("controllers").WithName("NodeENI"),
+		Log:      log,
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("nodeeni-controller"),
-		EC2:      ec2.New(sess),
+		AWS:      awsClient,
+		Config:   cfg,
 	}, nil
 }
 
@@ -79,7 +85,7 @@ func (r *NodeENIReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&source.Kind{Type: &corev1.Node{}},
 			handler.EnqueueRequestsFromMapFunc(r.findNodeENIsForNode),
 		).
-		WithOptions(controller.Options{MaxConcurrentReconciles: 5}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.Config.MaxConcurrentReconciles}).
 		Complete(r)
 }
 
@@ -121,7 +127,7 @@ func (r *NodeENIReconciler) findNodeENIsForNode(obj client.Object) []reconcile.R
 func (r *NodeENIReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Fetch the NodeENI instance
 	nodeENI := &networkingv1alpha1.NodeENI{}
-	err := r.Get(ctx, req.NamespacedName, nodeENI)
+	err := r.Client.Get(ctx, req.NamespacedName, nodeENI)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Request object not found, could have been deleted
@@ -147,7 +153,7 @@ func (r *NodeENIReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Requeue to periodically check the status
-	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	return ctrl.Result{RequeueAfter: r.Config.ReconcilePeriod}, nil
 }
 
 // handleDeletion handles the deletion of a NodeENI resource
@@ -165,7 +171,7 @@ func (r *NodeENIReconciler) handleDeletion(ctx context.Context, nodeENI *network
 
 		// Remove our finalizer from the list and update it
 		controllerutil.RemoveFinalizer(nodeENI, NodeENIFinalizer)
-		if err := r.Update(ctx, nodeENI); err != nil {
+		if err := r.Client.Update(ctx, nodeENI); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -176,12 +182,12 @@ func (r *NodeENIReconciler) handleDeletion(ctx context.Context, nodeENI *network
 
 // cleanupENIAttachment detaches and deletes an ENI attachment
 func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) {
-	log := r.Log.WithValues("nodeeni", nodeENI.Name)
-	log.Info("Detaching and deleting ENI", "node", attachment.NodeID, "eniID", attachment.ENIID)
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+	log.Info("Detaching and deleting ENI")
 
 	// Detach the ENI if it's attached
 	if attachment.AttachmentID != "" {
-		if err := r.detachENI(ctx, attachment.AttachmentID); err != nil {
+		if err := r.AWS.DetachENI(ctx, attachment.AttachmentID, true); err != nil {
 			log.Error(err, "Failed to detach ENI", "attachmentID", attachment.AttachmentID)
 			r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDetachmentFailed",
 				"Failed to detach ENI %s from node %s: %v", attachment.ENIID, attachment.NodeID, err)
@@ -190,48 +196,44 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 	}
 
 	// Wait for the detachment to complete
-	log.Info("Waiting for ENI detachment to complete", "eniID", attachment.ENIID)
-	time.Sleep(15 * time.Second)
-
-	// Delete the ENI if it exists
 	if attachment.ENIID != "" {
+		// Try to wait for detachment, but continue even if it fails
+		_ = r.AWS.WaitForENIDetachment(ctx, attachment.ENIID, r.Config.DetachmentTimeout)
+
+		// Delete the ENI
 		r.deleteENIIfExists(ctx, nodeENI, attachment)
 	}
 }
 
 // deleteENIIfExists checks if an ENI exists and deletes it if it does
 func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) {
-	log := r.Log.WithValues("nodeeni", nodeENI.Name)
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "eniID", attachment.ENIID)
 
 	// Try to describe the ENI to check its status
-	describeInput := &ec2.DescribeNetworkInterfacesInput{
-		NetworkInterfaceIds: []*string{aws.String(attachment.ENIID)},
-	}
-
-	describeResult, describeErr := r.EC2.DescribeNetworkInterfaces(describeInput)
-	if describeErr != nil {
-		log.Error(describeErr, "Failed to describe ENI", "eniID", attachment.ENIID)
+	eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
+	if err != nil {
+		log.Error(err, "Failed to describe ENI")
 		return
 	}
 
-	if len(describeResult.NetworkInterfaces) == 0 {
-		log.Info("ENI no longer exists", "eniID", attachment.ENIID)
+	if eni == nil {
+		log.Info("ENI no longer exists")
 		return
 	}
 
-	eni := describeResult.NetworkInterfaces[0]
-	if eni.Attachment != nil && *eni.Status != "available" {
-		log.Info("ENI is still attached, waiting longer", "eniID", attachment.ENIID, "status", *eni.Status)
-		time.Sleep(15 * time.Second)
+	// Check if the ENI is still attached
+	if eni.Attachment != nil && eni.Status != awsutil.EC2v2NetworkInterfaceStatusAvailable {
+		log.Info("ENI is still attached, waiting longer", "status", eni.Status)
+		time.Sleep(r.Config.DetachmentTimeout)
 	}
 
 	// Delete the ENI
-	if err := r.deleteENI(ctx, attachment.ENIID); err != nil {
-		log.Error(err, "Failed to delete ENI", "eniID", attachment.ENIID)
+	if err := r.AWS.DeleteENI(ctx, attachment.ENIID); err != nil {
+		log.Error(err, "Failed to delete ENI")
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDeletionFailed",
 			"Failed to delete ENI %s: %v", attachment.ENIID, err)
 	} else {
-		log.Info("Successfully deleted ENI", "eniID", attachment.ENIID)
+		log.Info("Successfully deleted ENI")
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDeleted",
 			"Successfully deleted ENI %s", attachment.ENIID)
 	}
@@ -240,7 +242,7 @@ func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *netw
 // addFinalizer adds a finalizer to a NodeENI resource
 func (r *NodeENIReconciler) addFinalizer(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI) (ctrl.Result, error) {
 	controllerutil.AddFinalizer(nodeENI, NodeENIFinalizer)
-	if err := r.Update(ctx, nodeENI); err != nil {
+	if err := r.Client.Update(ctx, nodeENI); err != nil {
 		return ctrl.Result{}, err
 	}
 	// Return here to avoid processing the rest of the reconciliation
@@ -255,7 +257,7 @@ func (r *NodeENIReconciler) processNodeENI(ctx context.Context, nodeENI *network
 	// List all nodes that match the selector
 	nodeList := &corev1.NodeList{}
 	selector := labels.SelectorFromSet(nodeENI.Spec.NodeSelector)
-	if err := r.List(ctx, nodeList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
+	if err := r.Client.List(ctx, nodeList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		log.Error(err, "Failed to list nodes")
 		return err
 	}
@@ -281,7 +283,7 @@ func (r *NodeENIReconciler) processNodeENI(ctx context.Context, nodeENI *network
 	nodeENI.Status.Attachments = updatedAttachments
 
 	// Update the NodeENI status
-	if err := r.Status().Update(ctx, nodeENI); err != nil {
+	if err := r.Client.Status().Update(ctx, nodeENI); err != nil {
 		log.Error(err, "Failed to update NodeENI status")
 		return err
 	}
@@ -291,16 +293,16 @@ func (r *NodeENIReconciler) processNodeENI(ctx context.Context, nodeENI *network
 
 // processNode processes a single node for a NodeENI resource
 func (r *NodeENIReconciler) processNode(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, node corev1.Node, currentAttachments map[string]bool) error {
-	log := r.Log.WithValues("nodeeni", nodeENI.Name)
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", node.Name)
 
 	// Skip nodes that don't have the provider ID (not ready yet)
 	if node.Spec.ProviderID == "" {
-		log.Info("Node doesn't have provider ID yet, skipping", "node", node.Name)
+		log.Info("Node doesn't have provider ID yet, skipping")
 		return nil
 	}
 
 	// Extract EC2 instance ID from provider ID
-	instanceID := getInstanceIDFromProviderID(node.Spec.ProviderID)
+	instanceID := util.GetInstanceIDFromProviderID(node.Spec.ProviderID)
 	if instanceID == "" {
 		log.Error(nil, "Failed to extract instance ID from provider ID", "providerID", node.Spec.ProviderID)
 		return nil
@@ -386,12 +388,12 @@ func (r *NodeENIReconciler) removeStaleAttachments(ctx context.Context, nodeENI 
 // handleStaleAttachment handles a stale attachment
 // Returns true if the attachment should be kept (cleanup failed), false otherwise
 func (r *NodeENIReconciler) handleStaleAttachment(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
-	log := r.Log.WithValues("nodeeni", nodeENI.Name)
-	log.Info("Detaching and deleting stale ENI", "node", attachment.NodeID, "eniID", attachment.ENIID)
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+	log.Info("Detaching and deleting stale ENI")
 
 	// Detach the ENI if it's attached
 	if attachment.AttachmentID != "" {
-		if err := r.detachENI(ctx, attachment.AttachmentID); err != nil {
+		if err := r.AWS.DetachENI(ctx, attachment.AttachmentID, true); err != nil {
 			log.Error(err, "Failed to detach ENI", "attachmentID", attachment.AttachmentID)
 			r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDetachmentFailed",
 				"Failed to detach ENI %s from node %s: %v", attachment.ENIID, attachment.NodeID, err)
@@ -400,47 +402,43 @@ func (r *NodeENIReconciler) handleStaleAttachment(ctx context.Context, nodeENI *
 	}
 
 	// Wait for the detachment to complete
-	log.Info("Waiting for ENI detachment to complete", "eniID", attachment.ENIID)
-	time.Sleep(15 * time.Second)
+	log.Info("Waiting for ENI detachment to complete")
+	time.Sleep(r.Config.DetachmentTimeout)
 
 	if attachment.ENIID == "" {
 		return false // No ENI ID, nothing to delete
 	}
 
-	// Check if the ENI exists and delete it
-	return r.checkAndDeleteStaleENI(ctx, nodeENI, attachment)
+	// Delete the ENI
+	return r.deleteStaleENI(ctx, nodeENI, attachment)
 }
 
-// checkAndDeleteStaleENI checks if a stale ENI exists and deletes it
+// deleteStaleENI deletes a stale ENI
 // Returns true if the attachment should be kept (cleanup failed), false otherwise
-func (r *NodeENIReconciler) checkAndDeleteStaleENI(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
-	log := r.Log.WithValues("nodeeni", nodeENI.Name)
+func (r *NodeENIReconciler) deleteStaleENI(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "eniID", attachment.ENIID)
 
 	// Try to describe the ENI to check its status
-	describeInput := &ec2.DescribeNetworkInterfacesInput{
-		NetworkInterfaceIds: []*string{aws.String(attachment.ENIID)},
-	}
-
-	describeResult, describeErr := r.EC2.DescribeNetworkInterfaces(describeInput)
-	if describeErr != nil {
-		log.Error(describeErr, "Failed to describe ENI", "eniID", attachment.ENIID)
+	eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
+	if err != nil {
+		log.Error(err, "Failed to describe ENI")
 		return true // Keep the attachment
 	}
 
-	if len(describeResult.NetworkInterfaces) == 0 {
-		log.Info("ENI no longer exists", "eniID", attachment.ENIID)
+	if eni == nil {
+		log.Info("ENI no longer exists")
 		return false // ENI doesn't exist, don't keep the attachment
 	}
 
-	eni := describeResult.NetworkInterfaces[0]
-	if eni.Attachment != nil && *eni.Status != "available" {
-		log.Info("ENI is still attached, waiting longer", "eniID", attachment.ENIID, "status", *eni.Status)
-		time.Sleep(15 * time.Second)
+	// Check if the ENI is still attached
+	if eni.Attachment != nil && eni.Status != awsutil.EC2v2NetworkInterfaceStatusAvailable {
+		log.Info("ENI is still attached, waiting longer", "status", eni.Status)
+		time.Sleep(r.Config.DetachmentTimeout)
 	}
 
 	// Delete the ENI
-	if err := r.deleteENI(ctx, attachment.ENIID); err != nil {
-		log.Error(err, "Failed to delete ENI", "eniID", attachment.ENIID)
+	if err := r.AWS.DeleteENI(ctx, attachment.ENIID); err != nil {
+		log.Error(err, "Failed to delete ENI")
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDeletionFailed",
 			"Failed to delete ENI %s: %v", attachment.ENIID, err)
 		return true // Keep the attachment
@@ -451,92 +449,10 @@ func (r *NodeENIReconciler) checkAndDeleteStaleENI(ctx context.Context, nodeENI 
 
 // Helper functions for AWS operations
 
-// getInstanceIDFromProviderID extracts the EC2 instance ID from the provider ID
-func getInstanceIDFromProviderID(providerID string) string {
-	// Provider ID format: aws:///zone/i-0123456789abcdef0
-	// We need to extract the i-0123456789abcdef0 part
-	parts := strings.Split(providerID, "/")
-	if len(parts) < 2 {
-		return ""
-	}
-	// The instance ID should be the last part
-	return parts[len(parts)-1]
-}
-
-// getSubnetIDByName looks up a subnet ID by its Name tag
-func (r *NodeENIReconciler) getSubnetIDByName(ctx context.Context, subnetName string) (string, error) {
-	input := &ec2.DescribeSubnetsInput{
-		Filters: []*ec2.Filter{
-			{
-				Name:   aws.String("tag:Name"),
-				Values: []*string{aws.String(subnetName)},
-			},
-		},
-	}
-
-	result, err := r.EC2.DescribeSubnets(input)
-	if err != nil {
-		return "", fmt.Errorf("failed to describe subnets: %v", err)
-	}
-
-	if len(result.Subnets) == 0 {
-		return "", fmt.Errorf("no subnet found with name: %s", subnetName)
-	}
-
-	if len(result.Subnets) > 1 {
-		r.Log.Info("Multiple subnets found with the same name, using the first one", "subnetName", subnetName)
-	}
-
-	return *result.Subnets[0].SubnetId, nil
-}
-
-// getSecurityGroupIDByName looks up a security group ID by its Name or GroupName
-func (r *NodeENIReconciler) getSecurityGroupIDByName(ctx context.Context, securityGroupName string) (string, error) {
-	input := &ec2.DescribeSecurityGroupsInput{
-		Filters: []*ec2.Filter{
-			{
-				Name:   aws.String("group-name"),
-				Values: []*string{aws.String(securityGroupName)},
-			},
-		},
-	}
-
-	// Try with group-name first
-	result, err := r.EC2.DescribeSecurityGroups(input)
-	if err != nil {
-		return "", fmt.Errorf("failed to describe security groups: %v", err)
-	}
-
-	// If not found, try with the Name tag
-	if len(result.SecurityGroups) == 0 {
-		input = &ec2.DescribeSecurityGroupsInput{
-			Filters: []*ec2.Filter{
-				{
-					Name:   aws.String("tag:Name"),
-					Values: []*string{aws.String(securityGroupName)},
-				},
-			},
-		}
-
-		result, err = r.EC2.DescribeSecurityGroups(input)
-		if err != nil {
-			return "", fmt.Errorf("failed to describe security groups by Name tag: %v", err)
-		}
-
-		if len(result.SecurityGroups) == 0 {
-			return "", fmt.Errorf("no security group found with name or Name tag: %s", securityGroupName)
-		}
-	}
-
-	if len(result.SecurityGroups) > 1 {
-		r.Log.Info("Multiple security groups found with the same name, using the first one", "securityGroupName", securityGroupName)
-	}
-
-	return *result.SecurityGroups[0].GroupId, nil
-}
-
 // createENI creates a new ENI in AWS
 func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, node corev1.Node) (string, error) {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", node.Name)
+
 	description := nodeENI.Spec.Description
 	if description == "" {
 		description = fmt.Sprintf("ENI created by nodeeni-controller for node %s", node.Name)
@@ -547,11 +463,11 @@ func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1
 	if subnetID == "" && nodeENI.Spec.SubnetName != "" {
 		// Look up subnet ID by name
 		var err error
-		subnetID, err = r.getSubnetIDByName(ctx, nodeENI.Spec.SubnetName)
+		subnetID, err = r.AWS.GetSubnetIDByName(ctx, nodeENI.Spec.SubnetName)
 		if err != nil {
 			return "", fmt.Errorf("failed to get subnet ID from name %s: %v", nodeENI.Spec.SubnetName, err)
 		}
-		r.Log.Info("Resolved subnet name to ID", "subnetName", nodeENI.Spec.SubnetName, "subnetID", subnetID)
+		log.Info("Resolved subnet name to ID", "subnetName", nodeENI.Spec.SubnetName, "subnetID", subnetID)
 	}
 
 	if subnetID == "" {
@@ -569,22 +485,14 @@ func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1
 	// Then, look up any security group names and add those IDs
 	if len(nodeENI.Spec.SecurityGroupNames) > 0 {
 		for _, sgName := range nodeENI.Spec.SecurityGroupNames {
-			sgID, err := r.getSecurityGroupIDByName(ctx, sgName)
+			sgID, err := r.AWS.GetSecurityGroupIDByName(ctx, sgName)
 			if err != nil {
 				return "", fmt.Errorf("failed to get security group ID from name %s: %v", sgName, err)
 			}
-			r.Log.Info("Resolved security group name to ID", "securityGroupName", sgName, "securityGroupID", sgID)
+			log.Info("Resolved security group name to ID", "securityGroupName", sgName, "securityGroupID", sgID)
 
 			// Check if this ID is already in the list (to avoid duplicates)
-			isDuplicate := false
-			for _, existingID := range securityGroupIDs {
-				if existingID == sgID {
-					isDuplicate = true
-					break
-				}
-			}
-
-			if !isDuplicate {
+			if !util.ContainsString(securityGroupIDs, sgID) {
 				securityGroupIDs = append(securityGroupIDs, sgID)
 			}
 		}
@@ -594,92 +502,36 @@ func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1
 		return "", fmt.Errorf("neither securityGroupIDs nor securityGroupNames provided, or all lookups failed")
 	}
 
-	input := &ec2.CreateNetworkInterfaceInput{
-		Description: aws.String(description),
-		SubnetId:    aws.String(subnetID),
-		Groups:      aws.StringSlice(securityGroupIDs),
-		TagSpecifications: []*ec2.TagSpecification{
-			{
-				ResourceType: aws.String("network-interface"),
-				Tags: []*ec2.Tag{
-					{
-						Key:   aws.String("Name"),
-						Value: aws.String(fmt.Sprintf("nodeeni-%s-%s", nodeENI.Name, node.Name)),
-					},
-					{
-						Key:   aws.String("NodeENI"),
-						Value: aws.String(nodeENI.Name),
-					},
-					{
-						Key:   aws.String("Node"),
-						Value: aws.String(node.Name),
-					},
-					{
-						Key:   aws.String("kubernetes.io/cluster/managed-by"),
-						Value: aws.String("nodeeni-controller"),
-					},
-					{
-						Key:   aws.String("node.k8s.amazonaws.com/no_manage"),
-						Value: aws.String("true"),
-					},
-				},
-			},
-		},
+	// Create tags for the ENI
+	tags := map[string]string{
+		"Name":                             fmt.Sprintf("nodeeni-%s-%s", nodeENI.Name, node.Name),
+		"NodeENI":                          nodeENI.Name,
+		"Node":                             node.Name,
+		"kubernetes.io/cluster/managed-by": "nodeeni-controller",
+		"node.k8s.amazonaws.com/no_manage": "true",
 	}
 
-	result, err := r.EC2.CreateNetworkInterface(input)
+	// Create the ENI
+	eniID, err := r.AWS.CreateENI(ctx, subnetID, securityGroupIDs, description, tags)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create ENI: %v", err)
 	}
 
-	return *result.NetworkInterface.NetworkInterfaceId, nil
+	return eniID, nil
 }
 
 // attachENI attaches an ENI to an EC2 instance
 func (r *NodeENIReconciler) attachENI(ctx context.Context, eniID, instanceID string, deviceIndex int) (string, error) {
-	input := &ec2.AttachNetworkInterfaceInput{
-		DeviceIndex:        aws.Int64(int64(deviceIndex)),
-		InstanceId:         aws.String(instanceID),
-		NetworkInterfaceId: aws.String(eniID),
+	// Use default device index if not specified
+	if deviceIndex <= 0 {
+		deviceIndex = r.Config.DefaultDeviceIndex
 	}
 
-	result, err := r.EC2.AttachNetworkInterface(input)
+	// Attach the ENI with delete on termination set to the configured default
+	attachmentID, err := r.AWS.AttachENI(ctx, eniID, instanceID, deviceIndex, r.Config.DefaultDeleteOnTermination)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to attach ENI: %v", err)
 	}
 
-	// Set delete on termination attribute
-	_, err = r.EC2.ModifyNetworkInterfaceAttribute(&ec2.ModifyNetworkInterfaceAttributeInput{
-		NetworkInterfaceId: aws.String(eniID),
-		Attachment: &ec2.NetworkInterfaceAttachmentChanges{
-			AttachmentId:        result.AttachmentId,
-			DeleteOnTermination: aws.Bool(true),
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to set delete on termination: %v", err)
-	}
-
-	return *result.AttachmentId, nil
-}
-
-// detachENI detaches an ENI from an EC2 instance
-func (r *NodeENIReconciler) detachENI(ctx context.Context, attachmentID string) error {
-	input := &ec2.DetachNetworkInterfaceInput{
-		AttachmentId: aws.String(attachmentID),
-		Force:        aws.Bool(true),
-	}
-
-	_, err := r.EC2.DetachNetworkInterface(input)
-	return err
-}
-
-// deleteENI deletes an ENI
-func (r *NodeENIReconciler) deleteENI(ctx context.Context, eniID string) error {
-	input := &ec2.DeleteNetworkInterfaceInput{
-		NetworkInterfaceId: aws.String(eniID),
-	}
-
-	_, err := r.EC2.DeleteNetworkInterface(input)
-	return err
+	return attachmentID, nil
 }

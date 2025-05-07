@@ -16,6 +16,7 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+	version  = "1.0.0" // Version of the controller
 )
 
 func init() {
@@ -27,14 +28,22 @@ func init() {
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
+	var enableDevMode bool
+
 	flag.StringVar(&metricsAddr, "metrics-addr", ":8080", "The address the metric endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "enable-leader-election", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
+	flag.BoolVar(&enableDevMode, "dev-mode", true, "Enable development mode for logging.")
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+	// Set up logging
+	ctrl.SetLogger(zap.New(zap.UseDevMode(enableDevMode)))
 
+	// Log startup information
+	setupLog.Info("Starting AWS Multi-ENI Controller", "version", version)
+
+	// Create the controller manager
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:             scheme,
 		MetricsBindAddress: metricsAddr,
@@ -43,25 +52,25 @@ func main() {
 		LeaderElectionID:   "nodeeni-controller-leader-election",
 	})
 	if err != nil {
-		setupLog.Error(err, "unable to start manager")
+		setupLog.Error(err, "Unable to start manager")
 		os.Exit(1)
 	}
 
 	// Create the NodeENI controller
 	nodeENIReconciler, err := controller.NewNodeENIReconciler(mgr)
 	if err != nil {
-		setupLog.Error(err, "unable to create NodeENI controller")
+		setupLog.Error(err, "Unable to create NodeENI controller")
 		os.Exit(1)
 	}
 
 	if err = nodeENIReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to set up NodeENI controller", "controller", "NodeENI")
+		setupLog.Error(err, "Unable to set up NodeENI controller", "controller", "NodeENI")
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
+	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+		setupLog.Error(err, "Problem running manager")
 		os.Exit(1)
 	}
 }
