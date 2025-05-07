@@ -42,6 +42,23 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          check-latest: true
+
+      - name: Prepare go.mod for CI
+        run: |
+          # Remove toolchain directive for CI compatibility
+          sed -i '/^toolchain/d' go.mod
+
+      - name: Run unit tests
+        run: go test -v ./pkg/... -coverprofile=coverage.txt -covermode=atomic
+
+      - name: Display test coverage
+        run: go tool cover -func=coverage.txt
+
       - name: Extract branch name
         shell: bash
         run: |
