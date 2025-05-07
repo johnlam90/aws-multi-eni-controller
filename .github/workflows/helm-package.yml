@@ -42,6 +42,7 @@ jobs:
 
       # Set chart version based on tag or input
       - name: Set chart version from tag
+        id: set_chart_version_from_tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           # Extract version from tag (remove 'v' prefix)
@@ -55,7 +56,12 @@ jobs:
           echo "CHART_VERSION=${CHART_VERSION}" >> $GITHUB_ENV
           echo "APP_VERSION=v${APP_VERSION}" >> $GITHUB_ENV
 
+          # Also set as outputs for the step
+          echo "chart_version=${CHART_VERSION}" >> $GITHUB_OUTPUT
+          echo "app_version=v${APP_VERSION}" >> $GITHUB_OUTPUT
+
       - name: Update Chart version if manually triggered
+        id: update_chart_version_if_manually_triggered
         if: github.event_name == 'workflow_dispatch'
         run: |
           # Update Chart.yaml with the provided version and appVersion
@@ -69,6 +75,10 @@ jobs:
           echo "CHART_VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
           echo "APP_VERSION=${{ github.event.inputs.appVersion }}" >> $GITHUB_ENV
 
+          # Also set as outputs for the step
+          echo "chart_version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          echo "app_version=${{ github.event.inputs.appVersion }}" >> $GITHUB_OUTPUT
+
       # Package the Helm chart
       - name: Package Helm chart
         run: |
@@ -81,9 +91,11 @@ jobs:
 
       # Create index file for GitHub release
       - name: Create Helm repository index
+        id: create_index
         run: |
           # Create a simple index file for the chart
-          helm repo index .helm-charts --url https://github.com/${{ github.repository }}/releases/download/helm-chart-${{ env.CHART_VERSION }}/
+          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version }}"
+          helm repo index .helm-charts --url https://github.com/${{ github.repository }}/releases/download/helm-chart-${CHART_VERSION}/
 
       # Login to GHCR for OCI chart push
       - name: Log in to the Container registry
@@ -91,7 +103,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GH_TOKEN || github.token }}
+          password: ${{ github.token }}
 
       # Push Helm chart to GHCR as OCI artifact
       - name: Push Helm chart to GHCR
@@ -107,16 +119,19 @@ jobs:
 
           echo "Found chart file: $CHART_FILE"
 
+          # Get chart version
+          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version }}"
+
           # Push the chart to GHCR
           helm push $CHART_FILE oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
 
-          echo "Chart pushed to: ${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/aws-multi-eni-controller:${{ env.CHART_VERSION }}"
+          echo "Chart pushed to: ${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/aws-multi-eni-controller:${CHART_VERSION}"
 
       # Create GitHub release with chart as asset
       - name: Create GitHub Release for Helm Chart
         id: create_release
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           # Find the chart file
           CHART_FILE=$(find .helm-charts -name "*.tgz" | head -n 1)
@@ -128,11 +143,15 @@ jobs:
           # Extract the chart filename
           CHART_FILENAME=$(basename $CHART_FILE)
 
+          # Get chart and app versions
+          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version }}"
+          APP_VERSION="${{ steps.set_chart_version_from_tag.outputs.app_version || steps.update_chart_version_if_manually_triggered.outputs.app_version }}"
+
           # Create release notes
           cat > release_notes.md << EOF
-          # AWS Multi-ENI Controller Helm Chart ${{ env.CHART_VERSION }}
+          # AWS Multi-ENI Controller Helm Chart ${CHART_VERSION}
 
-          This release contains the Helm chart for AWS Multi-ENI Controller version ${{ env.APP_VERSION }}.
+          This release contains the Helm chart for AWS Multi-ENI Controller version ${APP_VERSION}.
 
           ## Installation Options
 
@@ -140,7 +159,7 @@ jobs:
 
           \`\`\`bash
           # Download the chart
-          wget https://github.com/${{ github.repository }}/releases/download/helm-chart-${{ env.CHART_VERSION }}/$CHART_FILENAME
+          wget https://github.com/${{ github.repository }}/releases/download/helm-chart-${CHART_VERSION}/$CHART_FILENAME
 
           # Install the chart
           helm install my-release ./$CHART_FILENAME
@@ -150,7 +169,7 @@ jobs:
 
           \`\`\`bash
           # Install directly from OCI registry
-          helm install my-release oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/aws-multi-eni-controller --version ${{ env.CHART_VERSION }}
+          helm install my-release oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/aws-multi-eni-controller --version ${CHART_VERSION}
           \`\`\`
 
           ## Configuration
@@ -159,22 +178,25 @@ jobs:
           EOF
 
           # Check if release exists and delete it if it does
-          if gh release view helm-chart-${{ env.CHART_VERSION }} &>/dev/null; then
-            echo "Release helm-chart-${{ env.CHART_VERSION }} already exists, deleting it first..."
-            gh release delete helm-chart-${{ env.CHART_VERSION }} --yes
+          if gh release view helm-chart-${CHART_VERSION} &>/dev/null; then
+            echo "Release helm-chart-${CHART_VERSION} already exists, deleting it first..."
+            gh release delete helm-chart-${CHART_VERSION} --yes
           fi
 
           # Create GitHub release
-          gh release create helm-chart-${{ env.CHART_VERSION }} \
-            --title "Helm Chart ${{ env.CHART_VERSION }}" \
+          gh release create helm-chart-${CHART_VERSION} \
+            --title "Helm Chart ${CHART_VERSION}" \
             --notes-file release_notes.md \
             $CHART_FILE .helm-charts/index.yaml
 
       # Display instructions for using the chart
       - name: Display instructions for using the Helm chart
         run: |
+          # Get chart version
+          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version }}"
+
           echo "::notice::Helm chart has been published as a GitHub Release and to GHCR as an OCI artifact."
           echo "::notice::Option 1: Download from GitHub Release:"
-          echo "::notice::https://github.com/${{ github.repository }}/releases/download/helm-chart-${{ env.CHART_VERSION }}/aws-multi-eni-controller-${{ env.CHART_VERSION }}.tgz"
+          echo "::notice::https://github.com/${{ github.repository }}/releases/download/helm-chart-${CHART_VERSION}/aws-multi-eni-controller-${CHART_VERSION}.tgz"
           echo "::notice::Option 2: Install from OCI Registry (Recommended):"
-          echo "::notice::helm install my-release oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/aws-multi-eni-controller --version ${{ env.CHART_VERSION }}"
+          echo "::notice::helm install my-release oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/aws-multi-eni-controller --version ${CHART_VERSION}"

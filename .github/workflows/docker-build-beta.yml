@@ -22,6 +22,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  GOTOOLCHAIN: auto
 
 jobs:
   build-and-push-beta:
@@ -36,15 +37,24 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || github.ref }}
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        env:
-          GOTOOLCHAIN: auto
 
       - name: Extract branch name
         shell: bash
-        run: echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # For manual workflow, use the provided branch name
+            BRANCH_NAME="${{ github.event.inputs.branch }}"
+          else
+            # For push events, extract from GITHUB_REF
+            BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          fi
+          echo "BRANCH_NAME=${BRANCH_NAME}" >> $GITHUB_ENV
+          # Also set as output for the step
+          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
         id: extract_branch
 
       - name: Generate beta version
@@ -56,11 +66,13 @@ jobs:
           else
             # Generate a beta version based on branch name and short SHA
             SHORT_SHA=$(git rev-parse --short HEAD)
-            BRANCH_SUFFIX=$(echo ${BRANCH_NAME} | sed 's/[^a-zA-Z0-9]/-/g')
+            BRANCH_SUFFIX=$(echo "${{ steps.extract_branch.outputs.branch_name }}" | sed 's/[^a-zA-Z0-9]/-/g')
             BETA_VERSION="beta.${BRANCH_SUFFIX}.${SHORT_SHA}"
           fi
-          
+
           echo "BETA_VERSION=${BETA_VERSION}" >> $GITHUB_ENV
+          # Also set as output for the step
+          echo "beta_version=${BETA_VERSION}" >> $GITHUB_OUTPUT
           echo "Generated beta version: ${BETA_VERSION}"
 
       - name: Check Go version in Dockerfile and go.mod
@@ -73,8 +85,17 @@ jobs:
           GO_VERSION_GOMOD=$(grep "^go " go.mod | awk '{print $2}')
           echo "Go version in go.mod: $GO_VERSION_GOMOD"
 
+          # Check for toolchain directive
+          if grep -q "^toolchain " go.mod; then
+            TOOLCHAIN_DIRECTIVE=$(grep "^toolchain " go.mod | awk '{print $2}')
+            echo "Toolchain directive found in go.mod: $TOOLCHAIN_DIRECTIVE"
+          else
+            echo "No toolchain directive found in go.mod"
+          fi
+
           if [[ "$GO_VERSION_DOCKERFILE" != "$GO_VERSION_GOMOD" ]]; then
             echo "Warning: Go version mismatch between Dockerfile ($GO_VERSION_DOCKERFILE) and go.mod ($GO_VERSION_GOMOD)"
+            echo "This is expected and will be handled by the GOTOOLCHAIN=auto setting"
           fi
 
           echo "GOTOOLCHAIN environment variable is set to: $GOTOOLCHAIN"
@@ -86,7 +107,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.PACKAGE_PAT || secrets.GH_TOKEN || github.token }}
+          password: ${{ github.token }}
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
@@ -94,8 +115,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ env.BETA_VERSION }}
-            type=raw,value=beta-${{ env.BRANCH_NAME }}
+            type=raw,value=${{ steps.beta_version.outputs.beta_version }}
+            type=raw,value=beta-${{ steps.extract_branch.outputs.branch_name }}
             type=raw,value=beta-latest
             type=sha,prefix=beta-
 
@@ -114,14 +135,16 @@ jobs:
             GOTOOLCHAIN=auto
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-contexts: |
+            golang:1.22-alpine=docker-image://golang:1.22-alpine
 
       - name: Display image information
         run: |
           echo "::notice::Beta image built and pushed successfully!"
-          echo "::notice::Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BETA_VERSION }}"
-          echo "::notice::Branch: ${{ env.BRANCH_NAME }}"
+          echo "::notice::Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.beta_version.outputs.beta_version }}"
+          echo "::notice::Branch: ${{ steps.extract_branch.outputs.branch_name }}"
           echo "::notice::Commit: ${{ github.sha }}"
-          echo "::notice::You can pull this image with: docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BETA_VERSION }}"
-          
+          echo "::notice::You can pull this image with: docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.beta_version.outputs.beta_version }}"
+
           echo "::notice::All tags pushed:"
           echo "${{ steps.meta.outputs.tags }}" | tr '\n' ' '

@@ -16,6 +16,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Using github.token directly to avoid any permission issues
+  # Note: IDE may show false positive warnings about GH_TOKEN
 
 jobs:
   build-and-push:
@@ -58,7 +60,8 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.PACKAGE_PAT || secrets.GH_TOKEN || github.token }}
+          # Using github.token directly (IDE may show false positive warning)
+          password: ${{ github.token }}
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
@@ -108,4 +111,5 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: false
-          token: ${{ secrets.GH_TOKEN || github.token }}
+          # Using github.token directly (IDE may show false positive warning)
+          token: ${{ github.token }}
