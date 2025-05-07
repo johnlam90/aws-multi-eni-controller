@@ -119,13 +119,13 @@ func TestRemoveString(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := RemoveString(tt.slice, tt.s)
-			
+
 			// Check length
 			if len(got) != len(tt.want) {
 				t.Errorf("RemoveString() length = %v, want %v", len(got), len(tt.want))
 				return
 			}
-			
+
 			// Check contents
 			for i, v := range got {
 				if v != tt.want[i] {
@@ -178,13 +178,13 @@ func TestMergeMaps(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := MergeMaps(tt.m1, tt.m2)
-			
+
 			// Check length
 			if len(got) != len(tt.want) {
 				t.Errorf("MergeMaps() length = %v, want %v", len(got), len(tt.want))
 				return
 			}
-			
+
 			// Check contents
 			for k, v := range got {
 				if wv, ok := tt.want[k]; !ok || v != wv {
