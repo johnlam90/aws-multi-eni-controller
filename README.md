@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Go Report Card](https://img.shields.io/badge/Go%20Report-A%2B-brightgreen?logo=go)](https://github.com/johnlam90/aws-multi-eni-controller/actions/workflows/go-report.yml)
-[![Go](https://img.shields.io/badge/Go-1.23+-00ADD8.svg)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8.svg)](https://go.dev/)
 
 A Kubernetes controller that automatically creates and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels. This controller is useful for workloads that require multiple network interfaces, such as networking plugins, security tools, or specialized applications.
 
@@ -21,6 +21,8 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 - **Region Aware**: Works in any AWS region with configurable region settings
 - **Subnet Flexibility**: Supports both subnet IDs and subnet names (via AWS tags)
 - **Multi-Subnet Support**: Can attach ENIs from different subnets to the same or different nodes
+- **AWS SDK v2**: Uses the latest AWS SDK Go v2 for improved performance and features
+- **Optimized Image**: Lightweight container image (22MB) for fast deployments
 
 ## Building and Deploying
 
@@ -30,7 +32,7 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 - Access to a Kubernetes cluster (e.g., EKS)
 - AWS CLI configured with appropriate permissions
 - kubectl installed and configured
-- Go 1.19 or later (for development)
+- Go 1.22 or later (for development)
 - Helm 3.0+ (for Helm installation method)
 
 ### Pre-built Container Images
@@ -508,6 +510,18 @@ The ENI Controller follows the Kubernetes operator pattern:
 
 For a detailed architecture diagram and workflow, see [Architecture Documentation](docs/architecture.md).
 
+### AWS SDK v2 Integration
+
+The controller uses AWS SDK Go v2, which provides several advantages:
+
+- **Improved Performance**: More efficient API calls and better resource utilization
+- **Context Support**: Full support for Go contexts for better timeout and cancellation handling
+- **Modular Design**: Only imports the specific AWS services needed (EC2 in this case)
+- **Retry Mechanisms**: Enhanced retry logic for improved reliability
+- **Error Handling**: More detailed error information for better troubleshooting
+
+The AWS SDK v2 integration ensures the controller is using the latest AWS best practices and provides a foundation for future AWS feature support.
+
 ### Unified Image Architecture
 
 The project uses a unified Docker image approach:
@@ -516,8 +530,21 @@ The project uses a unified Docker image approach:
 2. **Component Selection**: The image determines which component to run based on the `COMPONENT` environment variable
 3. **Deployment Separation**: The controller runs as a Deployment, while the ENI Manager runs as a DaemonSet on labeled nodes
 4. **Shared Codebase**: Both components share common code and dependencies, ensuring they stay in sync
+5. **Optimized Size**: The image is highly optimized (22MB) for fast deployments while maintaining full functionality
 
 This approach simplifies maintenance, reduces image storage requirements, and ensures consistent versioning across components.
+
+### Optimized Container Image
+
+The Docker image is optimized for size and performance:
+
+- **Small Footprint**: Only 22MB in size, compared to typical Go-based images of 100MB+
+- **Fast Deployment**: Smaller image means faster pulls and container starts
+- **Binary Optimization**: Uses Go build flags and UPX compression for size reduction
+- **Alpine Base**: Uses Alpine Linux for a minimal base image
+- **No Performance Impact**: Optimizations do not affect runtime performance
+
+The optimized image is ideal for production environments where deployment speed and resource efficiency are important.
 
 ### Controller Logic
 
