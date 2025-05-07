@@ -1,39 +1,67 @@
-name: Build and Push Production Docker Image
+name: Build and Push Beta Docker Image
 
 on:
   push:
-    branches: [ main ]
-    # Optionally trigger on tags for releases
-    tags: [ 'v*' ]
-  # Allow manual triggering with version input
+    branches:
+      - 'sandbox-*'
+      - 'beta-*'
+      - 'feature-*'
+      - 'dev-*'
+  # Allow manual triggering with branch input
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version tag (e.g., v1.0.0)'
+      branch:
+        description: 'Branch name to build from'
         required: true
-        default: 'v1.0.0'
+        default: 'sandbox-testv0.1'
+      beta_version:
+        description: 'Beta version tag (e.g., beta.1)'
+        required: true
+        default: 'beta.1'
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
+  build-and-push-beta:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Needed for creating releases
+      contents: read
       packages: write
-      # Add additional permissions for package management
       actions: read
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         env:
           GOTOOLCHAIN: auto
+
+      - name: Extract branch name
+        shell: bash
+        run: echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+        id: extract_branch
+
+      - name: Generate beta version
+        id: beta_version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Use the manually provided beta version
+            BETA_VERSION="${{ github.event.inputs.beta_version }}"
+          else
+            # Generate a beta version based on branch name and short SHA
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            BRANCH_SUFFIX=$(echo ${BRANCH_NAME} | sed 's/[^a-zA-Z0-9]/-/g')
+            BETA_VERSION="beta.${BRANCH_SUFFIX}.${SHORT_SHA}"
+          fi
+          
+          echo "BETA_VERSION=${BETA_VERSION}" >> $GITHUB_ENV
+          echo "Generated beta version: ${BETA_VERSION}"
 
       - name: Check Go version in Dockerfile and go.mod
         run: |
@@ -66,14 +94,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=schedule
-            type=ref,event=branch
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ github.event.inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ env.BETA_VERSION }}
+            type=raw,value=beta-${{ env.BRANCH_NAME }}
+            type=raw,value=beta-latest
+            type=sha,prefix=beta-
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -91,21 +115,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Display manual instructions for making package public
+      - name: Display image information
         run: |
-          echo "::warning::To make your package public, please follow these steps:"
-          echo "::warning::1. Go to https://github.com/${{ github.repository }}/pkgs/container/aws-multi-eni-controller"
-          echo "::warning::2. Click on Package settings (⚙️ icon) at the bottom of the page"
-          echo "::warning::3. Under 'Danger Zone', click 'Change visibility'"
-          echo "::warning::4. Select 'Public' and confirm"
-
-      - name: Create GitHub Release
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v1
-        with:
-          name: Release ${{ github.event.inputs.version }}
-          tag_name: ${{ github.event.inputs.version }}
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-          token: ${{ secrets.GH_TOKEN || github.token }}
+          echo "::notice::Beta image built and pushed successfully!"
+          echo "::notice::Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BETA_VERSION }}"
+          echo "::notice::Branch: ${{ env.BRANCH_NAME }}"
+          echo "::notice::Commit: ${{ github.sha }}"
+          echo "::notice::You can pull this image with: docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BETA_VERSION }}"
+          
+          echo "::notice::All tags pushed:"
+          echo "${{ steps.meta.outputs.tags }}" | tr '\n' ' '

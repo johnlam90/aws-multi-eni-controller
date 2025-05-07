@@ -38,14 +38,44 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 Pre-built container images are available on GitHub Container Registry:
 
 ```bash
-# Pull the latest image
+# Pull the latest stable image
 docker pull ghcr.io/johnlam90/aws-multi-eni-controller:latest
 
 # Or use a specific version
 docker pull ghcr.io/johnlam90/aws-multi-eni-controller:v1.0.0
+
+# For beta/development images from sandbox branches
+docker pull ghcr.io/johnlam90/aws-multi-eni-controller:beta-sandbox-testv0.1
+docker pull ghcr.io/johnlam90/aws-multi-eni-controller:beta-latest
 ```
 
 You can find all available tags at [GitHub Container Registry](https://github.com/johnlam90/aws-multi-eni-controller/pkgs/container/aws-multi-eni-controller).
+
+#### Beta Images from Sandbox Branches
+
+For development and testing, beta images are automatically built from sandbox branches:
+
+- **Branch-specific tags**: `beta-{branch-name}` (e.g., `beta-sandbox-testv0.1`)
+- **Latest beta**: `beta-latest` always points to the most recent beta build
+- **Commit-specific tags**: `beta-{branch-name}.{commit-sha}` for precise version tracking
+
+Beta images are ideal for testing new features before they're merged into the main branch. To use a beta image in your deployment:
+
+```yaml
+# In your deployment YAML
+spec:
+  template:
+    spec:
+      containers:
+      - name: controller
+        image: ghcr.io/johnlam90/aws-multi-eni-controller:beta-sandbox-testv0.1
+```
+
+Or when using Helm:
+
+```bash
+helm install my-release ./aws-multi-eni-controller-chart.tgz --set image.tag=beta-sandbox-testv0.1
+```
 
 #### Making the Container Image Public
 
