@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -40,6 +41,10 @@ type ENIManagerConfig struct {
 	DebugMode bool
 	// Timeout for interface to come up after configuration
 	InterfaceUpTimeout time.Duration
+	// Regex pattern to identify ENI interfaces
+	ENIPattern string
+	// List of interfaces to ignore
+	IgnoreInterfaces []string
 }
 
 // DefaultControllerConfig returns the default configuration for the controller
@@ -61,6 +66,8 @@ func DefaultENIManagerConfig() *ENIManagerConfig {
 		PrimaryInterface:   "",
 		DebugMode:          false,
 		InterfaceUpTimeout: 2 * time.Second,
+		ENIPattern:         "^(eth|ens|eni|en)[0-9]+",
+		IgnoreInterfaces:   []string{"tunl0", "gre0", "gretap0", "erspan0", "ip_vti0", "ip6_vti0", "sit0", "ip6tnl0", "ip6gre0"},
 	}
 }
 
@@ -125,7 +132,7 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 
 // LoadENIManagerConfigFromFlags loads ENI manager configuration from command-line flags
 // This is used by the ENI manager component
-func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *string, debugMode *bool) *ENIManagerConfig {
+func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *string, debugMode *bool, eniPattern *string, ignoreList *string) *ENIManagerConfig {
 	config := DefaultENIManagerConfig()
 
 	if checkInterval != nil {
@@ -140,6 +147,15 @@ func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *s
 		config.DebugMode = *debugMode
 	}
 
+	if eniPattern != nil && *eniPattern != "" {
+		config.ENIPattern = *eniPattern
+	}
+
+	if ignoreList != nil && *ignoreList != "" {
+		// Split the comma-separated list
+		config.IgnoreInterfaces = splitCSV(*ignoreList)
+	}
+
 	// Check for environment variable overrides
 	if timeoutStr := os.Getenv("INTERFACE_UP_TIMEOUT"); timeoutStr != "" {
 		if timeout, err := time.ParseDuration(timeoutStr); err == nil {
@@ -147,5 +163,32 @@ func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *s
 		}
 	}
 
+	if patternStr := os.Getenv("ENI_PATTERN"); patternStr != "" {
+		config.ENIPattern = patternStr
+	}
+
+	if ignoreStr := os.Getenv("IGNORE_INTERFACES"); ignoreStr != "" {
+		config.IgnoreInterfaces = splitCSV(ignoreStr)
+	}
+
 	return config
+}
+
+// splitCSV splits a comma-separated string into a slice of strings
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+
+	return result
 }

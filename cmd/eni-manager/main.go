@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ var (
 	checkInterval = flag.Duration("check-interval", 30*time.Second, "Interval between interface checks")
 	primaryIface  = flag.String("primary-interface", "", "Primary interface name to ignore (if empty, will auto-detect)")
 	debugMode     = flag.Bool("debug", false, "Enable debug logging")
+	eniPattern    = flag.String("eni-pattern", "^(eth|ens|eni|en)[0-9]+", "Regex pattern to identify ENI interfaces")
+	ignoreList    = flag.String("ignore-interfaces", "tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0", "Comma-separated list of interfaces to ignore")
 	version       = "1.0.0" // Version of the ENI Manager
 )
 
@@ -34,11 +37,13 @@ func main() {
 	flag.Parse()
 
 	// Load configuration from command-line flags and environment variables
-	cfg := config.LoadENIManagerConfigFromFlags(checkInterval, primaryIface, debugMode)
+	cfg := config.LoadENIManagerConfigFromFlags(checkInterval, primaryIface, debugMode, eniPattern, ignoreList)
 
 	log.Printf("ENI Manager starting (version %s)", version)
 	log.Printf("Configuration: check interval=%s, debug=%v, interface up timeout=%s",
 		cfg.CheckInterval, cfg.DebugMode, cfg.InterfaceUpTimeout)
+	log.Printf("ENI pattern: %s, Ignored interfaces: %v",
+		cfg.ENIPattern, cfg.IgnoreInterfaces)
 
 	// Auto-detect primary interface if not specified
 	if cfg.PrimaryInterface == "" {
@@ -88,6 +93,21 @@ func detectPrimaryInterface() (string, error) {
 	return "", fmt.Errorf("no default route found")
 }
 
+// isAWSENI checks if an interface is an AWS ENI based on the configured pattern
+// and ignore list
+func isAWSENI(ifaceName string, cfg *config.ENIManagerConfig) bool {
+	// Check if the interface is in the ignore list
+	for _, ignoredIface := range cfg.IgnoreInterfaces {
+		if ifaceName == ignoredIface {
+			return false
+		}
+	}
+
+	// Check if the interface matches the ENI pattern
+	pattern := regexp.MustCompile(cfg.ENIPattern)
+	return pattern.MatchString(ifaceName)
+}
+
 // checkAndBringUpInterfaces checks for DOWN interfaces and brings them up
 func checkAndBringUpInterfaces(cfg *config.ENIManagerConfig) error {
 	// Get all network interfaces
@@ -97,21 +117,31 @@ func checkAndBringUpInterfaces(cfg *config.ENIManagerConfig) error {
 	}
 
 	for _, link := range links {
+		ifaceName := link.Attrs().Name
+
 		// Skip loopback and primary interface
-		if link.Attrs().Name == "lo" || link.Attrs().Name == cfg.PrimaryInterface {
+		if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
+			continue
+		}
+
+		// Skip interfaces that don't match our ENI pattern or are in the ignore list
+		if !isAWSENI(ifaceName, cfg) {
+			if cfg.DebugMode {
+				log.Printf("Skipping non-ENI interface: %s", ifaceName)
+			}
 			continue
 		}
 
 		// Check if interface is DOWN
 		if link.Attrs().OperState == netlink.OperDown {
-			log.Printf("Found DOWN interface: %s", link.Attrs().Name)
+			log.Printf("Found DOWN ENI interface: %s", ifaceName)
 
 			if err := bringUpInterface(link, cfg); err != nil {
-				log.Printf("Error bringing up interface %s: %v", link.Attrs().Name, err)
+				log.Printf("Error bringing up interface %s: %v", ifaceName, err)
 				continue
 			}
 		} else if cfg.DebugMode {
-			log.Printf("Interface %s is already UP", link.Attrs().Name)
+			log.Printf("ENI interface %s is already UP", ifaceName)
 		}
 	}
 

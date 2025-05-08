@@ -31,6 +31,8 @@ spec:
         args:
         - --check-interval=30s
         - --debug=true
+        - --eni-pattern=^(eth|ens|eni|en)[0-9]+
+        - --ignore-interfaces=tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0
         # Primary interface will be auto-detected
         resources:
           limits:
