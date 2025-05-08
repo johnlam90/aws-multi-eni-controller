@@ -37,6 +37,16 @@ type NodeENISpec struct {
 	// +optional
 	SubnetName string `json:"subnetName,omitempty"`
 
+	// SubnetIDs is a list of AWS Subnet IDs where the ENI can be created
+	// If specified, one subnet will be selected from this list
+	// +optional
+	SubnetIDs []string `json:"subnetIDs,omitempty"`
+
+	// SubnetNames is a list of AWS Subnet Names where the ENI can be created
+	// If SubnetIDs is not provided, SubnetNames will be used to look up the subnets
+	// +optional
+	SubnetNames []string `json:"subnetNames,omitempty"`
+
 	// SecurityGroupIDs are the AWS Security Group IDs to attach to the ENI
 	// +optional
 	SecurityGroupIDs []string `json:"securityGroupIDs,omitempty"`

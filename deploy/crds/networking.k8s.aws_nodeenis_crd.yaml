@@ -62,9 +62,19 @@ spec:
               subnetID:
                 description: AWS Subnet ID where the ENI should be created
                 type: string
+              subnetIDs:
+                description: List of AWS Subnet IDs where the ENI can be created (one will be selected)
+                items:
+                  type: string
+                type: array
               subnetName:
                 description: AWS Subnet Name where the ENI should be created (used if subnetID is not provided)
                 type: string
+              subnetNames:
+                description: List of AWS Subnet Names where the ENI can be created (one will be selected)
+                items:
+                  type: string
+                type: array
             required:
             - nodeSelector
             type: object

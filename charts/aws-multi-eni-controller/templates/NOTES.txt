@@ -19,6 +19,10 @@ spec:
     ng: multi-eni  # Replace with your node selector
   subnetID: subnet-xxxxxxxx  # Replace with your subnet ID
   # OR use subnetName: your-subnet-name
+  # OR use multiple subnets:
+  # subnetIDs:
+  # - subnet-xxxxxxxx
+  # - subnet-yyyyyyyy
   securityGroupIDs:
   - sg-xxxxxxxx  # Replace with your security group ID
   # OR use securityGroupNames:

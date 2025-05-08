@@ -466,19 +466,9 @@ func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1
 	}
 
 	// Determine the subnet ID to use
-	subnetID := nodeENI.Spec.SubnetID
-	if subnetID == "" && nodeENI.Spec.SubnetName != "" {
-		// Look up subnet ID by name
-		var err error
-		subnetID, err = r.AWS.GetSubnetIDByName(ctx, nodeENI.Spec.SubnetName)
-		if err != nil {
-			return "", fmt.Errorf("failed to get subnet ID from name %s: %v", nodeENI.Spec.SubnetName, err)
-		}
-		log.Info("Resolved subnet name to ID", "subnetName", nodeENI.Spec.SubnetName, "subnetID", subnetID)
-	}
-
-	if subnetID == "" {
-		return "", fmt.Errorf("neither subnetID nor subnetName provided")
+	subnetID, err := r.determineSubnetID(ctx, nodeENI, log)
+	if err != nil {
+		return "", err
 	}
 
 	// Determine the security group IDs to use
@@ -525,6 +515,54 @@ func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1
 	}
 
 	return eniID, nil
+}
+
+// determineSubnetID determines which subnet ID to use for creating an ENI
+func (r *NodeENIReconciler) determineSubnetID(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, log logr.Logger) (string, error) {
+	// Priority order:
+	// 1. Single SubnetID if specified
+	// 2. Multiple SubnetIDs if specified
+	// 3. Single SubnetName if specified
+	// 4. Multiple SubnetNames if specified
+
+	// Check for single SubnetID (backward compatibility)
+	if nodeENI.Spec.SubnetID != "" {
+		return nodeENI.Spec.SubnetID, nil
+	}
+
+	// Check for multiple SubnetIDs
+	if len(nodeENI.Spec.SubnetIDs) > 0 {
+		// For now, simply use the first subnet in the list
+		// In the future, this could be enhanced with more sophisticated selection logic
+		subnetID := nodeENI.Spec.SubnetIDs[0]
+		log.Info("Selected subnet ID from list", "subnetID", subnetID, "totalSubnets", len(nodeENI.Spec.SubnetIDs))
+		return subnetID, nil
+	}
+
+	// Check for single SubnetName (backward compatibility)
+	if nodeENI.Spec.SubnetName != "" {
+		subnetID, err := r.AWS.GetSubnetIDByName(ctx, nodeENI.Spec.SubnetName)
+		if err != nil {
+			return "", fmt.Errorf("failed to get subnet ID from name %s: %v", nodeENI.Spec.SubnetName, err)
+		}
+		log.Info("Resolved subnet name to ID", "subnetName", nodeENI.Spec.SubnetName, "subnetID", subnetID)
+		return subnetID, nil
+	}
+
+	// Check for multiple SubnetNames
+	if len(nodeENI.Spec.SubnetNames) > 0 {
+		// For now, simply use the first subnet name in the list
+		subnetName := nodeENI.Spec.SubnetNames[0]
+		subnetID, err := r.AWS.GetSubnetIDByName(ctx, subnetName)
+		if err != nil {
+			return "", fmt.Errorf("failed to get subnet ID from name %s: %v", subnetName, err)
+		}
+		log.Info("Resolved subnet name to ID from list", "subnetName", subnetName, "subnetID", subnetID, "totalSubnets", len(nodeENI.Spec.SubnetNames))
+		return subnetID, nil
+	}
+
+	// No subnet information provided
+	return "", fmt.Errorf("no subnet information provided (subnetID, subnetIDs, subnetName, or subnetNames)")
 }
 
 // attachENI attaches an ENI to an EC2 instance

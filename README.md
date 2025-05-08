@@ -310,6 +310,50 @@ If you prefer to deploy manually:
      description: "Multus ENI for secondary network interfaces"
    ```
 
+### Using Multiple Subnets
+
+You can specify multiple subnets in your NodeENI resource. The controller will select one of the subnets to create the ENI:
+
+   ```yaml
+   apiVersion: networking.k8s.aws/v1alpha1
+   kind: NodeENI
+   metadata:
+     name: multi-subnet-eni
+   spec:
+     nodeSelector:
+       ng: multi-eni
+     # Specify multiple subnet IDs - one will be selected
+     subnetIDs:
+     - subnet-0f59b4f14737be9ad  # Replace with your subnet ID
+     - subnet-abcdef1234567890  # Replace with your subnet ID
+     securityGroupIDs:
+     - sg-05da196f3314d4af8  # Replace with your security group ID
+     deviceIndex: 1
+     deleteOnTermination: true
+     description: "ENI with multiple subnet options"
+   ```
+
+You can also use subnet names instead of IDs:
+
+   ```yaml
+   apiVersion: networking.k8s.aws/v1alpha1
+   kind: NodeENI
+   metadata:
+     name: multi-subnet-name-eni
+   spec:
+     nodeSelector:
+       ng: multi-eni
+     # Specify multiple subnet names - one will be selected
+     subnetNames:
+     - eks-private-subnet-1
+     - eks-private-subnet-2
+     securityGroupIDs:
+     - sg-05da196f3314d4af8  # Replace with your security group ID
+     deviceIndex: 2
+     deleteOnTermination: true
+     description: "ENI with multiple subnet name options"
+   ```
+
 ### Automatically Bringing Up Secondary Interfaces
 
 When AWS attaches a secondary ENI to an EC2 instance, the interface is visible to the operating system but typically in a DOWN state. To automatically bring these interfaces up:

@@ -165,3 +165,47 @@ spec:
   deleteOnTermination: true
   description: "Example ENI"
 ```
+
+## Using Multiple Subnets
+
+You can specify multiple subnets to use a single security group across different subnets:
+
+```yaml
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: multi-subnet-eni
+spec:
+  nodeSelector:
+    ng: multi-eni
+  # Specify multiple subnet IDs - one will be selected
+  subnetIDs:
+  - subnet-xxxxxxxx
+  - subnet-yyyyyyyy
+  securityGroupIDs:
+  - sg-xxxxxxxx
+  deviceIndex: 2
+  deleteOnTermination: true
+  description: "ENI with multiple subnet options"
+```
+
+You can also use multiple subnet names:
+
+```yaml
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: multi-subnet-name-eni
+spec:
+  nodeSelector:
+    ng: multi-eni
+  # Specify multiple subnet names - one will be selected
+  subnetNames:
+  - subnet-name-1
+  - subnet-name-2
+  securityGroupIDs:
+  - sg-xxxxxxxx
+  deviceIndex: 2
+  deleteOnTermination: true
+  description: "ENI with multiple subnet name options"
+```
