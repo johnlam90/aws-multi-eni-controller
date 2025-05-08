@@ -98,28 +98,54 @@ func TestLoadControllerConfig(t *testing.T) {
 func TestLoadENIManagerConfigFromFlags(t *testing.T) {
 	// Save original environment variables
 	origInterfaceUpTimeout := os.Getenv("INTERFACE_UP_TIMEOUT")
+	origENIPattern := os.Getenv("ENI_PATTERN")
+	origIgnoreInterfaces := os.Getenv("IGNORE_INTERFACES")
 
 	// Restore environment variables after test
 	defer func() {
 		os.Setenv("INTERFACE_UP_TIMEOUT", origInterfaceUpTimeout)
+		os.Setenv("ENI_PATTERN", origENIPattern)
+		os.Setenv("IGNORE_INTERFACES", origIgnoreInterfaces)
 	}()
 
-	// Set test environment variables
+	// Set test environment variables for the first test
 	os.Setenv("INTERFACE_UP_TIMEOUT", "5s")
+	os.Setenv("ENI_PATTERN", "^test[0-9]+")
+	os.Setenv("IGNORE_INTERFACES", "test0,test1,test2")
 
 	// Test with nil flags (should use defaults and env vars)
-	cfg := LoadENIManagerConfigFromFlags(nil, nil, nil)
+	cfg := LoadENIManagerConfigFromFlags(nil, nil, nil, nil, nil)
 
 	if cfg.InterfaceUpTimeout != 5*time.Second {
 		t.Errorf("Expected InterfaceUpTimeout to be 5 seconds, got %v", cfg.InterfaceUpTimeout)
 	}
 
+	// Check ENI pattern from environment variable
+	if cfg.ENIPattern != "^test[0-9]+" {
+		t.Errorf("Expected ENIPattern from env var to be '^test[0-9]+', got '%s'", cfg.ENIPattern)
+	}
+
+	// Check ignore list from environment variable
+	if len(cfg.IgnoreInterfaces) != 3 {
+		t.Errorf("Expected IgnoreInterfaces from env var to have 3 values, got %d", len(cfg.IgnoreInterfaces))
+	}
+
+	if cfg.IgnoreInterfaces[0] != "test0" {
+		t.Errorf("Expected first ignore interface to be 'test0', got '%s'", cfg.IgnoreInterfaces[0])
+	}
+
+	// Clear environment variables for the second test
+	os.Unsetenv("ENI_PATTERN")
+	os.Unsetenv("IGNORE_INTERFACES")
+
 	// Test with provided flags
 	checkInterval := 1 * time.Minute
 	primaryIface := "eth0"
 	debugMode := true
+	eniPattern := "^eth[0-9]+"
+	ignoreList := "lo,dummy0"
 
-	cfg = LoadENIManagerConfigFromFlags(&checkInterval, &primaryIface, &debugMode)
+	cfg = LoadENIManagerConfigFromFlags(&checkInterval, &primaryIface, &debugMode, &eniPattern, &ignoreList)
 
 	if cfg.CheckInterval != 1*time.Minute {
 		t.Errorf("Expected CheckInterval to be 1 minute, got %v", cfg.CheckInterval)
@@ -133,7 +159,33 @@ func TestLoadENIManagerConfigFromFlags(t *testing.T) {
 		t.Error("Expected DebugMode to be true")
 	}
 
+	if cfg.ENIPattern != "^eth[0-9]+" {
+		t.Errorf("Expected ENIPattern to be '^eth[0-9]+', got '%s'", cfg.ENIPattern)
+	}
+
+	// Check that the custom ignore list is set correctly
+	if len(cfg.IgnoreInterfaces) != 2 {
+		t.Errorf("Expected IgnoreInterfaces to have 2 values, got %d", len(cfg.IgnoreInterfaces))
+	}
+
+	if cfg.IgnoreInterfaces[0] != "lo" {
+		t.Errorf("Expected first ignore interface to be 'lo', got '%s'", cfg.IgnoreInterfaces[0])
+	}
+
+	if cfg.IgnoreInterfaces[1] != "dummy0" {
+		t.Errorf("Expected second ignore interface to be 'dummy0', got '%s'", cfg.IgnoreInterfaces[1])
+	}
+
 	if cfg.InterfaceUpTimeout != 5*time.Second {
 		t.Errorf("Expected InterfaceUpTimeout to be 5 seconds, got %v", cfg.InterfaceUpTimeout)
+	}
+
+	if cfg.ENIPattern != "^eth[0-9]+" {
+		t.Errorf("Expected ENIPattern to be '^eth[0-9]+', got '%s'", cfg.ENIPattern)
+	}
+
+	// Check that the default ignore list is set
+	if len(cfg.IgnoreInterfaces) == 0 {
+		t.Error("Expected IgnoreInterfaces to have default values")
 	}
 }
