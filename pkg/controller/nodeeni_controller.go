@@ -315,38 +315,91 @@ func (r *NodeENIReconciler) processNode(ctx context.Context, nodeENI *networking
 		return nil
 	}
 
-	currentAttachments[node.Name] = true
+	// Mark this node as having been processed
+	nodeKey := node.Name
+	currentAttachments[nodeKey] = true
 
-	// Check if we already have an attachment for this node
+	// Get all subnet IDs we need to create ENIs in
+	subnetIDs, err := r.getAllSubnetIDs(ctx, nodeENI)
+	if err != nil {
+		log.Error(err, "Failed to determine subnet IDs")
+		return err
+	}
+
+	// Check existing attachments for this node
+	existingSubnets := make(map[string]bool)
 	for _, attachment := range nodeENI.Status.Attachments {
 		if attachment.NodeID == node.Name {
-			// TODO: Verify the attachment is still valid
-			return nil
+			// Mark this subnet as already having an ENI
+			if attachment.SubnetID != "" {
+				existingSubnets[attachment.SubnetID] = true
+			}
 		}
 	}
 
-	// Create and attach a new ENI
-	return r.createAndAttachENI(ctx, nodeENI, node, instanceID)
+	// Create ENIs for any subnets that don't already have one
+	for i, subnetID := range subnetIDs {
+		// Skip if we already have an ENI in this subnet
+		if existingSubnets[subnetID] {
+			log.Info("Node already has an ENI in this subnet", "subnetID", subnetID)
+			continue
+		}
+
+		// Calculate device index - increment from base for multiple ENIs
+		deviceIndex := nodeENI.Spec.DeviceIndex
+		if deviceIndex <= 0 {
+			deviceIndex = r.Config.DefaultDeviceIndex
+		}
+		// Increment device index for each additional ENI
+		if i > 0 {
+			deviceIndex += i
+		}
+
+		// Create and attach a new ENI for this subnet
+		if err := r.createAndAttachENIForSubnet(ctx, nodeENI, node, instanceID, subnetID, deviceIndex); err != nil {
+			log.Error(err, "Failed to create and attach ENI for subnet", "subnetID", subnetID)
+			// Continue with other subnets even if one fails
+			continue
+		}
+	}
+
+	return nil
 }
 
 // createAndAttachENI creates and attaches a new ENI to a node
+// This is kept for backward compatibility
 func (r *NodeENIReconciler) createAndAttachENI(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, node corev1.Node, instanceID string) error {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name)
 	log.Info("Creating and attaching ENI for node", "node", node.Name, "instanceID", instanceID)
 
-	// Create the ENI
-	eniID, err := r.createENI(ctx, nodeENI, node)
+	// Get the subnet ID using the old method (for backward compatibility)
+	subnetID, err := r.determineSubnetID(ctx, nodeENI, log)
 	if err != nil {
-		log.Error(err, "Failed to create ENI", "node", node.Name)
+		return err
+	}
+
+	// Use the new method with the determined subnet ID
+	return r.createAndAttachENIForSubnet(ctx, nodeENI, node, instanceID, subnetID, nodeENI.Spec.DeviceIndex)
+}
+
+// createAndAttachENIForSubnet creates and attaches a new ENI to a node for a specific subnet
+func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, node corev1.Node, instanceID string, subnetID string, deviceIndex int) error {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", node.Name, "subnetID", subnetID)
+	log.Info("Creating and attaching ENI for subnet", "instanceID", instanceID, "deviceIndex", deviceIndex)
+
+	// Create the ENI in the specified subnet
+	eniID, err := r.createENIInSubnet(ctx, nodeENI, node, subnetID)
+	if err != nil {
+		log.Error(err, "Failed to create ENI in subnet")
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENICreationFailed",
-			"Failed to create ENI for node %s: %v", node.Name, err)
+			"Failed to create ENI for node %s in subnet %s: %v", node.Name, subnetID, err)
 		return err
 	}
 
 	// Attach the ENI
-	attachmentID, err := r.attachENI(ctx, eniID, instanceID, nodeENI.Spec.DeviceIndex)
+	attachmentID, err := r.attachENI(ctx, eniID, instanceID, deviceIndex)
 	if err != nil {
-		log.Error(err, "Failed to attach ENI", "node", node.Name, "eniID", eniID)
+		log.Error(err, "Failed to attach ENI", "eniID", eniID)
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIAttachmentFailed",
 			"Failed to attach ENI %s to node %s: %v", eniID, node.Name, err)
 		return err
@@ -358,12 +411,13 @@ func (r *NodeENIReconciler) createAndAttachENI(ctx context.Context, nodeENI *net
 		InstanceID:   instanceID,
 		ENIID:        eniID,
 		AttachmentID: attachmentID,
+		SubnetID:     subnetID,
 		Status:       "attached",
 		LastUpdated:  metav1.Now(),
 	})
 
 	r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAttached",
-		"Successfully attached ENI %s to node %s", eniID, node.Name)
+		"Successfully attached ENI %s to node %s in subnet %s", eniID, node.Name, subnetID)
 
 	return nil
 }
@@ -456,19 +510,27 @@ func (r *NodeENIReconciler) deleteStaleENI(ctx context.Context, nodeENI *network
 
 // Helper functions for AWS operations
 
-// createENI creates a new ENI in AWS
+// createENI creates a new ENI in AWS (kept for backward compatibility)
 func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, node corev1.Node) (string, error) {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", node.Name)
+
+	// Determine the subnet ID to use with the old method
+	subnetID, err := r.determineSubnetID(ctx, nodeENI, log)
+	if err != nil {
+		return "", err
+	}
+
+	// Use the new method with the determined subnet ID
+	return r.createENIInSubnet(ctx, nodeENI, node, subnetID)
+}
+
+// createENIInSubnet creates a new ENI in AWS in a specific subnet
+func (r *NodeENIReconciler) createENIInSubnet(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, node corev1.Node, subnetID string) (string, error) {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", node.Name, "subnetID", subnetID)
 
 	description := nodeENI.Spec.Description
 	if description == "" {
 		description = fmt.Sprintf("ENI created by nodeeni-controller for node %s", node.Name)
-	}
-
-	// Determine the subnet ID to use
-	subnetID, err := r.determineSubnetID(ctx, nodeENI, log)
-	if err != nil {
-		return "", err
 	}
 
 	// Determine the security group IDs to use
@@ -501,9 +563,10 @@ func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1
 
 	// Create tags for the ENI
 	tags := map[string]string{
-		"Name":                             fmt.Sprintf("nodeeni-%s-%s", nodeENI.Name, node.Name),
+		"Name":                             fmt.Sprintf("nodeeni-%s-%s-%s", nodeENI.Name, node.Name, subnetID[len(subnetID)-8:]),
 		"NodeENI":                          nodeENI.Name,
 		"Node":                             node.Name,
+		"SubnetID":                         subnetID,
 		"kubernetes.io/cluster/managed-by": "nodeeni-controller",
 		"node.k8s.amazonaws.com/no_manage": "true",
 	}
@@ -518,12 +581,13 @@ func (r *NodeENIReconciler) createENI(ctx context.Context, nodeENI *networkingv1
 }
 
 // determineSubnetID determines which subnet ID to use for creating an ENI
+// This is kept for backward compatibility with the old single-subnet approach
 func (r *NodeENIReconciler) determineSubnetID(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, log logr.Logger) (string, error) {
 	// Priority order:
 	// 1. Single SubnetID if specified
-	// 2. Multiple SubnetIDs if specified
+	// 2. Multiple SubnetIDs if specified (use first)
 	// 3. Single SubnetName if specified
-	// 4. Multiple SubnetNames if specified
+	// 4. Multiple SubnetNames if specified (use first)
 
 	// Check for single SubnetID (backward compatibility)
 	if nodeENI.Spec.SubnetID != "" {
@@ -532,8 +596,7 @@ func (r *NodeENIReconciler) determineSubnetID(ctx context.Context, nodeENI *netw
 
 	// Check for multiple SubnetIDs
 	if len(nodeENI.Spec.SubnetIDs) > 0 {
-		// For now, simply use the first subnet in the list
-		// In the future, this could be enhanced with more sophisticated selection logic
+		// Simply use the first subnet in the list for backward compatibility
 		subnetID := nodeENI.Spec.SubnetIDs[0]
 		log.Info("Selected subnet ID from list", "subnetID", subnetID, "totalSubnets", len(nodeENI.Spec.SubnetIDs))
 		return subnetID, nil
@@ -551,7 +614,7 @@ func (r *NodeENIReconciler) determineSubnetID(ctx context.Context, nodeENI *netw
 
 	// Check for multiple SubnetNames
 	if len(nodeENI.Spec.SubnetNames) > 0 {
-		// For now, simply use the first subnet name in the list
+		// Simply use the first subnet name in the list for backward compatibility
 		subnetName := nodeENI.Spec.SubnetNames[0]
 		subnetID, err := r.AWS.GetSubnetIDByName(ctx, subnetName)
 		if err != nil {
@@ -563,6 +626,60 @@ func (r *NodeENIReconciler) determineSubnetID(ctx context.Context, nodeENI *netw
 
 	// No subnet information provided
 	return "", fmt.Errorf("no subnet information provided (subnetID, subnetIDs, subnetName, or subnetNames)")
+}
+
+// getAllSubnetIDs returns all subnet IDs that should be used for creating ENIs
+func (r *NodeENIReconciler) getAllSubnetIDs(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI) ([]string, error) {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name)
+	var subnetIDs []string
+
+	// Check for single SubnetID (backward compatibility)
+	if nodeENI.Spec.SubnetID != "" {
+		subnetIDs = append(subnetIDs, nodeENI.Spec.SubnetID)
+	}
+
+	// Add all SubnetIDs from the list
+	if len(nodeENI.Spec.SubnetIDs) > 0 {
+		subnetIDs = append(subnetIDs, nodeENI.Spec.SubnetIDs...)
+	}
+
+	// Check for single SubnetName (backward compatibility)
+	if nodeENI.Spec.SubnetName != "" {
+		subnetID, err := r.AWS.GetSubnetIDByName(ctx, nodeENI.Spec.SubnetName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get subnet ID from name %s: %v", nodeENI.Spec.SubnetName, err)
+		}
+		log.Info("Resolved subnet name to ID", "subnetName", nodeENI.Spec.SubnetName, "subnetID", subnetID)
+
+		// Only add if not already in the list
+		if !util.ContainsString(subnetIDs, subnetID) {
+			subnetIDs = append(subnetIDs, subnetID)
+		}
+	}
+
+	// Add all SubnetNames from the list
+	if len(nodeENI.Spec.SubnetNames) > 0 {
+		for _, subnetName := range nodeENI.Spec.SubnetNames {
+			subnetID, err := r.AWS.GetSubnetIDByName(ctx, subnetName)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get subnet ID from name %s: %v", subnetName, err)
+			}
+			log.Info("Resolved subnet name to ID", "subnetName", subnetName, "subnetID", subnetID)
+
+			// Only add if not already in the list
+			if !util.ContainsString(subnetIDs, subnetID) {
+				subnetIDs = append(subnetIDs, subnetID)
+			}
+		}
+	}
+
+	// Check if we have any subnet IDs
+	if len(subnetIDs) == 0 {
+		return nil, fmt.Errorf("no subnet information provided (subnetID, subnetIDs, subnetName, or subnetNames)")
+	}
+
+	log.Info("Determined subnet IDs for ENI creation", "count", len(subnetIDs), "subnetIDs", subnetIDs)
+	return subnetIDs, nil
 }
 
 // attachENI attaches an ENI to an EC2 instance

@@ -168,7 +168,7 @@ spec:
 
 ## Using Multiple Subnets
 
-You can specify multiple subnets to use a single security group across different subnets:
+You can specify multiple subnets to create ENIs in all specified subnets with the same security group:
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
@@ -178,15 +178,15 @@ metadata:
 spec:
   nodeSelector:
     ng: multi-eni
-  # Specify multiple subnet IDs - one will be selected
+  # Specify multiple subnet IDs - ENIs will be created in ALL subnets
   subnetIDs:
   - subnet-xxxxxxxx
   - subnet-yyyyyyyy
   securityGroupIDs:
   - sg-xxxxxxxx
-  deviceIndex: 2
+  deviceIndex: 2  # This is the base device index, will be incremented for additional ENIs
   deleteOnTermination: true
-  description: "ENI with multiple subnet options"
+  description: "ENI with multiple subnets"
 ```
 
 You can also use multiple subnet names:
@@ -199,13 +199,15 @@ metadata:
 spec:
   nodeSelector:
     ng: multi-eni
-  # Specify multiple subnet names - one will be selected
+  # Specify multiple subnet names - ENIs will be created in ALL subnets
   subnetNames:
   - subnet-name-1
   - subnet-name-2
   securityGroupIDs:
   - sg-xxxxxxxx
-  deviceIndex: 2
+  deviceIndex: 2  # This is the base device index, will be incremented for additional ENIs
   deleteOnTermination: true
-  description: "ENI with multiple subnet name options"
+  description: "ENI with multiple subnet names"
 ```
+
+The controller will automatically increment the device index for each additional ENI. For example, if you specify a device index of 2 and three subnets, the ENIs will be attached at device indices 2, 3, and 4.

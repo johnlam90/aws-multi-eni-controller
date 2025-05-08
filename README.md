@@ -312,7 +312,7 @@ If you prefer to deploy manually:
 
 ### Using Multiple Subnets
 
-You can specify multiple subnets in your NodeENI resource. The controller will select one of the subnets to create the ENI:
+You can specify multiple subnets in your NodeENI resource. The controller will create ENIs in ALL specified subnets, using the same security group(s):
 
    ```yaml
    apiVersion: networking.k8s.aws/v1alpha1
@@ -322,15 +322,15 @@ You can specify multiple subnets in your NodeENI resource. The controller will s
    spec:
      nodeSelector:
        ng: multi-eni
-     # Specify multiple subnet IDs - one will be selected
+     # Specify multiple subnet IDs - ENIs will be created in ALL subnets
      subnetIDs:
      - subnet-0f59b4f14737be9ad  # Replace with your subnet ID
      - subnet-abcdef1234567890  # Replace with your subnet ID
      securityGroupIDs:
      - sg-05da196f3314d4af8  # Replace with your security group ID
-     deviceIndex: 1
+     deviceIndex: 1  # This is the base device index, will be incremented for additional ENIs
      deleteOnTermination: true
-     description: "ENI with multiple subnet options"
+     description: "ENI with multiple subnets"
    ```
 
 You can also use subnet names instead of IDs:
@@ -343,16 +343,18 @@ You can also use subnet names instead of IDs:
    spec:
      nodeSelector:
        ng: multi-eni
-     # Specify multiple subnet names - one will be selected
+     # Specify multiple subnet names - ENIs will be created in ALL subnets
      subnetNames:
      - eks-private-subnet-1
      - eks-private-subnet-2
      securityGroupIDs:
      - sg-05da196f3314d4af8  # Replace with your security group ID
-     deviceIndex: 2
+     deviceIndex: 2  # This is the base device index, will be incremented for additional ENIs
      deleteOnTermination: true
-     description: "ENI with multiple subnet name options"
+     description: "ENI with multiple subnet names"
    ```
+
+The controller will automatically increment the device index for each additional ENI. For example, if you specify a device index of 1 and three subnets, the ENIs will be attached at device indices 1, 2, and 3.
 
 ### Automatically Bringing Up Secondary Interfaces
 

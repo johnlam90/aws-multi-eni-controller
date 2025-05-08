@@ -19,10 +19,11 @@ spec:
     ng: multi-eni  # Replace with your node selector
   subnetID: subnet-xxxxxxxx  # Replace with your subnet ID
   # OR use subnetName: your-subnet-name
-  # OR use multiple subnets:
+  # OR use multiple subnets (ENIs will be created in ALL subnets):
   # subnetIDs:
   # - subnet-xxxxxxxx
   # - subnet-yyyyyyyy
+  # Note: Device index will be incremented for each additional subnet
   securityGroupIDs:
   - sg-xxxxxxxx  # Replace with your security group ID
   # OR use securityGroupNames:

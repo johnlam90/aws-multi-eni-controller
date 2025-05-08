@@ -90,6 +90,10 @@ type ENIAttachment struct {
 	// AttachmentID is the ID of the ENI attachment
 	AttachmentID string `json:"attachmentID"`
 
+	// SubnetID is the ID of the subnet where the ENI was created
+	// +optional
+	SubnetID string `json:"subnetID,omitempty"`
+
 	// Status is the status of the attachment
 	Status string `json:"status"`
 

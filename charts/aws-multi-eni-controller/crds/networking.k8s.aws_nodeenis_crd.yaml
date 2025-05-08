@@ -99,6 +99,9 @@ spec:
                     nodeID:
                       description: ID of the node
                       type: string
+                    subnetID:
+                      description: ID of the subnet where the ENI was created
+                      type: string
                     status:
                       description: Status of the attachment
                       type: string
