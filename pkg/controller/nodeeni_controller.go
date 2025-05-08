@@ -171,12 +171,25 @@ func (r *NodeENIReconciler) handleDeletion(ctx context.Context, nodeENI *network
 	if controllerutil.ContainsFinalizer(nodeENI, NodeENIFinalizer) {
 		log.Info("Cleaning up resources for NodeENI being deleted", "name", nodeENI.Name)
 
+		// Track if any cleanup operations failed
+		cleanupFailed := false
+
 		// Clean up all ENI attachments
 		for _, attachment := range nodeENI.Status.Attachments {
-			r.cleanupENIAttachment(ctx, nodeENI, attachment)
+			if !r.cleanupENIAttachment(ctx, nodeENI, attachment) {
+				cleanupFailed = true
+			}
 		}
 
-		// Remove our finalizer from the list and update it
+		// Only remove the finalizer if all cleanup operations succeeded
+		if cleanupFailed {
+			log.Info("Some cleanup operations failed, will retry later", "name", nodeENI.Name)
+			// Requeue with a backoff to retry the cleanup
+			return ctrl.Result{RequeueAfter: r.Config.DetachmentTimeout}, nil
+		}
+
+		// All cleanup operations succeeded, remove the finalizer
+		log.Info("All cleanup operations succeeded, removing finalizer", "name", nodeENI.Name)
 		controllerutil.RemoveFinalizer(nodeENI, NodeENIFinalizer)
 		if err := r.Client.Update(ctx, nodeENI); err != nil {
 			return ctrl.Result{}, err
@@ -188,9 +201,13 @@ func (r *NodeENIReconciler) handleDeletion(ctx context.Context, nodeENI *network
 }
 
 // cleanupENIAttachment detaches and deletes an ENI attachment
-func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) {
+// Returns true if cleanup was successful, false otherwise
+func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
 	log.Info("Detaching and deleting ENI")
+
+	// Track if any operation failed
+	success := true
 
 	// Detach the ENI if it's attached
 	if attachment.AttachmentID != "" {
@@ -198,34 +215,43 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 			log.Error(err, "Failed to detach ENI", "attachmentID", attachment.AttachmentID)
 			r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDetachmentFailed",
 				"Failed to detach ENI %s from node %s: %v", attachment.ENIID, attachment.NodeID, err)
+			success = false
 			// Continue with deletion attempt
 		}
 	}
 
 	// Wait for the detachment to complete
 	if attachment.ENIID != "" {
-		// Try to wait for detachment, but continue even if it fails
-		_ = r.AWS.WaitForENIDetachment(ctx, attachment.ENIID, r.Config.DetachmentTimeout)
+		// Try to wait for detachment
+		if err := r.AWS.WaitForENIDetachment(ctx, attachment.ENIID, r.Config.DetachmentTimeout); err != nil {
+			log.Error(err, "Failed to wait for ENI detachment", "eniID", attachment.ENIID)
+			success = false
+		}
 
 		// Delete the ENI
-		r.deleteENIIfExists(ctx, nodeENI, attachment)
+		if !r.deleteENIIfExists(ctx, nodeENI, attachment) {
+			success = false
+		}
 	}
+
+	return success
 }
 
 // deleteENIIfExists checks if an ENI exists and deletes it if it does
-func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) {
+// Returns true if deletion was successful or ENI doesn't exist, false otherwise
+func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name, "eniID", attachment.ENIID)
 
 	// Try to describe the ENI to check its status
 	eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
 	if err != nil {
 		log.Error(err, "Failed to describe ENI")
-		return
+		return false
 	}
 
 	if eni == nil {
 		log.Info("ENI no longer exists")
-		return
+		return true
 	}
 
 	// Check if the ENI is still attached
@@ -239,10 +265,12 @@ func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *netw
 		log.Error(err, "Failed to delete ENI")
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDeletionFailed",
 			"Failed to delete ENI %s: %v", attachment.ENIID, err)
+		return false
 	} else {
 		log.Info("Successfully deleted ENI")
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDeleted",
 			"Successfully deleted ENI %s", attachment.ENIID)
+		return true
 	}
 }
 
@@ -465,60 +493,8 @@ func (r *NodeENIReconciler) handleStaleAttachment(ctx context.Context, nodeENI *
 	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
 	log.Info("Detaching and deleting stale ENI")
 
-	// Detach the ENI if it's attached
-	if attachment.AttachmentID != "" {
-		if err := r.AWS.DetachENI(ctx, attachment.AttachmentID, true); err != nil {
-			log.Error(err, "Failed to detach ENI", "attachmentID", attachment.AttachmentID)
-			r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDetachmentFailed",
-				"Failed to detach ENI %s from node %s: %v", attachment.ENIID, attachment.NodeID, err)
-			return true // Keep the attachment
-		}
-	}
-
-	// Wait for the detachment to complete
-	log.Info("Waiting for ENI detachment to complete")
-	time.Sleep(r.Config.DetachmentTimeout)
-
-	if attachment.ENIID == "" {
-		return false // No ENI ID, nothing to delete
-	}
-
-	// Delete the ENI
-	return r.deleteStaleENI(ctx, nodeENI, attachment)
-}
-
-// deleteStaleENI deletes a stale ENI
-// Returns true if the attachment should be kept (cleanup failed), false otherwise
-func (r *NodeENIReconciler) deleteStaleENI(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
-	log := r.Log.WithValues("nodeeni", nodeENI.Name, "eniID", attachment.ENIID)
-
-	// Try to describe the ENI to check its status
-	eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
-	if err != nil {
-		log.Error(err, "Failed to describe ENI")
-		return true // Keep the attachment
-	}
-
-	if eni == nil {
-		log.Info("ENI no longer exists")
-		return false // ENI doesn't exist, don't keep the attachment
-	}
-
-	// Check if the ENI is still attached
-	if eni.Attachment != nil && eni.Status != awsutil.EC2v2NetworkInterfaceStatusAvailable {
-		log.Info("ENI is still attached, waiting longer", "status", eni.Status)
-		time.Sleep(r.Config.DetachmentTimeout)
-	}
-
-	// Delete the ENI
-	if err := r.AWS.DeleteENI(ctx, attachment.ENIID); err != nil {
-		log.Error(err, "Failed to delete ENI")
-		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDeletionFailed",
-			"Failed to delete ENI %s: %v", attachment.ENIID, err)
-		return true // Keep the attachment
-	}
-
-	return false // Successfully deleted, don't keep the attachment
+	// Use the same cleanup logic as for finalizers
+	return !r.cleanupENIAttachment(ctx, nodeENI, attachment)
 }
 
 // Helper functions for AWS operations
