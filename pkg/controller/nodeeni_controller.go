@@ -266,12 +266,12 @@ func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *netw
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDeletionFailed",
 			"Failed to delete ENI %s: %v", attachment.ENIID, err)
 		return false
-	} else {
-		log.Info("Successfully deleted ENI")
-		r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDeleted",
-			"Successfully deleted ENI %s", attachment.ENIID)
-		return true
 	}
+
+	log.Info("Successfully deleted ENI")
+	r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDeleted",
+		"Successfully deleted ENI %s", attachment.ENIID)
+	return true
 }
 
 // addFinalizer adds a finalizer to a NodeENI resource
