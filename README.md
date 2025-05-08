@@ -23,6 +23,7 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 - **Multi-Subnet Support**: Can attach ENIs from different subnets to the same or different nodes
 - **AWS SDK v2**: Uses the latest AWS SDK Go v2 for improved performance and features
 - **Optimized Image**: Lightweight container image (22MB) for fast deployments
+- **Library Support**: Can be used as a Go library in other projects for programmatic ENI management
 
 ## Building and Deploying
 
@@ -562,15 +563,85 @@ The optimized image is ideal for production environments where deployment speed 
    - Detach and delete all ENIs created by this resource
    - Remove the finalizer to allow the resource to be deleted
 
+## Using as a Library
+
+The AWS Multi-ENI Controller can also be used as a Go library in your own projects for programmatic ENI management. This is useful for applications that need to create, attach, and manage ENIs without using the Kubernetes controller.
+
+### Installation
+
+```bash
+go get github.com/johnlam90/aws-multi-eni-controller
+```
+
+### Basic Usage
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "time"
+
+    "github.com/go-logr/logr"
+    "github.com/go-logr/zapr"
+    "github.com/johnlam90/aws-multi-eni-controller/pkg/lib"
+    "go.uber.org/zap"
+)
+
+func main() {
+    // Create a logger
+    zapLog, _ := zap.NewDevelopment()
+    logger := zapr.NewLogger(zapLog)
+
+    // Create a context with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+    defer cancel()
+
+    // Create an ENI manager
+    eniManager, err := lib.NewENIManager(ctx, "us-east-1", logger)
+    if err != nil {
+        log.Fatalf("Failed to create ENI manager: %v", err)
+    }
+
+    // Create an ENI
+    options := lib.ENIOptions{
+        SubnetID:           "subnet-12345678",
+        SecurityGroupIDs:   []string{"sg-12345678"},
+        Description:        "Example ENI",
+        DeviceIndex:        1,
+        DeleteOnTermination: true,
+        Tags: map[string]string{
+            "Name": "example-eni",
+        },
+    }
+
+    eniID, err := eniManager.CreateENI(ctx, options)
+    if err != nil {
+        log.Fatalf("Failed to create ENI: %v", err)
+    }
+
+    // Attach the ENI to an instance
+    err = eniManager.AttachENI(ctx, eniID, "i-12345678", options.DeviceIndex, options.DeleteOnTermination)
+    if err != nil {
+        log.Fatalf("Failed to attach ENI: %v", err)
+    }
+}
+```
+
+For more detailed examples and documentation, see the [Library Documentation](pkg/lib/README.md) and the [example code](examples/library-usage/main.go).
+
 ## Reference
 
 The repository contains the following key components:
 
 - `pkg/apis/networking/v1alpha1/nodeeni_types.go`: NodeENI CRD definition
 - `pkg/controller/nodeeni_controller.go`: Controller implementation
+- `pkg/lib/eni.go`: Library for programmatic ENI management
 - `deploy/crds/networking.k8s.aws_nodeenis_crd.yaml`: CRD YAML
 - `deploy/deployment.yaml`: Controller deployment (includes RBAC)
 - `deploy/samples/`: Sample NodeENI resources
+- `examples/library-usage/`: Examples of using the project as a library
 
 ## Contributing
 
