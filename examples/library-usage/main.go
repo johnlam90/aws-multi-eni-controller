@@ -8,7 +8,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/lib"
 	"go.uber.org/zap"
@@ -53,10 +52,10 @@ func main() {
 
 	// Create ENI options
 	options := lib.ENIOptions{
-		SubnetID:           subnetID,
-		SecurityGroupIDs:   []string{securityGroupID},
-		Description:        "Example ENI created by library",
-		DeviceIndex:        1,
+		SubnetID:            subnetID,
+		SecurityGroupIDs:    []string{securityGroupID},
+		Description:         "Example ENI created by library",
+		DeviceIndex:         1,
 		DeleteOnTermination: true,
 		Tags: map[string]string{
 			"Name":        "example-eni",
@@ -79,34 +78,26 @@ func main() {
 	err = eniManager.AttachENI(ctx, eniID, instanceID, options.DeviceIndex, options.DeleteOnTermination)
 	if err != nil {
 		logger.Error(err, "Failed to attach ENI")
-		
+
 		// Try to clean up the ENI
 		logger.Info("Attempting to delete the ENI...", "eniID", eniID)
 		if delErr := eniManager.DeleteENI(ctx, eniID); delErr != nil {
 			logger.Error(delErr, "Failed to delete ENI during cleanup")
 		}
-		
+
 		os.Exit(1)
 	}
 	logger.Info("Successfully attached ENI to instance", "eniID", eniID, "instanceID", instanceID)
 
-	// Get ENIs attached to the instance
-	logger.Info("Getting ENIs attached to instance...", "instanceID", instanceID)
-	enis, err := eniManager.GetENIsByInstance(ctx, instanceID)
-	if err != nil {
-		logger.Error(err, "Failed to get ENIs for instance")
-	} else {
-		logger.Info("Instance has ENIs attached", "count", len(enis))
-		for i, eni := range enis {
-			logger.Info("ENI details", 
-				"index", i,
-				"id", eni.ID,
-				"subnetID", eni.SubnetID,
-				"privateIP", eni.PrivateIP,
-				"deviceIndex", eni.DeviceIndex,
-				"status", eni.Status)
-		}
-	}
+	// Note: The GetENIsByInstance method is not fully implemented yet
+	// In a real application, you would need to implement this functionality
+	// or use the AWS SDK directly to get this information
+	logger.Info("Note: GetENIsByInstance is not fully implemented in this example")
+
+	// Instead, we can describe the ENI we just created
+	logger.Info("You can use the AWS CLI to verify the ENI was created and attached:")
+	logger.Info("aws ec2 describe-network-interfaces --network-interface-ids " + eniID)
+	logger.Info("aws ec2 describe-instances --instance-ids " + instanceID + " --query \"Reservations[*].Instances[*].NetworkInterfaces[*]\"")
 
 	// Note: In a real application, you might want to detach and delete the ENI when done
 	// This example leaves the ENI attached for demonstration purposes

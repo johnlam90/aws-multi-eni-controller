@@ -16,56 +16,56 @@ go get github.com/johnlam90/aws-multi-eni-controller
 package main
 
 import (
-	"context"
-	"log"
-	"time"
+    "context"
+    "log"
+    "time"
 
-	"github.com/go-logr/logr"
-	"github.com/go-logr/zapr"
-	"github.com/johnlam90/aws-multi-eni-controller/pkg/lib"
-	"go.uber.org/zap"
+    "github.com/go-logr/logr"
+    "github.com/go-logr/zapr"
+    "github.com/johnlam90/aws-multi-eni-controller/pkg/lib"
+    "go.uber.org/zap"
 )
 
 func main() {
-	// Create a logger
-	zapLog, _ := zap.NewDevelopment()
-	logger := zapr.NewLogger(zapLog)
+    // Create a logger
+    zapLog, _ := zap.NewDevelopment()
+    logger := zapr.NewLogger(zapLog)
 
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+    // Create a context with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+    defer cancel()
 
-	// Create an ENI manager
-	eniManager, err := lib.NewENIManager(ctx, "us-east-1", logger)
-	if err != nil {
-		log.Fatalf("Failed to create ENI manager: %v", err)
-	}
+    // Create an ENI manager
+    eniManager, err := lib.NewENIManager(ctx, "us-east-1", logger)
+    if err != nil {
+        log.Fatalf("Failed to create ENI manager: %v", err)
+    }
 
-	// Create an ENI
-	options := lib.ENIOptions{
-		SubnetID:           "subnet-12345678",
-		SecurityGroupIDs:   []string{"sg-12345678"},
-		Description:        "Example ENI",
-		DeviceIndex:        1,
-		DeleteOnTermination: true,
-		Tags: map[string]string{
-			"Name": "example-eni",
-		},
-	}
+    // Create an ENI
+    options := lib.ENIOptions{
+        SubnetID:           "subnet-12345678",
+        SecurityGroupIDs:   []string{"sg-12345678"},
+        Description:        "Example ENI",
+        DeviceIndex:        1,
+        DeleteOnTermination: true,
+        Tags: map[string]string{
+            "Name": "example-eni",
+        },
+    }
 
-	eniID, err := eniManager.CreateENI(ctx, options)
-	if err != nil {
-		log.Fatalf("Failed to create ENI: %v", err)
-	}
+    eniID, err := eniManager.CreateENI(ctx, options)
+    if err != nil {
+        log.Fatalf("Failed to create ENI: %v", err)
+    }
 
-	// Attach the ENI to an instance
-	err = eniManager.AttachENI(ctx, eniID, "i-12345678", options.DeviceIndex, options.DeleteOnTermination)
-	if err != nil {
-		log.Fatalf("Failed to attach ENI: %v", err)
-	}
+    // Attach the ENI to an instance
+    err = eniManager.AttachENI(ctx, eniID, "i-12345678", options.DeviceIndex, options.DeleteOnTermination)
+    if err != nil {
+        log.Fatalf("Failed to attach ENI: %v", err)
+    }
 
-	// Later, detach and delete the ENI when done
-	// ...
+    // Later, detach and delete the ENI when done
+    // ...
 }
 ```
 
@@ -75,8 +75,8 @@ You can create an ENI manager with custom configuration:
 
 ```go
 import (
-	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
-	"github.com/johnlam90/aws-multi-eni-controller/pkg/lib"
+    "github.com/johnlam90/aws-multi-eni-controller/pkg/config"
+    "github.com/johnlam90/aws-multi-eni-controller/pkg/lib"
 )
 
 // Create a custom configuration
@@ -134,17 +134,17 @@ Detaches an ENI from an instance.
 
 Deletes an ENI.
 
-#### `GetENIsByInstance(ctx context.Context, instanceID string) ([]awsutil.NetworkInterfaceInfo, error)`
+#### `GetENIsByInstance(ctx context.Context, instanceID string) ([]NetworkInterfaceInfo, error)`
 
-Gets all ENIs attached to an instance.
+Gets all ENIs attached to an instance. Note: This method is currently not fully implemented and will return an error.
 
-#### `GetSubnetsByVPC(ctx context.Context, vpcID string) ([]awsutil.SubnetInfo, error)`
+#### `GetSubnetsByVPC(ctx context.Context, vpcID string) ([]SubnetInfo, error)`
 
-Gets all subnets in a VPC.
+Gets all subnets in a VPC. Note: This method is currently not fully implemented and will return an error.
 
-#### `GetSecurityGroupsByVPC(ctx context.Context, vpcID string) ([]awsutil.SecurityGroupInfo, error)`
+#### `GetSecurityGroupsByVPC(ctx context.Context, vpcID string) ([]SecurityGroupInfo, error)`
 
-Gets all security groups in a VPC.
+Gets all security groups in a VPC. Note: This method is currently not fully implemented and will return an error.
 
 ## Error Handling
 
