@@ -117,6 +117,13 @@ func (m *ENIManager) AttachENI(ctx context.Context, eniID, instanceID string, de
 
 	attachmentID, err := m.ec2Client.AttachENI(ctx, eniID, instanceID, deviceIndex, deleteOnTermination)
 	if err != nil {
+		// If attachment fails, try to clean up the ENI to avoid resource leaks
+		m.logger.Error(err, "Failed to attach ENI, attempting to clean up", "eniID", eniID)
+		if deleteErr := m.DeleteENI(ctx, eniID); deleteErr != nil {
+			m.logger.Error(deleteErr, "Failed to delete unattached ENI", "eniID", eniID)
+		} else {
+			m.logger.Info("Successfully deleted unattached ENI", "eniID", eniID)
+		}
 		return fmt.Errorf("failed to attach network interface: %w", err)
 	}
 

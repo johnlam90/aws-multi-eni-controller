@@ -402,6 +402,19 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 		log.Error(err, "Failed to attach ENI", "eniID", eniID)
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIAttachmentFailed",
 			"Failed to attach ENI %s to node %s: %v", eniID, node.Name, err)
+
+		// Clean up the created ENI to avoid resource leaks
+		log.Info("Cleaning up unattached ENI", "eniID", eniID)
+		if deleteErr := r.AWS.DeleteENI(ctx, eniID); deleteErr != nil {
+			log.Error(deleteErr, "Failed to delete unattached ENI", "eniID", eniID)
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDeletionFailed",
+				"Failed to delete unattached ENI %s: %v", eniID, deleteErr)
+		} else {
+			log.Info("Successfully deleted unattached ENI", "eniID", eniID)
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDeleted",
+				"Successfully deleted unattached ENI %s", eniID)
+		}
+
 		return err
 	}
 

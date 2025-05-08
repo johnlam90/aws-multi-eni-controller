@@ -108,10 +108,13 @@ func (c *EC2Client) AttachENI(ctx context.Context, eniID, instanceID string, dev
 			},
 		})
 		if err != nil {
-			log.Error(err, "Failed to set delete on termination", "attachmentID", attachmentID)
-			return attachmentID, fmt.Errorf("failed to set delete on termination: %v", err)
+			// Log the error but don't fail the attachment
+			log.Error(err, "Failed to set delete on termination, but ENI is still attached", "attachmentID", attachmentID)
+			log.Info("WARNING: ENI will not be automatically deleted when the instance terminates", "eniID", eniID)
+			// Continue without returning an error
+		} else {
+			log.Info("Set delete on termination to true", "attachmentID", attachmentID)
 		}
-		log.Info("Set delete on termination to true", "attachmentID", attachmentID)
 	}
 
 	return attachmentID, nil
