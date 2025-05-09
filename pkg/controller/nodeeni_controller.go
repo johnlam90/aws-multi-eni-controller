@@ -230,6 +230,8 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 			// Check if the error indicates the attachment doesn't exist
 			if strings.Contains(err.Error(), "InvalidAttachmentID.NotFound") {
 				log.Info("ENI attachment no longer exists, considering detachment successful", "error", err.Error())
+				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAttachmentAlreadyRemoved",
+					"ENI attachment for %s was already removed (possibly manually)", attachment.ENIID)
 			} else {
 				log.Error(err, "Failed to detach ENI", "attachmentID", attachment.AttachmentID)
 				r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDetachmentFailed",
@@ -247,6 +249,10 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 			// Check if the error indicates the ENI doesn't exist
 			if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
 				log.Info("ENI no longer exists when waiting for detachment, considering detachment successful", "error", err.Error())
+				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
+					"ENI %s was already deleted (possibly manually) when waiting for detachment", attachment.ENIID)
+				// ENI is already gone, so we can consider the cleanup successful
+				return true
 			} else {
 				log.Error(err, "Failed to wait for ENI detachment", "eniID", attachment.ENIID)
 				success = false
@@ -575,9 +581,21 @@ func (r *NodeENIReconciler) removeStaleAttachments(ctx context.Context, nodeENI 
 	for _, attachment := range staleAttachments {
 		// Check if this attachment still exists
 		eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
-		if err != nil || eni != nil {
-			// If there was an error or the ENI still exists, keep the attachment
-			log.Info("Keeping stale attachment due to cleanup failure", "node", attachment.NodeID, "eniID", attachment.ENIID)
+		if err != nil {
+			// Check if the error indicates the ENI doesn't exist
+			if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+				// ENI was successfully deleted or doesn't exist
+				log.Info("Successfully removed stale attachment (ENI not found)", "node", attachment.NodeID, "eniID", attachment.ENIID)
+				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
+					"Successfully detached and deleted ENI %s from node %s (or it was already deleted)", attachment.ENIID, attachment.NodeID)
+			} else {
+				// For other errors, keep the attachment
+				log.Info("Keeping stale attachment due to error checking ENI", "node", attachment.NodeID, "eniID", attachment.ENIID, "error", err.Error())
+				updatedAttachments = append(updatedAttachments, attachment)
+			}
+		} else if eni != nil {
+			// ENI still exists, keep the attachment
+			log.Info("Keeping stale attachment because ENI still exists", "node", attachment.NodeID, "eniID", attachment.ENIID)
 			updatedAttachments = append(updatedAttachments, attachment)
 		} else {
 			// ENI was successfully deleted
@@ -595,6 +613,24 @@ func (r *NodeENIReconciler) removeStaleAttachments(ctx context.Context, nodeENI 
 func (r *NodeENIReconciler) handleStaleAttachment(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
 	log.Info("Detaching and deleting stale ENI")
+
+	// First check if the ENI still exists
+	eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
+	if err != nil {
+		// Check if the error indicates the ENI doesn't exist
+		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+			log.Info("Stale ENI no longer exists (not found in AWS), considering cleanup successful", "error", err.Error())
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
+				"Stale ENI %s was already deleted (possibly manually)", attachment.ENIID)
+			return false // Don't keep the attachment
+		}
+
+		// For other errors, log but continue with cleanup attempt
+		log.Error(err, "Failed to describe stale ENI, will still attempt cleanup")
+	} else if eni == nil {
+		log.Info("Stale ENI no longer exists, considering cleanup successful")
+		return false // Don't keep the attachment
+	}
 
 	// Use the same cleanup logic as for finalizers
 	return !r.cleanupENIAttachment(ctx, nodeENI, attachment)

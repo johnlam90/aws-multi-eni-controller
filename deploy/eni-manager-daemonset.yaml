@@ -20,7 +20,7 @@ spec:
         ng: multi-eni
       containers:
       - name: eni-manager
-        image: johnlam90/aws-multi-eni-controller:multi-subnet-v6
+        image: ghcr.io/johnlam90/aws-multi-eni-controller:beta-latest
         env:
         - name: COMPONENT
           value: "eni-manager"
