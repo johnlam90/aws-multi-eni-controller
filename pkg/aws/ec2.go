@@ -8,6 +8,7 @@ package aws
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -132,6 +133,12 @@ func (c *EC2Client) DetachENI(ctx context.Context, attachmentID string, force bo
 
 	_, err := c.EC2.DetachNetworkInterface(ctx, input)
 	if err != nil {
+		// Check if the error indicates the attachment doesn't exist
+		// This can happen if the ENI was manually detached outside of our control
+		if strings.Contains(err.Error(), "InvalidAttachmentID.NotFound") {
+			log.Info("ENI attachment no longer exists, considering detachment successful", "error", err.Error())
+			return nil
+		}
 		return fmt.Errorf("failed to detach ENI: %v", err)
 	}
 
@@ -150,6 +157,12 @@ func (c *EC2Client) DeleteENI(ctx context.Context, eniID string) error {
 
 	_, err := c.EC2.DeleteNetworkInterface(ctx, input)
 	if err != nil {
+		// Check if the error indicates the ENI doesn't exist
+		// This can happen if the ENI was manually deleted outside of our control
+		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+			log.Info("ENI no longer exists, considering deletion successful", "error", err.Error())
+			return nil
+		}
 		return fmt.Errorf("failed to delete ENI: %v", err)
 	}
 
@@ -288,6 +301,12 @@ func (c *EC2Client) WaitForENIDetachment(ctx context.Context, eniID string, time
 	// Check the ENI status
 	eniInterface, err := c.DescribeENI(ctx, eniID)
 	if err != nil {
+		// Check if the error indicates the ENI doesn't exist
+		// This can happen if the ENI was manually deleted outside of our control
+		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+			log.Info("ENI no longer exists when checking detachment status, considering detachment successful", "error", err.Error())
+			return nil
+		}
 		return fmt.Errorf("failed to check ENI status: %v", err)
 	}
 
