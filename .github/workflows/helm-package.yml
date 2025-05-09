@@ -79,6 +79,23 @@ jobs:
           echo "chart_version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
           echo "app_version=${{ github.event.inputs.appVersion }}" >> $GITHUB_OUTPUT
 
+      - name: Extract chart version from Chart.yaml
+        id: extract_chart_version
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' }}
+        run: |
+          # Extract version from Chart.yaml
+          CHART_VERSION=$(grep '^version:' charts/aws-multi-eni-controller/Chart.yaml | awk '{print $2}')
+          APP_VERSION=$(grep '^appVersion:' charts/aws-multi-eni-controller/Chart.yaml | sed 's/appVersion: "\(.*\)"/\1/')
+
+          echo "Extracted CHART_VERSION=${CHART_VERSION} and APP_VERSION=${APP_VERSION} from Chart.yaml"
+
+          echo "CHART_VERSION=${CHART_VERSION}" >> $GITHUB_ENV
+          echo "APP_VERSION=${APP_VERSION}" >> $GITHUB_ENV
+
+          # Also set as outputs for the step
+          echo "chart_version=${CHART_VERSION}" >> $GITHUB_OUTPUT
+          echo "app_version=${APP_VERSION}" >> $GITHUB_OUTPUT
+
       # Package the Helm chart
       - name: Package Helm chart
         run: |
@@ -94,12 +111,12 @@ jobs:
         id: create_index
         run: |
           # Create a simple index file for the chart
-          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version }}"
+          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version || steps.extract_chart_version.outputs.chart_version }}"
           helm repo index .helm-charts --url https://github.com/${{ github.repository }}/releases/download/helm-chart-${CHART_VERSION}/
 
       # Login to GHCR for OCI chart push
       - name: Log in to the Container registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v2
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -120,7 +137,7 @@ jobs:
           echo "Found chart file: $CHART_FILE"
 
           # Get chart version
-          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version }}"
+          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version || steps.extract_chart_version.outputs.chart_version }}"
 
           # Push the chart to GHCR
           helm push $CHART_FILE oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
@@ -144,8 +161,8 @@ jobs:
           CHART_FILENAME=$(basename $CHART_FILE)
 
           # Get chart and app versions
-          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version }}"
-          APP_VERSION="${{ steps.set_chart_version_from_tag.outputs.app_version || steps.update_chart_version_if_manually_triggered.outputs.app_version }}"
+          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version || steps.extract_chart_version.outputs.chart_version }}"
+          APP_VERSION="${{ steps.set_chart_version_from_tag.outputs.app_version || steps.update_chart_version_if_manually_triggered.outputs.app_version || steps.extract_chart_version.outputs.app_version }}"
 
           # Create release notes
           cat > release_notes.md << EOF
@@ -193,7 +210,7 @@ jobs:
       - name: Display instructions for using the Helm chart
         run: |
           # Get chart version
-          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version }}"
+          CHART_VERSION="${{ steps.set_chart_version_from_tag.outputs.chart_version || steps.update_chart_version_if_manually_triggered.outputs.chart_version || steps.extract_chart_version.outputs.chart_version }}"
 
           echo "::notice::Helm chart has been published as a GitHub Release and to GHCR as an OCI artifact."
           echo "::notice::Option 1: Download from GitHub Release:"
