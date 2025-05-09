@@ -414,6 +414,9 @@ func (r *NodeENIReconciler) processNode(ctx context.Context, nodeENI *networking
 	nodeKey := node.Name
 	currentAttachments[nodeKey] = true
 
+	// Verify existing ENI attachments for this node
+	r.verifyENIAttachments(ctx, nodeENI, node.Name)
+
 	// Get all subnet IDs we need to create ENIs in
 	subnetIDs, err := r.getAllSubnetIDs(ctx, nodeENI)
 	if err != nil {
@@ -824,4 +827,67 @@ func (r *NodeENIReconciler) attachENI(ctx context.Context, eniID, instanceID str
 	}
 
 	return attachmentID, nil
+}
+
+// verifyENIAttachments verifies the actual state of ENIs in AWS and updates the NodeENI resource status accordingly
+func (r *NodeENIReconciler) verifyENIAttachments(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, nodeName string) {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", nodeName)
+	log.Info("Verifying ENI attachments for node")
+
+	// Create a new list of attachments
+	var updatedAttachments []networkingv1alpha1.ENIAttachment
+
+	// Check each attachment for this node
+	for _, attachment := range nodeENI.Status.Attachments {
+		if attachment.NodeID != nodeName {
+			// Keep attachments for other nodes as is
+			updatedAttachments = append(updatedAttachments, attachment)
+			continue
+		}
+
+		// Check if the ENI still exists and is attached
+		eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
+		if err != nil {
+			// Check if the error indicates the ENI doesn't exist
+			if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+				log.Info("ENI no longer exists in AWS, removing from status", "eniID", attachment.ENIID)
+				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
+					"ENI %s was manually detached and deleted from node %s", attachment.ENIID, attachment.NodeID)
+				// Don't add this attachment to the updated list
+				continue
+			}
+
+			// For other errors, keep the attachment as is
+			log.Error(err, "Failed to describe ENI, keeping attachment", "eniID", attachment.ENIID)
+			updatedAttachments = append(updatedAttachments, attachment)
+			continue
+		}
+
+		if eni == nil {
+			log.Info("ENI no longer exists, removing from status", "eniID", attachment.ENIID)
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
+				"ENI %s was manually detached and deleted from node %s", attachment.ENIID, attachment.NodeID)
+			// Don't add this attachment to the updated list
+			continue
+		}
+
+		// Check if the ENI is still attached to the instance
+		if eni.Attachment == nil || eni.Status == awsutil.EC2v2NetworkInterfaceStatusAvailable {
+			log.Info("ENI is no longer attached to the instance, removing from status", "eniID", attachment.ENIID)
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
+				"ENI %s was manually detached from node %s", attachment.ENIID, attachment.NodeID)
+			// Don't add this attachment to the updated list
+			continue
+		}
+
+		// ENI is still attached, keep it in the list
+		updatedAttachments = append(updatedAttachments, attachment)
+	}
+
+	// Update the NodeENI status with the verified attachments
+	if len(updatedAttachments) != len(nodeENI.Status.Attachments) {
+		log.Info("Updating NodeENI status with verified attachments",
+			"before", len(nodeENI.Status.Attachments), "after", len(updatedAttachments))
+		nodeENI.Status.Attachments = updatedAttachments
+	}
 }
