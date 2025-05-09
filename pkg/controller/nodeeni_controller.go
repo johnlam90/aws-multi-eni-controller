@@ -171,18 +171,11 @@ func (r *NodeENIReconciler) handleDeletion(ctx context.Context, nodeENI *network
 	if controllerutil.ContainsFinalizer(nodeENI, NodeENIFinalizer) {
 		log.Info("Cleaning up resources for NodeENI being deleted", "name", nodeENI.Name)
 
-		// Track if any cleanup operations failed
-		cleanupFailed := false
-
-		// Clean up all ENI attachments
-		for _, attachment := range nodeENI.Status.Attachments {
-			if !r.cleanupENIAttachment(ctx, nodeENI, attachment) {
-				cleanupFailed = true
-			}
-		}
+		// Clean up all ENI attachments in parallel
+		cleanupSucceeded := r.cleanupENIAttachmentsInParallel(ctx, nodeENI)
 
 		// Only remove the finalizer if all cleanup operations succeeded
-		if cleanupFailed {
+		if !cleanupSucceeded {
 			log.Info("Some cleanup operations failed, will retry later", "name", nodeENI.Name)
 			// Requeue with a backoff to retry the cleanup
 			return ctrl.Result{RequeueAfter: r.Config.DetachmentTimeout}, nil
@@ -467,20 +460,65 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 func (r *NodeENIReconciler) removeStaleAttachments(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, currentAttachments map[string]bool) []networkingv1alpha1.ENIAttachment {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name)
 	var updatedAttachments []networkingv1alpha1.ENIAttachment
+	var staleAttachments []networkingv1alpha1.ENIAttachment
 
+	// Separate current and stale attachments
 	for _, attachment := range nodeENI.Status.Attachments {
 		if currentAttachments[attachment.NodeID] {
 			updatedAttachments = append(updatedAttachments, attachment)
 		} else {
-			// Handle stale attachment
-			if r.handleStaleAttachment(ctx, nodeENI, attachment) {
-				// Keep the attachment if cleanup failed
-				updatedAttachments = append(updatedAttachments, attachment)
-			} else {
-				log.Info("Successfully removed stale attachment", "node", attachment.NodeID, "eniID", attachment.ENIID)
-				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
-					"Successfully detached and deleted ENI %s from node %s", attachment.ENIID, attachment.NodeID)
-			}
+			staleAttachments = append(staleAttachments, attachment)
+		}
+	}
+
+	// If there are no stale attachments, return early
+	if len(staleAttachments) == 0 {
+		return updatedAttachments
+	}
+
+	// If there's only one stale attachment, handle it directly
+	if len(staleAttachments) == 1 {
+		if r.handleStaleAttachment(ctx, nodeENI, staleAttachments[0]) {
+			// Keep the attachment if cleanup failed
+			updatedAttachments = append(updatedAttachments, staleAttachments[0])
+		} else {
+			log.Info("Successfully removed stale attachment", "node", staleAttachments[0].NodeID, "eniID", staleAttachments[0].ENIID)
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
+				"Successfully detached and deleted ENI %s from node %s", staleAttachments[0].ENIID, staleAttachments[0].NodeID)
+		}
+		return updatedAttachments
+	}
+
+	// Handle multiple stale attachments in parallel
+	log.Info("Cleaning up stale attachments in parallel", "count", len(staleAttachments))
+
+	// Clean up stale attachments in parallel
+	failedCleanups := make(map[string]bool)
+
+	// Use the specific cleanup function for the stale attachments
+	cleanupSucceeded := r.cleanupSpecificENIAttachmentsInParallel(ctx, nodeENI, staleAttachments)
+
+	// If all cleanups succeeded, we're done
+	if cleanupSucceeded {
+		log.Info("Successfully removed all stale attachments in parallel")
+		// No need to add any stale attachments to updatedAttachments
+		return updatedAttachments
+	}
+
+	// If some cleanups failed, we need to check each one individually
+	log.Info("Some stale attachment cleanups failed, checking each one")
+	for _, attachment := range staleAttachments {
+		// Check if this attachment still exists
+		eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
+		if err != nil || eni != nil {
+			// If there was an error or the ENI still exists, keep the attachment
+			log.Info("Keeping stale attachment due to cleanup failure", "node", attachment.NodeID, "eniID", attachment.ENIID)
+			updatedAttachments = append(updatedAttachments, attachment)
+		} else {
+			// ENI was successfully deleted
+			log.Info("Successfully removed stale attachment", "node", attachment.NodeID, "eniID", attachment.ENIID)
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
+				"Successfully detached and deleted ENI %s from node %s", attachment.ENIID, attachment.NodeID)
 		}
 	}
 

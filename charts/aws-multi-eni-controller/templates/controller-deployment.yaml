@@ -39,6 +39,8 @@ spec:
           value: "{{ .Values.awsRegion }}"
         - name: LOG_LEVEL
           value: "{{ .Values.logLevel }}"
+        - name: MAX_CONCURRENT_ENI_CLEANUP
+          value: "{{ .Values.controller.maxConcurrentENICleanup }}"
         {{- if .Values.metrics.enabled }}
         - name: METRICS_PORT
           value: "{{ .Values.metrics.port }}"

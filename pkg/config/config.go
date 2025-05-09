@@ -29,6 +29,8 @@ type ControllerConfig struct {
 	DefaultDeviceIndex int
 	// Default delete on termination setting
 	DefaultDeleteOnTermination bool
+	// Maximum number of concurrent ENI cleanup operations
+	MaxConcurrentENICleanup int
 }
 
 // ENIManagerConfig holds configuration for the ENI manager
@@ -56,6 +58,7 @@ func DefaultControllerConfig() *ControllerConfig {
 		MaxConcurrentReconciles:    5,
 		DefaultDeviceIndex:         1,
 		DefaultDeleteOnTermination: true,
+		MaxConcurrentENICleanup:    3, // Default to 3 concurrent ENI cleanup operations
 	}
 }
 
@@ -123,6 +126,15 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 			return nil, fmt.Errorf("invalid DEFAULT_DELETE_ON_TERMINATION: %v", err)
 		}
 		config.DefaultDeleteOnTermination = dot
+	}
+
+	// Load max concurrent ENI cleanup from environment variable
+	if maxStr := os.Getenv("MAX_CONCURRENT_ENI_CLEANUP"); maxStr != "" {
+		max, err := strconv.Atoi(maxStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid MAX_CONCURRENT_ENI_CLEANUP: %v", err)
+		}
+		config.MaxConcurrentENICleanup = max
 	}
 
 	// AWS SDK version is now always v2

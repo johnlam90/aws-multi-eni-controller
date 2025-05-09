@@ -103,6 +103,9 @@ spec:
         # This is a placeholder that should be customized
         - name: AWS_REGION
           value: "us-east-1"
+        # Maximum number of concurrent ENI cleanup operations
+        - name: MAX_CONCURRENT_ENI_CLEANUP
+          value: "3"
         args:
         - --metrics-addr=:8080
         - --enable-leader-election

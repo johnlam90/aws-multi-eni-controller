@@ -56,6 +56,7 @@ The following table lists the configurable parameters of the AWS Multi-ENI Contr
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `namespace` | Namespace to deploy the controller | `eni-controller-system` |
 | `awsRegion` | AWS Region | `us-east-1` |
+| `controller.maxConcurrentENICleanup` | Maximum number of concurrent ENI cleanup operations | `3` |
 | `resources.controller.limits.cpu` | CPU limits for the controller | `500m` |
 | `resources.controller.limits.memory` | Memory limits for the controller | `512Mi` |
 | `resources.controller.requests.cpu` | CPU requests for the controller | `100m` |
@@ -89,6 +90,8 @@ Create a `values.yaml` file:
 ```yaml
 namespace: custom-namespace
 awsRegion: us-west-2
+controller:
+  maxConcurrentENICleanup: 5  # Increase for larger instances with many ENIs
 nodeSelector:
   role: worker
   ng: multi-eni

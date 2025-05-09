@@ -16,6 +16,7 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 
 - **Dynamic ENI Management**: Automatically creates and attaches ENIs to nodes based on labels
 - **Proper Cleanup**: Uses finalizers to ensure ENIs are properly detached and deleted when no longer needed
+- **Parallel ENI Cleanup**: Efficiently cleans up multiple ENIs in parallel for improved performance on larger instances
 - **Configurable**: Supports custom subnet, security groups, device index, and more
 - **Cloud-Native**: Follows Kubernetes patterns for resource management
 - **Region Aware**: Works in any AWS region with configurable region settings
@@ -272,21 +273,25 @@ If you prefer to deploy manually:
    kubectl apply -f deploy/eni-manager-daemonset.yaml
    ```
 
-4. Configure the AWS region (optional):
+4. Configure the AWS region and other options (optional):
 
-   By default, the controller uses the `us-west-2` region. To use a different region, edit the deployment:
+   By default, the controller uses the `us-west-2` region. To use a different region or configure other options, edit the deployment:
 
    ```bash
    kubectl edit deployment -n eni-controller-system eni-controller
    ```
 
-   Update the `AWS_REGION` environment variable to your preferred region:
+   Update the environment variables as needed:
 
    ```yaml
    env:
    - name: AWS_REGION
      value: "your-preferred-region"  # e.g., eu-west-1, ap-southeast-1, etc.
+   - name: MAX_CONCURRENT_ENI_CLEANUP
+     value: "3"  # Number of concurrent ENI cleanup operations (default: 3)
    ```
+
+   The `MAX_CONCURRENT_ENI_CLEANUP` setting controls how many ENIs can be cleaned up in parallel when a NodeENI resource is deleted or when nodes no longer match the selector. This is particularly useful for larger instances with many ENIs, as it can significantly reduce cleanup time.
 
 ## Using the Controller
 

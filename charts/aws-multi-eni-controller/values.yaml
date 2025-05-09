@@ -14,6 +14,11 @@ namespace: eni-controller-system
 # AWS Region configuration
 awsRegion: us-east-1
 
+# Controller configuration
+controller:
+  # Maximum number of concurrent ENI cleanup operations
+  maxConcurrentENICleanup: 3
+
 # Resource configuration for the controller
 resources:
   controller:
