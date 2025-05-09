@@ -20,7 +20,7 @@ spec:
         ng: multi-eni
       containers:
       - name: eni-manager
-        image: johnlam90/aws-multi-eni-controller:multi-subnet-v5
+        image: johnlam90/aws-multi-eni-controller:multi-subnet-v6
         env:
         - name: COMPONENT
           value: "eni-manager"
@@ -33,6 +33,7 @@ spec:
         - --debug=true
         - --eni-pattern=^(eth|ens|eni|en)[0-9]+
         - --ignore-interfaces=tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0
+        - --use-netlink=true
         # Primary interface will be auto-detected
         resources:
           limits:

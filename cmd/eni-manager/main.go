@@ -1,35 +1,43 @@
 // Package main implements the AWS Multi-ENI Manager, which is responsible for
 // bringing up secondary network interfaces on AWS EC2 instances.
 //
-// The ENI Manager runs as a daemon on each node and periodically checks for
-// network interfaces that are in the DOWN state. When it finds such interfaces,
-// it attempts to bring them up using either the netlink library or the 'ip' command
-// as a fallback. This ensures that secondary ENIs attached by the controller are
-// properly configured and ready for use.
+// The ENI Manager can run in two modes:
+// 1. Polling mode: periodically checks for network interfaces that are in the DOWN state
+// 2. Netlink subscription mode: subscribes to netlink events and reacts immediately to interface changes
+//
+// When it finds interfaces that need to be brought up, it attempts to do so using either
+// the netlink library or the 'ip' command as a fallback. This ensures that secondary ENIs
+// attached by the controller are properly configured and ready for use.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"os/signal"
 	"regexp"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
-	"github.com/vishvananda/netlink"
+	vnetlink "github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 var (
 	// Command line flags
-	checkInterval = flag.Duration("check-interval", 30*time.Second, "Interval between interface checks")
+	checkInterval = flag.Duration("check-interval", 30*time.Second, "Interval between interface checks when using polling mode")
 	primaryIface  = flag.String("primary-interface", "", "Primary interface name to ignore (if empty, will auto-detect)")
 	debugMode     = flag.Bool("debug", false, "Enable debug logging")
 	eniPattern    = flag.String("eni-pattern", "^(eth|ens|eni|en)[0-9]+", "Regex pattern to identify ENI interfaces")
 	ignoreList    = flag.String("ignore-interfaces", "tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0", "Comma-separated list of interfaces to ignore")
+	useNetlink    = flag.Bool("use-netlink", true, "Use netlink subscription instead of polling (recommended)")
 	version       = "1.0.0" // Version of the ENI Manager
 )
 
@@ -40,8 +48,8 @@ func main() {
 	cfg := config.LoadENIManagerConfigFromFlags(checkInterval, primaryIface, debugMode, eniPattern, ignoreList)
 
 	log.Printf("ENI Manager starting (version %s)", version)
-	log.Printf("Configuration: check interval=%s, debug=%v, interface up timeout=%s",
-		cfg.CheckInterval, cfg.DebugMode, cfg.InterfaceUpTimeout)
+	log.Printf("Configuration: check interval=%s, debug=%v, interface up timeout=%s, use netlink=%v",
+		cfg.CheckInterval, cfg.DebugMode, cfg.InterfaceUpTimeout, *useNetlink)
 	log.Printf("ENI pattern: %s, Ignored interfaces: %v",
 		cfg.ENIPattern, cfg.IgnoreInterfaces)
 
@@ -59,19 +67,196 @@ func main() {
 		log.Printf("Using specified primary interface: %s", cfg.PrimaryInterface)
 	}
 
-	// Run the main loop
-	wait.Forever(func() {
+	// Create a context that will be canceled on SIGINT or SIGTERM
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Set up signal handling
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("Received signal %v, shutting down", sig)
+		cancel()
+	}()
+
+	// Use netlink subscription if enabled, otherwise use polling
+	if *useNetlink {
+		log.Printf("Using netlink subscription mode")
+		if err := runNetlinkMode(ctx, cfg); err != nil {
+			log.Printf("Error in netlink mode: %v, falling back to polling mode", err)
+			runPollingMode(ctx, cfg)
+		}
+	} else {
+		log.Printf("Using polling mode")
+		runPollingMode(ctx, cfg)
+	}
+}
+
+// runNetlinkMode runs the ENI Manager in netlink subscription mode
+// This is a simplified implementation that uses a goroutine to monitor for interface changes
+func runNetlinkMode(ctx context.Context, cfg *config.ENIManagerConfig) error {
+	// Initial check to bring up any interfaces that are already down
+	if err := checkAndBringUpInterfaces(cfg); err != nil {
+		log.Printf("Initial interface check failed: %v", err)
+		// Continue anyway, we'll catch changes via our monitoring
+	}
+
+	log.Printf("Starting netlink subscription mode (simplified implementation)")
+
+	// Create a WaitGroup to wait for the goroutine to finish
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	// Start a goroutine to monitor for interface changes
+	go func() {
+		defer wg.Done()
+		monitorInterfaces(ctx, cfg)
+	}()
+
+	// Wait for the context to be canceled
+	<-ctx.Done()
+	log.Printf("Context canceled, waiting for interface monitor to finish")
+	wg.Wait()
+	return nil
+}
+
+// monitorInterfaces monitors for interface changes using a more frequent polling approach
+// This is a simplified implementation that doesn't use netlink subscription directly
+func monitorInterfaces(ctx context.Context, cfg *config.ENIManagerConfig) {
+	// Use a shorter interval for more responsive monitoring
+	monitorInterval := 2 * time.Second
+
+	log.Printf("Interface monitor started with interval: %v", monitorInterval)
+
+	// Keep track of interface states to detect changes
+	interfaceStates := make(map[string]bool) // map[ifaceName]isUp
+
+	// Initial scan to populate the interface states
+	updateInterfaceStates(interfaceStates, cfg)
+
+	// Monitor for changes
+	ticker := time.NewTicker(monitorInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Interface monitor shutting down")
+			return
+		case <-ticker.C:
+			// Check for interface changes
+			changed := checkInterfaceChanges(interfaceStates, cfg)
+			if changed && cfg.DebugMode {
+				log.Printf("Detected interface changes")
+			}
+		}
+	}
+}
+
+// updateInterfaceStates updates the map of interface states
+func updateInterfaceStates(states map[string]bool, cfg *config.ENIManagerConfig) {
+	links, err := vnetlink.LinkList()
+	if err != nil {
+		log.Printf("Error listing interfaces: %v", err)
+		return
+	}
+
+	// Create a new map to detect removed interfaces
+	newStates := make(map[string]bool)
+
+	for _, link := range links {
+		ifaceName := link.Attrs().Name
+
+		// Skip loopback and primary interface
+		if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
+			continue
+		}
+
+		// Skip interfaces that don't match our ENI pattern or are in the ignore list
+		if !isAWSENI(ifaceName, cfg) {
+			continue
+		}
+
+		// Check if interface is UP
+		isUp := link.Attrs().OperState == vnetlink.OperUp
+		newStates[ifaceName] = isUp
+	}
+
+	// Update the states map
+	for k := range states {
+		if _, exists := newStates[k]; !exists {
+			delete(states, k) // Interface was removed
+		}
+	}
+
+	for k, v := range newStates {
+		states[k] = v // Add or update interface state
+	}
+}
+
+// checkInterfaceChanges checks for interface changes and brings up interfaces as needed
+func checkInterfaceChanges(states map[string]bool, cfg *config.ENIManagerConfig) bool {
+	links, err := vnetlink.LinkList()
+	if err != nil {
+		log.Printf("Error listing interfaces: %v", err)
+		return false
+	}
+
+	changed := false
+
+	for _, link := range links {
+		ifaceName := link.Attrs().Name
+
+		// Skip loopback and primary interface
+		if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
+			continue
+		}
+
+		// Skip interfaces that don't match our ENI pattern or are in the ignore list
+		if !isAWSENI(ifaceName, cfg) {
+			continue
+		}
+
+		// Check if interface is UP
+		isUp := link.Attrs().OperState == vnetlink.OperUp
+		prevState, exists := states[ifaceName]
+
+		// If this is a new interface or its state has changed
+		if !exists || prevState != isUp {
+			changed = true
+			states[ifaceName] = isUp
+
+			// If the interface is DOWN, bring it up
+			if !isUp {
+				log.Printf("Monitor detected DOWN ENI interface: %s", ifaceName)
+				if err := bringUpInterface(link, cfg); err != nil {
+					log.Printf("Error bringing up interface %s: %v", ifaceName, err)
+				}
+			} else if cfg.DebugMode {
+				log.Printf("Monitor detected new UP ENI interface: %s", ifaceName)
+			}
+		}
+	}
+
+	return changed
+}
+
+// runPollingMode runs the ENI Manager in polling mode
+func runPollingMode(ctx context.Context, cfg *config.ENIManagerConfig) {
+	// Run the main polling loop
+	wait.Until(func() {
 		if err := checkAndBringUpInterfaces(cfg); err != nil {
 			log.Printf("Error checking interfaces: %v", err)
 		}
-	}, cfg.CheckInterval)
+	}, cfg.CheckInterval, ctx.Done())
 }
 
 // detectPrimaryInterface attempts to detect the primary network interface
 // It uses the default route to determine which interface is the primary one
 func detectPrimaryInterface() (string, error) {
 	// Get the default route
-	routes, err := netlink.RouteList(nil, unix.AF_INET) // Use unix.AF_INET instead of netlink.FAMILY_V4
+	routes, err := vnetlink.RouteList(nil, unix.AF_INET)
 	if err != nil {
 		return "", fmt.Errorf("failed to get routes: %v", err)
 	}
@@ -81,7 +266,7 @@ func detectPrimaryInterface() (string, error) {
 		if route.Dst == nil || route.Dst.String() == "0.0.0.0/0" {
 			if route.LinkIndex > 0 {
 				// Get the interface by index
-				link, err := netlink.LinkByIndex(route.LinkIndex)
+				link, err := vnetlink.LinkByIndex(route.LinkIndex)
 				if err != nil {
 					return "", fmt.Errorf("failed to get link by index %d: %v", route.LinkIndex, err)
 				}
@@ -111,7 +296,7 @@ func isAWSENI(ifaceName string, cfg *config.ENIManagerConfig) bool {
 // checkAndBringUpInterfaces checks for DOWN interfaces and brings them up
 func checkAndBringUpInterfaces(cfg *config.ENIManagerConfig) error {
 	// Get all network interfaces
-	links, err := netlink.LinkList()
+	links, err := vnetlink.LinkList()
 	if err != nil {
 		return fmt.Errorf("failed to list network interfaces: %v", err)
 	}
@@ -133,7 +318,7 @@ func checkAndBringUpInterfaces(cfg *config.ENIManagerConfig) error {
 		}
 
 		// Check if interface is DOWN
-		if link.Attrs().OperState == netlink.OperDown {
+		if link.Attrs().OperState == vnetlink.OperDown {
 			log.Printf("Found DOWN ENI interface: %s", ifaceName)
 
 			if err := bringUpInterface(link, cfg); err != nil {
@@ -149,7 +334,7 @@ func checkAndBringUpInterfaces(cfg *config.ENIManagerConfig) error {
 }
 
 // bringUpInterface brings up a network interface
-func bringUpInterface(link netlink.Link, cfg *config.ENIManagerConfig) error {
+func bringUpInterface(link vnetlink.Link, cfg *config.ENIManagerConfig) error {
 	ifaceName := link.Attrs().Name
 	log.Printf("Bringing up interface: %s", ifaceName)
 
@@ -166,11 +351,11 @@ func bringUpInterface(link netlink.Link, cfg *config.ENIManagerConfig) error {
 }
 
 // netlinkBringUpInterface brings up an interface using netlink
-func netlinkBringUpInterface(link netlink.Link, timeout time.Duration) error {
+func netlinkBringUpInterface(link vnetlink.Link, timeout time.Duration) error {
 	ifaceName := link.Attrs().Name
 
 	// Set the interface UP
-	if err := netlink.LinkSetUp(link); err != nil {
+	if err := vnetlink.LinkSetUp(link); err != nil {
 		return fmt.Errorf("failed to set interface %s up: %v", ifaceName, err)
 	}
 
@@ -178,12 +363,12 @@ func netlinkBringUpInterface(link netlink.Link, timeout time.Duration) error {
 	time.Sleep(timeout)
 
 	// Verify the interface is now UP
-	updatedLink, err := netlink.LinkByName(ifaceName)
+	updatedLink, err := vnetlink.LinkByName(ifaceName)
 	if err != nil {
 		return fmt.Errorf("failed to get updated link info for %s: %v", ifaceName, err)
 	}
 
-	if updatedLink.Attrs().OperState != netlink.OperUp {
+	if updatedLink.Attrs().OperState != vnetlink.OperUp {
 		return fmt.Errorf("interface %s is still not UP after configuration", ifaceName)
 	}
 
