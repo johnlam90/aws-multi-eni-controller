@@ -492,9 +492,6 @@ func (r *NodeENIReconciler) removeStaleAttachments(ctx context.Context, nodeENI 
 	// Handle multiple stale attachments in parallel
 	log.Info("Cleaning up stale attachments in parallel", "count", len(staleAttachments))
 
-	// Clean up stale attachments in parallel
-	failedCleanups := make(map[string]bool)
-
 	// Use the specific cleanup function for the stale attachments
 	cleanupSucceeded := r.cleanupSpecificENIAttachmentsInParallel(ctx, nodeENI, staleAttachments)
 
