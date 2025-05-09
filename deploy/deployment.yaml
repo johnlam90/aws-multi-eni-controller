@@ -95,7 +95,7 @@ spec:
       serviceAccountName: eni-controller
       containers:
       - name: manager
-        image: johnlam90/aws-multi-eni-controller:multi-subnet-v6
+        image: ghcr.io/johnlam90/aws-multi-eni-controller:beta.parallel-eni-cleanup.1
         env:
         - name: COMPONENT
           value: "eni-controller"
