@@ -832,7 +832,7 @@ func (r *NodeENIReconciler) attachENI(ctx context.Context, eniID, instanceID str
 // verifyENIAttachments verifies the actual state of ENIs in AWS and updates the NodeENI resource status accordingly
 func (r *NodeENIReconciler) verifyENIAttachments(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, nodeName string) {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", nodeName)
-	log.Info("Verifying ENI attachments for node")
+	log.Info("Verifying ENI attachments for node", "attachmentCount", len(nodeENI.Status.Attachments))
 
 	// Create a new list of attachments
 	var updatedAttachments []networkingv1alpha1.ENIAttachment
@@ -889,5 +889,12 @@ func (r *NodeENIReconciler) verifyENIAttachments(ctx context.Context, nodeENI *n
 		log.Info("Updating NodeENI status with verified attachments",
 			"before", len(nodeENI.Status.Attachments), "after", len(updatedAttachments))
 		nodeENI.Status.Attachments = updatedAttachments
+
+		// Update the NodeENI status
+		if err := r.Status().Update(ctx, nodeENI); err != nil {
+			log.Error(err, "Failed to update NodeENI status with verified attachments")
+		} else {
+			log.Info("Successfully updated NodeENI status with verified attachments")
+		}
 	}
 }
