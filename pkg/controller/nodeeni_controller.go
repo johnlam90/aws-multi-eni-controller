@@ -369,6 +369,19 @@ func (r *NodeENIReconciler) processNodeENI(ctx context.Context, nodeENI *network
 		nodeENI.Status.Attachments = []networkingv1alpha1.ENIAttachment{}
 	}
 
+	// First, verify all existing ENI attachments
+	log.Info("Verifying all existing ENI attachments")
+	for _, node := range nodeList.Items {
+		// Verify existing ENI attachments for this node
+		r.verifyENIAttachments(ctx, nodeENI, node.Name)
+	}
+
+	// Refresh the NodeENI object after verification
+	if err := r.Client.Get(ctx, types.NamespacedName{Name: nodeENI.Name}, nodeENI); err != nil {
+		log.Error(err, "Failed to refresh NodeENI after verification")
+		return err
+	}
+
 	// Track current attachments to detect stale ones
 	currentAttachments := make(map[string]bool)
 
@@ -382,12 +395,18 @@ func (r *NodeENIReconciler) processNodeENI(ctx context.Context, nodeENI *network
 
 	// Remove stale attachments
 	updatedAttachments := r.removeStaleAttachments(ctx, nodeENI, currentAttachments)
-	nodeENI.Status.Attachments = updatedAttachments
 
-	// Update the NodeENI status
-	if err := r.Client.Status().Update(ctx, nodeENI); err != nil {
-		log.Error(err, "Failed to update NodeENI status")
-		return err
+	// Only update if there are changes
+	if len(updatedAttachments) != len(nodeENI.Status.Attachments) {
+		log.Info("Updating NodeENI status with stale attachments removed",
+			"before", len(nodeENI.Status.Attachments), "after", len(updatedAttachments))
+		nodeENI.Status.Attachments = updatedAttachments
+
+		// Update the NodeENI status
+		if err := r.Client.Status().Update(ctx, nodeENI); err != nil {
+			log.Error(err, "Failed to update NodeENI status")
+			return err
+		}
 	}
 
 	return nil
@@ -413,9 +432,6 @@ func (r *NodeENIReconciler) processNode(ctx context.Context, nodeENI *networking
 	// Mark this node as having been processed
 	nodeKey := node.Name
 	currentAttachments[nodeKey] = true
-
-	// Verify existing ENI attachments for this node
-	r.verifyENIAttachments(ctx, nodeENI, node.Name)
 
 	// Get all subnet IDs we need to create ENIs in
 	subnetIDs, err := r.getAllSubnetIDs(ctx, nodeENI)
