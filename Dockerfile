@@ -19,11 +19,13 @@ COPY cmd/ cmd/
 COPY pkg/ pkg/
 
 # Build the ENI Controller with optimizations for size
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=${GOTOOLCHAIN} \
+# Use the TARGETARCH build arg to support multi-architecture builds
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} GOTOOLCHAIN=${GOTOOLCHAIN} \
     go build -a -ldflags="-s -w" -trimpath -o manager cmd/main.go
 
 # Build the ENI Manager with optimizations for size
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=${GOTOOLCHAIN} \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} GOTOOLCHAIN=${GOTOOLCHAIN} \
     go build -a -ldflags="-s -w" -trimpath -o eni-manager cmd/eni-manager/main.go
 
 # Use UPX to compress the binaries
