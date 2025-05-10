@@ -224,6 +224,15 @@ func (c *EC2Client) DescribeENI(ctx context.Context, eniID string) (*EC2v2Networ
 	eni := &EC2v2NetworkInterface{
 		NetworkInterfaceID: *result.NetworkInterfaces[0].NetworkInterfaceId,
 		Status:             EC2v2NetworkInterfaceStatus(result.NetworkInterfaces[0].Status),
+		SubnetID:           *result.NetworkInterfaces[0].SubnetId,
+	}
+
+	// Get the subnet CIDR
+	subnetInfo, err := c.describeSubnet(ctx, eni.SubnetID)
+	if err != nil {
+		log.Error(err, "Failed to get subnet CIDR, continuing without it", "subnetID", eni.SubnetID)
+	} else if subnetInfo != nil && subnetInfo.CidrBlock != nil {
+		eni.SubnetCIDR = *subnetInfo.CidrBlock
 	}
 
 	// Add attachment if it exists
@@ -240,9 +249,11 @@ func (c *EC2Client) DescribeENI(ctx context.Context, eniID string) (*EC2v2Networ
 			"status", eni.Status,
 			"attachmentID", eni.Attachment.AttachmentID,
 			"instanceID", eni.Attachment.InstanceID,
-			"attachmentStatus", eni.Attachment.Status)
+			"attachmentStatus", eni.Attachment.Status,
+			"subnetID", eni.SubnetID,
+			"subnetCIDR", eni.SubnetCIDR)
 	} else {
-		log.Info("ENI is not attached", "status", eni.Status)
+		log.Info("ENI is not attached", "status", eni.Status, "subnetID", eni.SubnetID, "subnetCIDR", eni.SubnetCIDR)
 	}
 
 	return eni, nil
@@ -328,6 +339,28 @@ func (c *EC2Client) GetSecurityGroupIDByName(ctx context.Context, securityGroupN
 	sgID := *result.SecurityGroups[0].GroupId
 	log.Info("Found security group ID", "securityGroupID", sgID)
 	return sgID, nil
+}
+
+// describeSubnet describes a subnet and returns its information
+func (c *EC2Client) describeSubnet(ctx context.Context, subnetID string) (*types.Subnet, error) {
+	log := c.Logger.WithValues("subnetID", subnetID)
+	log.Info("Describing subnet")
+
+	input := &ec2.DescribeSubnetsInput{
+		SubnetIds: []string{subnetID},
+	}
+
+	result, err := c.EC2.DescribeSubnets(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to describe subnet: %v", err)
+	}
+
+	if len(result.Subnets) == 0 {
+		log.Info("No subnet found with the provided ID")
+		return nil, nil // Subnet not found
+	}
+
+	return &result.Subnets[0], nil
 }
 
 // WaitForENIDetachment waits for an ENI to be detached

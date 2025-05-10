@@ -18,6 +18,21 @@ spec:
       jsonPath: .status.attachments
       name: Nodes
       type: integer
+    - description: ENI Attachment Status
+      jsonPath: .status.attachments[0].status
+      name: Status
+      type: string
+      priority: 0
+    - description: Subnet ID where the ENI is created
+      jsonPath: .status.attachments[0].subnetID
+      name: SubnetID
+      type: string
+      priority: 0
+    - description: Subnet CIDR range where the ENI is created
+      jsonPath: .status.attachments[0].subnetCIDR
+      name: SubnetCIDR
+      type: string
+      priority: 0
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -101,6 +116,9 @@ spec:
                       type: string
                     subnetID:
                       description: ID of the subnet where the ENI was created
+                      type: string
+                    subnetCIDR:
+                      description: CIDR range of the subnet where the ENI was created
                       type: string
                     status:
                       description: Status of the attachment

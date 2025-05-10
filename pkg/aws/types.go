@@ -23,5 +23,7 @@ type EC2v2NetworkInterfaceAttachment struct {
 type EC2v2NetworkInterface struct {
 	NetworkInterfaceID string
 	Status             EC2v2NetworkInterfaceStatus
+	SubnetID           string
+	SubnetCIDR         string
 	Attachment         *EC2v2NetworkInterfaceAttachment
 }

@@ -575,6 +575,15 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 		return err
 	}
 
+	// Get the subnet CIDR
+	var subnetCIDR string
+	eni, err := r.AWS.DescribeENI(ctx, eniID)
+	if err != nil {
+		log.Error(err, "Failed to get subnet CIDR, continuing without it", "eniID", eniID)
+	} else if eni != nil {
+		subnetCIDR = eni.SubnetCIDR
+	}
+
 	// Add the attachment to the status
 	nodeENI.Status.Attachments = append(nodeENI.Status.Attachments, networkingv1alpha1.ENIAttachment{
 		NodeID:       node.Name,
@@ -582,6 +591,7 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 		ENIID:        eniID,
 		AttachmentID: attachmentID,
 		SubnetID:     subnetID,
+		SubnetCIDR:   subnetCIDR,
 		Status:       "attached",
 		LastUpdated:  metav1.Now(),
 	})
@@ -974,9 +984,13 @@ func (r *NodeENIReconciler) verifyENIAttachments(ctx context.Context, nodeENI *n
 				"oldAttachmentID", attachment.AttachmentID,
 				"newAttachmentID", eni.Attachment.AttachmentID)
 
-			// Update the attachment with the new attachment ID
+			// Update the attachment with the new attachment ID and subnet CIDR if available
 			updatedAttachment := attachment.DeepCopy()
 			updatedAttachment.AttachmentID = eni.Attachment.AttachmentID
+			// Update the subnet CIDR if it's available and not already set
+			if eni.SubnetCIDR != "" && updatedAttachment.SubnetCIDR == "" {
+				updatedAttachment.SubnetCIDR = eni.SubnetCIDR
+			}
 			updatedAttachment.LastUpdated = metav1.Now()
 			updatedAttachments = append(updatedAttachments, *updatedAttachment)
 

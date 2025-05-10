@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: test-nodeeni
+spec:
+  # Select nodes with this label
+  nodeSelector:
+    ng: multi-eni
+
+  # Using subnet names instead of IDs
+  subnetNames:
+  - multus-test-subnet-1
+  - multus-test-subnet-2
+
+  # Using security group name instead of ID
+  securityGroupNames:
+  - multus-test-sg
+
+  # Device index for the ENI (1-based)
+  deviceIndex: 2
+
+  # Whether to delete the ENI when the instance terminates
+  deleteOnTermination: true
+
+  # Description for the ENI
+  description: "Test NodeENI for manual detachment verification"
