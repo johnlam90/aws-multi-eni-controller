@@ -106,6 +106,9 @@ spec:
         # Maximum number of concurrent ENI cleanup operations
         - name: MAX_CONCURRENT_ENI_CLEANUP
           value: "3"
+        # Enable shorter reconciliation period for testing
+        - name: SHORTER_RECONCILE_PERIOD
+          value: "true"
         args:
         - --metrics-addr=:8080
         - --enable-leader-election

@@ -10,6 +10,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -156,12 +157,27 @@ func (r *NodeENIReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Process the NodeENI resource
+	logger := r.Log.WithValues("nodeeni", nodeENI.Name)
+	logger.Info("Processing NodeENI resource")
 	if err := r.processNodeENI(ctx, nodeENI); err != nil {
-		return ctrl.Result{}, err
+		logger.Error(err, "Failed to process NodeENI resource")
+		// Requeue sooner on error for faster recovery
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+	}
+
+	// Get the reconciliation period from config
+	reconcilePeriod := r.Config.ReconcilePeriod
+
+	// For testing purposes, use a shorter reconciliation period
+	// This can be controlled via environment variable
+	if os.Getenv("SHORTER_RECONCILE_PERIOD") == "true" {
+		reconcilePeriod = 30 * time.Second
+		logger.Info("Using shorter reconciliation period for testing", "period", reconcilePeriod)
 	}
 
 	// Requeue to periodically check the status
-	return ctrl.Result{RequeueAfter: r.Config.ReconcilePeriod}, nil
+	logger.Info("Requeuing NodeENI resource for periodic check", "period", reconcilePeriod)
+	return ctrl.Result{RequeueAfter: reconcilePeriod}, nil
 }
 
 // handleDeletion handles the deletion of a NodeENI resource
@@ -370,10 +386,24 @@ func (r *NodeENIReconciler) processNodeENI(ctx context.Context, nodeENI *network
 	}
 
 	// First, verify all existing ENI attachments
-	log.Info("Verifying all existing ENI attachments")
+	log.Info("Verifying all existing ENI attachments", "nodeCount", len(nodeList.Items))
+
+	// Create a map of node names for quick lookup
+	nodeNames := make(map[string]bool)
 	for _, node := range nodeList.Items {
+		nodeNames[node.Name] = true
 		// Verify existing ENI attachments for this node
 		r.verifyENIAttachments(ctx, nodeENI, node.Name)
+	}
+
+	// Also verify ENI attachments for nodes that no longer match the selector
+	// but still have attachments in the status
+	for _, attachment := range nodeENI.Status.Attachments {
+		if !nodeNames[attachment.NodeID] {
+			log.Info("Verifying ENI attachment for node that no longer matches selector",
+				"node", attachment.NodeID, "eniID", attachment.ENIID)
+			r.verifyENIAttachments(ctx, nodeENI, attachment.NodeID)
+		}
 	}
 
 	// Refresh the NodeENI object after verification
@@ -386,6 +416,7 @@ func (r *NodeENIReconciler) processNodeENI(ctx context.Context, nodeENI *network
 	currentAttachments := make(map[string]bool)
 
 	// Process each matching node
+	log.Info("Processing nodes for ENI creation/attachment", "nodeCount", len(nodeList.Items))
 	for _, node := range nodeList.Items {
 		if err := r.processNode(ctx, nodeENI, node, currentAttachments); err != nil {
 			log.Error(err, "Error processing node", "node", node.Name)
@@ -393,20 +424,32 @@ func (r *NodeENIReconciler) processNodeENI(ctx context.Context, nodeENI *network
 		}
 	}
 
+	// Refresh the NodeENI object again before removing stale attachments
+	if err := r.Client.Get(ctx, types.NamespacedName{Name: nodeENI.Name}, nodeENI); err != nil {
+		log.Error(err, "Failed to refresh NodeENI before stale attachment removal")
+		return err
+	}
+
 	// Remove stale attachments
+	log.Info("Checking for stale attachments")
 	updatedAttachments := r.removeStaleAttachments(ctx, nodeENI, currentAttachments)
 
 	// Only update if there are changes
 	if len(updatedAttachments) != len(nodeENI.Status.Attachments) {
 		log.Info("Updating NodeENI status with stale attachments removed",
 			"before", len(nodeENI.Status.Attachments), "after", len(updatedAttachments))
-		nodeENI.Status.Attachments = updatedAttachments
+
+		// Create a deep copy to avoid conflicts
+		updatedNodeENI := nodeENI.DeepCopy()
+		updatedNodeENI.Status.Attachments = updatedAttachments
 
 		// Update the NodeENI status
-		if err := r.Client.Status().Update(ctx, nodeENI); err != nil {
+		if err := r.Client.Status().Update(ctx, updatedNodeENI); err != nil {
 			log.Error(err, "Failed to update NodeENI status")
 			return err
 		}
+	} else {
+		log.Info("No stale attachments to remove")
 	}
 
 	return nil
@@ -852,6 +895,7 @@ func (r *NodeENIReconciler) verifyENIAttachments(ctx context.Context, nodeENI *n
 
 	// Create a new list of attachments
 	var updatedAttachments []networkingv1alpha1.ENIAttachment
+	var statusChanged bool
 
 	// Check each attachment for this node
 	for _, attachment := range nodeENI.Status.Attachments {
@@ -874,11 +918,12 @@ func (r *NodeENIReconciler) verifyENIAttachments(ctx context.Context, nodeENI *n
 				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
 					"ENI %s was manually detached and deleted from node %s", attachment.ENIID, attachment.NodeID)
 				// Don't add this attachment to the updated list
+				statusChanged = true
 				continue
 			}
 
-			// For other errors, keep the attachment as is
-			log.Error(err, "Failed to describe ENI, keeping attachment", "eniID", attachment.ENIID)
+			// For other errors, keep the attachment as is but log more details
+			log.Error(err, "Failed to describe ENI, keeping attachment for now", "eniID", attachment.ENIID, "errorType", fmt.Sprintf("%T", err))
 			updatedAttachments = append(updatedAttachments, attachment)
 			continue
 		}
@@ -888,35 +933,80 @@ func (r *NodeENIReconciler) verifyENIAttachments(ctx context.Context, nodeENI *n
 			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
 				"ENI %s was manually detached and deleted from node %s", attachment.ENIID, attachment.NodeID)
 			// Don't add this attachment to the updated list
+			statusChanged = true
 			continue
 		}
 
 		// Check if the ENI is still attached to the instance
 		log.Info("Checking ENI attachment status", "eniID", attachment.ENIID,
 			"hasAttachment", eni.Attachment != nil,
-			"status", eni.Status)
+			"status", eni.Status,
+			"instanceID", attachment.InstanceID)
 
-		if eni.Attachment == nil || eni.Status == awsutil.EC2v2NetworkInterfaceStatusAvailable {
-			log.Info("ENI is no longer attached to the instance, removing from status", "eniID", attachment.ENIID)
+		// Check if the ENI is still attached to the expected instance
+		if eni.Attachment == nil ||
+			eni.Status == awsutil.EC2v2NetworkInterfaceStatusAvailable ||
+			(eni.Attachment != nil && eni.Attachment.InstanceID != attachment.InstanceID) {
+
+			// Determine the actual instance ID for logging
+			actualInstanceID := "none"
+			if eni.Attachment != nil {
+				actualInstanceID = eni.Attachment.InstanceID
+			}
+
+			log.Info("ENI is no longer attached to the expected instance, removing from status",
+				"eniID", attachment.ENIID,
+				"expectedInstanceID", attachment.InstanceID,
+				"actualInstanceID", actualInstanceID)
+
 			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
 				"ENI %s was manually detached from node %s", attachment.ENIID, attachment.NodeID)
+
 			// Don't add this attachment to the updated list
+			statusChanged = true
 			continue
 		}
 
-		// ENI is still attached, keep it in the list
-		log.Info("ENI is still attached, keeping in status", "eniID", attachment.ENIID)
+		// Check if the attachment ID has changed (manual detach and reattach)
+		if eni.Attachment != nil && eni.Attachment.AttachmentID != attachment.AttachmentID {
+			log.Info("ENI attachment ID has changed, updating status",
+				"eniID", attachment.ENIID,
+				"oldAttachmentID", attachment.AttachmentID,
+				"newAttachmentID", eni.Attachment.AttachmentID)
+
+			// Update the attachment with the new attachment ID
+			updatedAttachment := attachment.DeepCopy()
+			updatedAttachment.AttachmentID = eni.Attachment.AttachmentID
+			updatedAttachment.LastUpdated = metav1.Now()
+			updatedAttachments = append(updatedAttachments, *updatedAttachment)
+
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAttachmentUpdated",
+				"ENI %s attachment ID updated from %s to %s",
+				attachment.ENIID, attachment.AttachmentID, eni.Attachment.AttachmentID)
+
+			statusChanged = true
+			continue
+		}
+
+		// ENI is still attached with the same attachment ID, keep it in the list
+		log.Info("ENI is still attached with the same attachment ID, keeping in status",
+			"eniID", attachment.ENIID,
+			"attachmentID", attachment.AttachmentID)
+
 		updatedAttachments = append(updatedAttachments, attachment)
 	}
 
 	// Update the NodeENI status with the verified attachments
-	if len(updatedAttachments) != len(nodeENI.Status.Attachments) {
+	if statusChanged || len(updatedAttachments) != len(nodeENI.Status.Attachments) {
 		log.Info("Updating NodeENI status with verified attachments",
 			"before", len(nodeENI.Status.Attachments), "after", len(updatedAttachments))
-		nodeENI.Status.Attachments = updatedAttachments
+
+		// Create a deep copy of the NodeENI to avoid conflicts
+		updatedNodeENI := nodeENI.DeepCopy()
+		updatedNodeENI.Status.Attachments = updatedAttachments
 
 		// Update the NodeENI status
-		if err := r.Status().Update(ctx, nodeENI); err != nil {
+		if err := r.Status().Update(ctx, updatedNodeENI); err != nil {
 			log.Error(err, "Failed to update NodeENI status with verified attachments")
 		} else {
 			log.Info("Successfully updated NodeENI status with verified attachments")

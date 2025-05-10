@@ -126,6 +126,12 @@ func (c *EC2Client) DetachENI(ctx context.Context, attachmentID string, force bo
 	log := c.Logger.WithValues("attachmentID", attachmentID)
 	log.Info("Detaching ENI")
 
+	// Check if the attachment ID is empty
+	if attachmentID == "" {
+		log.Info("Empty attachment ID provided, nothing to detach")
+		return nil
+	}
+
 	input := &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String(attachmentID),
 		Force:        aws.Bool(force),
@@ -136,9 +142,17 @@ func (c *EC2Client) DetachENI(ctx context.Context, attachmentID string, force bo
 		// Check if the error indicates the attachment doesn't exist
 		// This can happen if the ENI was manually detached outside of our control
 		if strings.Contains(err.Error(), "InvalidAttachmentID.NotFound") {
-			log.Info("ENI attachment no longer exists, considering detachment successful", "error", err.Error())
+			log.Info("ENI attachment no longer exists, considering detachment successful",
+				"error", err.Error(),
+				"errorType", fmt.Sprintf("%T", err))
 			return nil
 		}
+
+		// Log the error type for debugging
+		log.Error(err, "Failed to detach ENI",
+			"errorType", fmt.Sprintf("%T", err),
+			"errorContains", "InvalidAttachmentID.NotFound")
+
 		return fmt.Errorf("failed to detach ENI: %v", err)
 	}
 
@@ -173,7 +187,13 @@ func (c *EC2Client) DeleteENI(ctx context.Context, eniID string) error {
 // DescribeENI describes an ENI
 func (c *EC2Client) DescribeENI(ctx context.Context, eniID string) (*EC2v2NetworkInterface, error) {
 	log := c.Logger.WithValues("eniID", eniID)
-	log.V(1).Info("Describing ENI")
+	log.Info("Describing ENI")
+
+	// Check if the ENI ID is empty
+	if eniID == "" {
+		log.Info("Empty ENI ID provided, nothing to describe")
+		return nil, fmt.Errorf("empty ENI ID provided")
+	}
 
 	input := &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []string{eniID},
@@ -181,10 +201,22 @@ func (c *EC2Client) DescribeENI(ctx context.Context, eniID string) (*EC2v2Networ
 
 	result, err := c.EC2.DescribeNetworkInterfaces(ctx, input)
 	if err != nil {
+		// Check if the error indicates the ENI doesn't exist
+		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+			log.Info("ENI not found in AWS",
+				"error", err.Error(),
+				"errorType", fmt.Sprintf("%T", err))
+			return nil, fmt.Errorf("failed to describe ENI: %v", err)
+		}
+
+		// Log the error type for debugging
+		log.Error(err, "Failed to describe ENI",
+			"errorType", fmt.Sprintf("%T", err))
 		return nil, fmt.Errorf("failed to describe ENI: %v", err)
 	}
 
 	if len(result.NetworkInterfaces) == 0 {
+		log.Info("No ENI found with the provided ID")
 		return nil, nil // ENI not found
 	}
 
@@ -203,6 +235,14 @@ func (c *EC2Client) DescribeENI(ctx context.Context, eniID string) (*EC2v2Networ
 			InstanceID:          *result.NetworkInterfaces[0].Attachment.InstanceId,
 			Status:              string(result.NetworkInterfaces[0].Attachment.Status),
 		}
+
+		log.Info("ENI is attached",
+			"status", eni.Status,
+			"attachmentID", eni.Attachment.AttachmentID,
+			"instanceID", eni.Attachment.InstanceID,
+			"attachmentStatus", eni.Attachment.Status)
+	} else {
+		log.Info("ENI is not attached", "status", eni.Status)
 	}
 
 	return eni, nil
