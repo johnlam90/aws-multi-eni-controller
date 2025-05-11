@@ -45,7 +45,7 @@ deploy: install
 
 # Generate manifests e.g. CRD, RBAC etc.
 manifests:
-	controller-gen crd:trivialVersions=true rbac:roleName=eni-controller-role webhook paths="./..." output:crd:artifacts:config=deploy/crds
+	controller-gen crd rbac:roleName=eni-controller-role webhook paths="./..." output:crd:artifacts:config=deploy/crds
 
 # Run tests
 test: fmt vet
