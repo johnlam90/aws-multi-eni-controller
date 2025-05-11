@@ -2,8 +2,8 @@ apiVersion: v2
 name: aws-multi-eni-controller
 description: A Helm chart for AWS Multi-ENI Controller
 type: application
-version: 0.2.0
-appVersion: "v1.2.0"
+version: 0.3.0
+appVersion: "v1.2.2"
 home: https://github.com/johnlam90/aws-multi-eni-controller
 sources:
   - https://github.com/johnlam90/aws-multi-eni-controller
@@ -18,8 +18,8 @@ keywords:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/changes: |
-    - Add netlink subscription mode for improved interface detection
-    - Add multi-architecture support for Docker builds (amd64, arm64)
-    - Enhance ENI manager configuration options
-    - Improve error handling for ENI attachments
-    - Add support for security group names in NodeENI resources
+    - Add subnet CIDR display in ENI attachment status
+    - Add support for MAX_CONCURRENT_ENI_CLEANUP environment variable
+    - Update CRD to include SubnetCIDR field
+    - Improve error handling for ENI cleanup operations
+    - Update documentation for new features
