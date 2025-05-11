@@ -253,10 +253,9 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 					"ENI %s was already deleted (possibly manually) when waiting for detachment", attachment.ENIID)
 				// ENI is already gone, so we can consider the cleanup successful
 				return true
-			} else {
-				log.Error(err, "Failed to wait for ENI detachment", "eniID", attachment.ENIID)
-				success = false
 			}
+			log.Error(err, "Failed to wait for ENI detachment", "eniID", attachment.ENIID)
+			success = false
 		}
 
 		// Delete the ENI
