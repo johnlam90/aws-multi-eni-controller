@@ -1,0 +1,15 @@
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: test-nodeeni
+spec:
+  deleteOnTermination: true
+  description: "Test NodeENI for subnet CIDR display"
+  deviceIndex: 2
+  nodeSelector:
+    ng: multi-eni
+  securityGroupNames:
+  - multus-test-sg
+  subnetNames:
+  - multus-test-subnet-1
+  - multus-test-subnet-2
