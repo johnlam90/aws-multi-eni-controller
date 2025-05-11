@@ -240,6 +240,29 @@ func (c *EC2Client) GetSubnetIDByName(ctx context.Context, subnetName string) (s
 	return subnetID, nil
 }
 
+// GetSubnetCIDRByID looks up a subnet CIDR by its ID
+func (c *EC2Client) GetSubnetCIDRByID(ctx context.Context, subnetID string) (string, error) {
+	log := c.Logger.WithValues("subnetID", subnetID)
+	log.V(1).Info("Looking up subnet CIDR by ID")
+
+	input := &ec2.DescribeSubnetsInput{
+		SubnetIds: []string{subnetID},
+	}
+
+	result, err := c.EC2.DescribeSubnets(ctx, input)
+	if err != nil {
+		return "", fmt.Errorf("failed to describe subnet: %v", err)
+	}
+
+	if len(result.Subnets) == 0 {
+		return "", fmt.Errorf("no subnet found with ID: %s", subnetID)
+	}
+
+	cidrBlock := *result.Subnets[0].CidrBlock
+	log.V(1).Info("Found subnet CIDR", "subnetID", subnetID, "cidrBlock", cidrBlock)
+	return cidrBlock, nil
+}
+
 // GetSecurityGroupIDByName looks up a security group ID by its Name or GroupName
 func (c *EC2Client) GetSecurityGroupIDByName(ctx context.Context, securityGroupName string) (string, error) {
 	log := c.Logger.WithValues("securityGroupName", securityGroupName)

@@ -94,6 +94,10 @@ type ENIAttachment struct {
 	// +optional
 	SubnetID string `json:"subnetID,omitempty"`
 
+	// SubnetCIDR is the CIDR block of the subnet where the ENI was created
+	// +optional
+	SubnetCIDR string `json:"subnetCIDR,omitempty"`
+
 	// Status is the status of the attachment
 	Status string `json:"status"`
 

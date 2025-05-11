@@ -26,6 +26,9 @@ type EC2Interface interface {
 	// GetSubnetIDByName looks up a subnet ID by its Name tag
 	GetSubnetIDByName(ctx context.Context, subnetName string) (string, error)
 
+	// GetSubnetCIDRByID looks up a subnet CIDR by its ID
+	GetSubnetCIDRByID(ctx context.Context, subnetID string) (string, error)
+
 	// GetSecurityGroupIDByName looks up a security group ID by its Name or GroupName
 	GetSecurityGroupIDByName(ctx context.Context, securityGroupName string) (string, error)
 
