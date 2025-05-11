@@ -102,6 +102,9 @@ spec:
                     subnetID:
                       description: ID of the subnet where the ENI was created
                       type: string
+                    subnetCIDR:
+                      description: CIDR block of the subnet where the ENI was created
+                      type: string
                     status:
                       description: Status of the attachment
                       type: string
