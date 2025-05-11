@@ -95,7 +95,7 @@ spec:
       serviceAccountName: eni-controller
       containers:
       - name: manager
-        image: ghcr.io/johnlam90/aws-multi-eni-controller:beta.sandbox-test0-4.360b0e1
+        image: ghcr.io/johnlam90/aws-multi-eni-controller:v1.2.2
         env:
         - name: COMPONENT
           value: "eni-controller"
