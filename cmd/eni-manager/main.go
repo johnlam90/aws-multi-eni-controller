@@ -45,7 +45,8 @@ var (
 	version       = "v1.2.5" // Version of the ENI Manager
 )
 
-func main() {
+// setupConfig initializes and returns the configuration for the ENI Manager
+func setupConfig() *config.ENIManagerConfig {
 	flag.Parse()
 
 	// Load configuration from command-line flags and environment variables
@@ -72,9 +73,12 @@ func main() {
 		log.Printf("Using specified primary interface: %s", cfg.PrimaryInterface)
 	}
 
-	// Create a context that will be canceled on SIGINT or SIGTERM
+	return cfg
+}
+
+// setupContext creates a context that will be canceled on SIGINT or SIGTERM
+func setupContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
@@ -85,10 +89,11 @@ func main() {
 		cancel()
 	}()
 
-	// Start the MTU updater
-	log.Printf("Starting MTU updater with default MTU: %d", cfg.DefaultMTU)
+	return ctx, cancel
+}
 
-	// Get the node name from the environment
+// getNodeName gets the node name from the environment or hostname
+func getNodeName() string {
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
 		var err error
@@ -96,48 +101,59 @@ func main() {
 		if err != nil {
 			log.Printf("Warning: Failed to get hostname: %v", err)
 			log.Printf("Will use default MTU only")
-		} else {
-			log.Printf("Using hostname as node name: %s", nodeName)
+			return ""
 		}
+		log.Printf("Using hostname as node name: %s", nodeName)
 	} else {
 		log.Printf("Using NODE_NAME from environment: %s", nodeName)
 	}
+	return nodeName
+}
 
-	// Create a Kubernetes client if we have a node name
-	if nodeName != "" {
-		// Try to create a Kubernetes client
-		k8sConfig, err := rest.InClusterConfig()
-		if err != nil {
-			log.Printf("Warning: Failed to create in-cluster config: %v", err)
-			log.Printf("Will use default MTU only")
-		} else {
-			// Create the clientset
-			clientset, err := kubernetes.NewForConfig(k8sConfig)
-			if err != nil {
-				log.Printf("Warning: Failed to create Kubernetes client: %v", err)
-				log.Printf("Will use default MTU only")
-			} else {
-				// Start a goroutine to periodically update MTU values from NodeENI resources
-				go func() {
-					ticker := time.NewTicker(1 * time.Minute)
-					defer ticker.Stop()
+// setupMTUUpdater sets up the MTU updater for NodeENI resources
+func setupMTUUpdater(ctx context.Context, nodeName string, cfg *config.ENIManagerConfig) {
+	log.Printf("Starting MTU updater with default MTU: %d", cfg.DefaultMTU)
 
-					// Do an initial update
-					updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
+	// Skip if no node name
+	if nodeName == "" {
+		log.Printf("No node name available, skipping MTU updater")
+		return
+	}
 
-					for {
-						select {
-						case <-ctx.Done():
-							return
-						case <-ticker.C:
-							// Update MTU values from NodeENI resources
-							updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
-						}
-					}
-				}()
+	// Try to create a Kubernetes client
+	k8sConfig, err := rest.InClusterConfig()
+	if err != nil {
+		log.Printf("Warning: Failed to create in-cluster config: %v", err)
+		log.Printf("Will use default MTU only")
+		return
+	}
+
+	// Create the clientset
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
+	if err != nil {
+		log.Printf("Warning: Failed to create Kubernetes client: %v", err)
+		log.Printf("Will use default MTU only")
+		return
+	}
+
+	// Start a goroutine to periodically update MTU values from NodeENI resources
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+
+		// Do an initial update
+		updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Update MTU values from NodeENI resources
+				updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
 			}
 		}
-	}
+	}()
 
 	// Set up a ticker to periodically check and update MTU values
 	go func() {
@@ -156,7 +172,10 @@ func main() {
 			}
 		}
 	}()
+}
 
+// runENIManager runs the ENI Manager in either netlink or polling mode
+func runENIManager(ctx context.Context, cfg *config.ENIManagerConfig) {
 	// Use netlink subscription if enabled, otherwise use polling
 	if *useNetlink {
 		log.Printf("Using netlink subscription mode")
@@ -168,6 +187,24 @@ func main() {
 		log.Printf("Using polling mode")
 		runPollingMode(ctx, cfg)
 	}
+}
+
+func main() {
+	// Setup configuration
+	cfg := setupConfig()
+
+	// Setup context with signal handling
+	ctx, cancel := setupContext()
+	defer cancel()
+
+	// Get node name
+	nodeName := getNodeName()
+
+	// Setup MTU updater
+	setupMTUUpdater(ctx, nodeName, cfg)
+
+	// Run the ENI Manager
+	runENIManager(ctx, cfg)
 }
 
 // runNetlinkMode runs the ENI Manager in netlink subscription mode
