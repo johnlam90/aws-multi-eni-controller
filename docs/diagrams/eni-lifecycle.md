@@ -3,6 +3,23 @@
 This diagram illustrates the complete lifecycle of an ENI managed by the AWS Multi-ENI Controller.
 
 ```mermaid
+%%{
+  init: {
+    'theme': 'base',
+    'themeVariables': {
+      'primaryColor': '#f5f5f7',
+      'primaryTextColor': '#1d1d1f',
+      'primaryBorderColor': '#d2d2d7',
+      'lineColor': '#86868b',
+      'secondaryColor': '#f5f5f7',
+      'tertiaryColor': '#e8e8ed'
+    },
+    'flowchart': {
+      'curve': 'basis'
+    }
+  }
+}%%
+
 flowchart TD
     Start([Start]) --> NodeENICreated[NodeENI created with\nnode selector]
     NodeENICreated --> Requested[Requested]
@@ -18,12 +35,12 @@ flowchart TD
     ENIManagerConfigures --> Configured[Configured]
     Configured --> ENIReady[ENI ready for use]
     ENIReady --> Running[Running]
-    
+
     Running --> PeriodicVerification{{Periodic verification}}
     PeriodicVerification --> ENIStillValid{ENI still valid}
     ENIStillValid -->|Yes| Verifying[Verifying]
     Verifying --> Running
-    
+
     NodeENIDeleted[NodeENI deleted/updated] --> ENIInvalid{ENI invalid/stale}
     ENIStillValid -->|No| ENIInvalid
     ENIInvalid --> Detaching[Detaching]
@@ -31,14 +48,20 @@ flowchart TD
     SuccessfullyDetached --> Deleting[Deleting]
     Deleting --> ENIDeleted[ENI deleted]
     ENIDeleted --> End([End])
-    
-    classDef process fill:#f9f,stroke:#333,stroke-width:2px;
-    classDef decision fill:#bbf,stroke:#333,stroke-width:2px;
-    classDef state fill:#dfd,stroke:#333,stroke-width:2px;
-    
+
+    %% Apple-like styling
+    classDef default fill:#f5f5f7,stroke:#d2d2d7,stroke-width:1px,color:#1d1d1f,font-family:SF Pro Display,Helvetica,Arial,sans-serif;
+    classDef terminal fill:#f5f5f7,stroke:#d2d2d7,stroke-width:1px,color:#1d1d1f,font-family:SF Pro Display,Helvetica,Arial,sans-serif,stroke-dasharray: 5 5;
+    classDef process fill:#ffffff,stroke:#d2d2d7,stroke-width:1px,color:#1d1d1f;
+    classDef decision fill:#f5f5f7,stroke:#d2d2d7,stroke-width:1px,color:#1d1d1f;
+    classDef state fill:#f5f5f7,stroke:#d2d2d7,stroke-width:1px,color:#1d1d1f;
+    classDef action fill:#0071e3,stroke:none,color:#ffffff,font-weight:500;
+
+    class Start,End terminal;
     class ControllerIdentifies,ENICreated,AttachingToNode,SuccessfullyAttached,ENIManagerConfigures,ENIReady,SuccessfullyDetached,ENIDeleted process;
-    class ENIStillValid,ENIInvalid decision;
-    class Requested,Creating,Created,Attaching,Attached,Configured,Running,Verifying,Detaching,Deleting state;
+    class ENIStillValid,ENIInvalid,PeriodicVerification decision;
+    class Running,Verifying action;
+    class Requested,Creating,Created,Attaching,Attached,Configured,Detaching,Deleting state;
 ```
 
 ## How to Use This Diagram
