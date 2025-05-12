@@ -225,6 +225,8 @@ The following diagram illustrates the complete lifecycle of an ENI managed by th
 
 The diagram shows the flow from NodeENI creation through ENI creation, attachment, configuration, and eventual cleanup when the NodeENI is deleted or updated.
 
+For a code-based version of this diagram (using Mermaid.js), see [ENI Lifecycle Diagram](docs/diagrams/eni-lifecycle.md).
+
 ## Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
