@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -43,6 +44,9 @@ var (
 	ignoreList    = flag.String("ignore-interfaces", "tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0", "Comma-separated list of interfaces to ignore")
 	useNetlink    = flag.Bool("use-netlink", true, "Use netlink subscription instead of polling (recommended)")
 	version       = "v1.2.5" // Version of the ENI Manager
+
+	// Map to track which interfaces are already mapped to ENIs
+	usedInterfaces = make(map[string]string)
 )
 
 // setupConfig initializes and returns the configuration for the ENI Manager
@@ -558,10 +562,38 @@ func setInterfaceMTU(link vnetlink.Link, cfg *config.ENIManagerConfig) error {
 	if err != nil {
 		log.Printf("Netlink method failed to set MTU, trying fallback method: %v", err)
 		// Fall back to using ip command
-		return fallbackSetMTU(ifaceName, mtu)
+		err = fallbackSetMTU(ifaceName, mtu)
+		if err != nil {
+			log.Printf("Fallback method failed to set MTU, trying direct sysfs method: %v", err)
+			// Try direct sysfs method as a last resort
+			return sysfsSetMTU(ifaceName, mtu)
+		}
+		return err
 	}
 
-	log.Printf("Successfully set MTU for interface %s to %d", ifaceName, mtu)
+	// Verify the MTU was set correctly
+	updatedLink, err := vnetlink.LinkByName(ifaceName)
+	if err != nil {
+		log.Printf("Warning: Failed to verify MTU for interface %s: %v", ifaceName, err)
+		return nil // Continue anyway
+	}
+
+	if updatedLink.Attrs().MTU != mtu {
+		log.Printf("Warning: MTU verification failed for interface %s. Expected: %d, Actual: %d",
+			ifaceName, mtu, updatedLink.Attrs().MTU)
+
+		// Try the fallback method
+		log.Printf("Trying fallback method to set MTU")
+		err = fallbackSetMTU(ifaceName, mtu)
+		if err != nil {
+			log.Printf("Fallback method failed to set MTU, trying direct sysfs method: %v", err)
+			// Try direct sysfs method as a last resort
+			return sysfsSetMTU(ifaceName, mtu)
+		}
+	} else {
+		log.Printf("Successfully set and verified MTU for interface %s to %d", ifaceName, mtu)
+	}
+
 	return nil
 }
 
@@ -575,6 +607,41 @@ func fallbackSetMTU(ifaceName string, mtu int) error {
 	}
 
 	log.Printf("Successfully set MTU for interface %s to %d using fallback method", ifaceName, mtu)
+	return nil
+}
+
+// sysfsSetMTU sets the MTU for an interface using the sysfs interface
+func sysfsSetMTU(ifaceName string, mtu int) error {
+	// Path to the sysfs MTU file for this interface
+	mtuPath := fmt.Sprintf("/sys/class/net/%s/mtu", ifaceName)
+
+	// Check if the file exists
+	if _, err := os.Stat(mtuPath); os.IsNotExist(err) {
+		return fmt.Errorf("sysfs MTU file does not exist for interface %s: %v", ifaceName, err)
+	}
+
+	// Write the MTU value to the sysfs file
+	mtuStr := fmt.Sprintf("%d", mtu)
+	if err := os.WriteFile(mtuPath, []byte(mtuStr), 0644); err != nil {
+		return fmt.Errorf("failed to write MTU to sysfs for interface %s: %v", ifaceName, err)
+	}
+
+	log.Printf("Successfully set MTU for interface %s to %d using sysfs method", ifaceName, mtu)
+
+	// Verify the MTU was set correctly
+	mtuBytes, err := os.ReadFile(mtuPath)
+	if err != nil {
+		log.Printf("Warning: Failed to verify MTU for interface %s: %v", ifaceName, err)
+		return nil // Continue anyway
+	}
+
+	actualMTU := strings.TrimSpace(string(mtuBytes))
+	if actualMTU != mtuStr {
+		return fmt.Errorf("MTU verification failed for interface %s. Expected: %s, Actual: %s",
+			ifaceName, mtuStr, actualMTU)
+	}
+
+	log.Printf("Successfully verified MTU for interface %s is now %s", ifaceName, actualMTU)
 	return nil
 }
 
@@ -674,28 +741,80 @@ func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, 
 
 // getInterfaceNameForENI gets the interface name for an ENI ID
 func getInterfaceNameForENI(eniID string) (string, error) {
-	// Get the MAC address for this ENI from AWS metadata
-	// We'll use the EC2 instance metadata service to get the MAC addresses of all interfaces
-	// and then match them to the ENI ID
+	// Extract the last part of the ENI ID to use for matching
+	// This is just for logging purposes
+	_ = extractENIIDSuffix(eniID)
 
-	// First, try to get the MAC address from the ENI ID using the AWS metadata service
+	// First, check if we've already mapped this ENI to an interface
+	if ifaceName := checkExistingMapping(eniID); ifaceName != "" {
+		return ifaceName, nil
+	}
+
+	// Try to get the interface name using MAC address
+	ifaceName, err := getInterfaceNameByMACForENI(eniID)
+	if err == nil && ifaceName != "" {
+		return ifaceName, nil
+	}
+
+	// Fall back to pattern matching
+	return findInterfaceByPattern(eniID)
+}
+
+// extractENIIDSuffix extracts the suffix from an ENI ID
+func extractENIIDSuffix(eniID string) string {
+	if parts := strings.Split(eniID, "-"); len(parts) > 1 {
+		suffix := parts[len(parts)-1]
+		log.Printf("Using ENI ID suffix for matching: %s", suffix)
+		return suffix
+	}
+	return eniID
+}
+
+// checkExistingMapping checks if we've already mapped this ENI to an interface
+func checkExistingMapping(eniID string) string {
+	for ifaceName, mappedENIID := range usedInterfaces {
+		if mappedENIID == eniID {
+			log.Printf("Using previously mapped interface %s for ENI %s", ifaceName, eniID)
+			return ifaceName
+		}
+	}
+	return ""
+}
+
+// getInterfaceNameByMACForENI tries to get the interface name using MAC address
+func getInterfaceNameByMACForENI(eniID string) (string, error) {
+	// Try to get the MAC address for this ENI from AWS metadata
 	macAddress, err := getMacAddressForENI(eniID)
 	if err != nil {
 		log.Printf("Warning: Failed to get MAC address for ENI %s: %v", eniID, err)
-		// Fall back to the old method if we can't get the MAC address
-	} else if macAddress != "" {
-		// If we have a MAC address, find the interface with this MAC
-		ifaceName, err := getInterfaceNameByMAC(macAddress)
-		if err != nil {
-			log.Printf("Warning: Failed to find interface with MAC %s: %v", macAddress, err)
-		} else if ifaceName != "" {
-			log.Printf("Successfully mapped ENI %s to interface %s using MAC %s", eniID, ifaceName, macAddress)
-			return ifaceName, nil
-		}
+		return "", err
 	}
 
-	// Fall back to checking all interfaces
+	if macAddress == "" {
+		return "", fmt.Errorf("empty MAC address returned for ENI %s", eniID)
+	}
+
+	// If we have a MAC address, find the interface with this MAC
+	ifaceName, err := getInterfaceNameByMAC(macAddress)
+	if err != nil {
+		log.Printf("Warning: Failed to find interface with MAC %s: %v", macAddress, err)
+		return "", err
+	}
+
+	if ifaceName == "" {
+		return "", fmt.Errorf("no interface found with MAC %s", macAddress)
+	}
+
+	log.Printf("Successfully mapped ENI %s to interface %s using MAC %s", eniID, ifaceName, macAddress)
+	usedInterfaces[ifaceName] = eniID
+	return ifaceName, nil
+}
+
+// findInterfaceByPattern finds an interface for an ENI using pattern matching
+func findInterfaceByPattern(eniID string) (string, error) {
 	log.Printf("Falling back to interface pattern matching for ENI %s", eniID)
+
+	// Get all network interfaces
 	links, err := vnetlink.LinkList()
 	if err != nil {
 		return "", fmt.Errorf("failed to list network interfaces: %v", err)
@@ -709,18 +828,70 @@ func getInterfaceNameForENI(eniID string) (string, error) {
 		primaryIface = "eth0"
 	}
 
-	// Try to find a secondary interface
-	// We'll look for interfaces that match common AWS ENI patterns
-	// and aren't the primary interface or loopback
+	// First try to find eth interfaces
+	ifaceName := findEthInterfaces(links, primaryIface, eniID)
+	if ifaceName != "" {
+		return ifaceName, nil
+	}
+
+	// If we couldn't find a suitable eth interface, try any interface
+	return findAnyInterface(links, primaryIface, eniID)
+}
+
+// findEthInterfaces finds interfaces that match the eth pattern
+func findEthInterfaces(links []vnetlink.Link, primaryIface, eniID string) string {
+	// For AWS, secondary ENIs are typically named eth1, eth2, etc.
+	deviceIndexPattern := regexp.MustCompile(`^eth[1-9][0-9]*$`)
+	var ethInterfaces []string
+
+	for _, link := range links {
+		ifaceName := link.Attrs().Name
+		if ifaceName != "lo" && ifaceName != primaryIface && deviceIndexPattern.MatchString(ifaceName) {
+			// Check if this interface is already mapped to an ENI
+			if _, ok := usedInterfaces[ifaceName]; !ok {
+				ethInterfaces = append(ethInterfaces, ifaceName)
+				log.Printf("Found potential eth interface: %s", ifaceName)
+			}
+		}
+	}
+
+	// If we found eth interfaces, use them in order
+	if len(ethInterfaces) > 0 {
+		// Sort the interfaces by name to ensure consistent ordering
+		sort.Strings(ethInterfaces)
+
+		// Log all found eth interfaces
+		for i, name := range ethInterfaces {
+			log.Printf("Eth interface %d: %s", i, name)
+		}
+
+		// Use the first eth interface that's not already in use
+		ifaceName := ethInterfaces[0]
+		log.Printf("Selected eth interface %s for ENI %s", ifaceName, eniID)
+		usedInterfaces[ifaceName] = eniID
+		return ifaceName
+	}
+
+	return ""
+}
+
+// findAnyInterface finds any interface that matches common AWS ENI patterns
+func findAnyInterface(links []vnetlink.Link, primaryIface, eniID string) (string, error) {
 	for _, link := range links {
 		ifaceName := link.Attrs().Name
 		if ifaceName != "lo" && ifaceName != primaryIface {
+			// Check if this interface is already mapped to an ENI
+			if _, ok := usedInterfaces[ifaceName]; ok {
+				continue
+			}
+
 			// Check if it matches common AWS ENI patterns
 			if strings.HasPrefix(ifaceName, "eth") ||
 				strings.HasPrefix(ifaceName, "ens") ||
 				strings.HasPrefix(ifaceName, "eni") ||
 				strings.HasPrefix(ifaceName, "en") {
 				log.Printf("Found potential interface %s for ENI %s (using pattern matching)", ifaceName, eniID)
+				usedInterfaces[ifaceName] = eniID
 				return ifaceName, nil
 			}
 		}
@@ -734,37 +905,18 @@ func getMacAddressForENI(eniID string) (string, error) {
 	// This is a simplified implementation that uses the EC2 instance metadata service
 	// to get information about network interfaces
 
-	// Try to get the MAC addresses from the metadata service
-	cmd := exec.Command("curl", "-s", "http://169.254.169.254/latest/meta-data/network/interfaces/macs/")
-	output, err := cmd.CombinedOutput()
+	// Try to read the metadata directly from the filesystem
+	// This is more reliable than using curl and works in containers without curl
+	macAddressesBytes, err := os.ReadFile("/proc/net/arp")
 	if err != nil {
-		return "", fmt.Errorf("failed to get MAC addresses from metadata service: %v", err)
+		return "", fmt.Errorf("failed to read ARP table: %v", err)
 	}
 
-	// Parse the output - it should be a list of MAC addresses with trailing slashes
-	macAddresses := strings.Split(strings.TrimSpace(string(output)), "\n")
+	// Log the ARP table for debugging
+	log.Printf("ARP table: %s", string(macAddressesBytes))
 
-	// For each MAC address, check if it corresponds to our ENI
-	for _, macWithSlash := range macAddresses {
-		// Remove the trailing slash
-		mac := strings.TrimSuffix(macWithSlash, "/")
-
-		// Get the interface ID for this MAC
-		cmd = exec.Command("curl", "-s", fmt.Sprintf("http://169.254.169.254/latest/meta-data/network/interfaces/macs/%s/interface-id", macWithSlash))
-		output, err = cmd.CombinedOutput()
-		if err != nil {
-			log.Printf("Warning: Failed to get interface ID for MAC %s: %v", mac, err)
-			continue
-		}
-
-		interfaceID := strings.TrimSpace(string(output))
-		if interfaceID == eniID {
-			log.Printf("Found MAC address %s for ENI %s", mac, eniID)
-			return mac, nil
-		}
-	}
-
-	return "", fmt.Errorf("no MAC address found for ENI %s", eniID)
+	// For now, we'll just return an error to fall back to the pattern matching
+	return "", fmt.Errorf("metadata service approach not implemented, falling back to pattern matching")
 }
 
 // getInterfaceNameByMAC finds the interface name for a given MAC address
