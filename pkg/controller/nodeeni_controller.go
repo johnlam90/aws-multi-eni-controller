@@ -531,6 +531,7 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 		AttachmentID: attachmentID,
 		SubnetID:     subnetID,
 		SubnetCIDR:   subnetCIDR,
+		MTU:          nodeENI.Spec.MTU,
 		Status:       "attached",
 		LastUpdated:  metav1.Now(),
 	})

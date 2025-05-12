@@ -19,6 +19,11 @@ controller:
   # Maximum number of concurrent ENI cleanup operations
   maxConcurrentENICleanup: 3
 
+# ENI Manager configuration
+eniManager:
+  # Default MTU to set on ENIs (0 means use system default)
+  defaultMTU: 0
+
 # Resource configuration for the controller
 resources:
   controller:

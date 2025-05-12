@@ -346,6 +346,12 @@ func bringUpInterface(link vnetlink.Link, cfg *config.ENIManagerConfig) error {
 		return fallbackBringUpInterface(ifaceName, cfg.InterfaceUpTimeout)
 	}
 
+	// Set MTU if configured
+	if err := setInterfaceMTU(link, cfg); err != nil {
+		log.Printf("Warning: Failed to set MTU for interface %s: %v", ifaceName, err)
+		// Continue anyway, the interface is up
+	}
+
 	log.Printf("Successfully brought up interface %s", ifaceName)
 	return nil
 }
@@ -401,5 +407,53 @@ func fallbackBringUpInterface(ifaceName string, timeout time.Duration) error {
 	}
 
 	log.Printf("Successfully brought up interface %s using fallback method", ifaceName)
+	return nil
+}
+
+// setInterfaceMTU sets the MTU for an interface
+func setInterfaceMTU(link vnetlink.Link, cfg *config.ENIManagerConfig) error {
+	ifaceName := link.Attrs().Name
+
+	// Check if we have a specific MTU for this interface
+	mtu, ok := cfg.InterfaceMTUs[ifaceName]
+	if !ok {
+		// Use default MTU if specified
+		mtu = cfg.DefaultMTU
+	}
+
+	// If MTU is 0 or negative, don't change it (use system default)
+	if mtu <= 0 {
+		if cfg.DebugMode {
+			log.Printf("No MTU specified for interface %s, using system default", ifaceName)
+		}
+		return nil
+	}
+
+	if cfg.DebugMode {
+		log.Printf("Setting MTU for interface %s to %d", ifaceName, mtu)
+	}
+
+	// Try using netlink first
+	err := vnetlink.LinkSetMTU(link, mtu)
+	if err != nil {
+		log.Printf("Netlink method failed to set MTU, trying fallback method: %v", err)
+		// Fall back to using ip command
+		return fallbackSetMTU(ifaceName, mtu)
+	}
+
+	log.Printf("Successfully set MTU for interface %s to %d", ifaceName, mtu)
+	return nil
+}
+
+// fallbackSetMTU sets the MTU for an interface using the ip command
+func fallbackSetMTU(ifaceName string, mtu int) error {
+	cmd := exec.Command("ip", "link", "set", "dev", ifaceName, "mtu", fmt.Sprintf("%d", mtu))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to set MTU for interface %s using ip command: %v, output: %s",
+			ifaceName, err, string(output))
+	}
+
+	log.Printf("Successfully set MTU for interface %s to %d using fallback method", ifaceName, mtu)
 	return nil
 }

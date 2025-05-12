@@ -47,6 +47,10 @@ type ENIManagerConfig struct {
 	ENIPattern string
 	// List of interfaces to ignore
 	IgnoreInterfaces []string
+	// Default MTU to set on interfaces (0 means use system default)
+	DefaultMTU int
+	// Map of interface name to MTU value
+	InterfaceMTUs map[string]int
 }
 
 // DefaultControllerConfig returns the default configuration for the controller
@@ -71,6 +75,8 @@ func DefaultENIManagerConfig() *ENIManagerConfig {
 		InterfaceUpTimeout: 2 * time.Second,
 		ENIPattern:         "^(eth|ens|eni|en)[0-9]+",
 		IgnoreInterfaces:   []string{"tunl0", "gre0", "gretap0", "erspan0", "ip_vti0", "ip6_vti0", "sit0", "ip6tnl0", "ip6gre0"},
+		DefaultMTU:         0, // 0 means use system default
+		InterfaceMTUs:      make(map[string]int),
 	}
 }
 
@@ -181,6 +187,29 @@ func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *s
 
 	if ignoreStr := os.Getenv("IGNORE_INTERFACES"); ignoreStr != "" {
 		config.IgnoreInterfaces = splitCSV(ignoreStr)
+	}
+
+	// Load default MTU from environment variable
+	if mtuStr := os.Getenv("DEFAULT_MTU"); mtuStr != "" {
+		if mtu, err := strconv.Atoi(mtuStr); err == nil {
+			config.DefaultMTU = mtu
+		}
+	}
+
+	// Load interface-specific MTUs from environment variable
+	// Format: "eth1:9000,eth2:1500"
+	if mtuMapStr := os.Getenv("INTERFACE_MTUS"); mtuMapStr != "" {
+		pairs := splitCSV(mtuMapStr)
+		for _, pair := range pairs {
+			parts := strings.Split(pair, ":")
+			if len(parts) == 2 {
+				ifaceName := parts[0]
+				mtuStr := parts[1]
+				if mtu, err := strconv.Atoi(mtuStr); err == nil {
+					config.InterfaceMTUs[ifaceName] = mtu
+				}
+			}
+		}
 	}
 
 	return config

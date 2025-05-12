@@ -38,6 +38,8 @@ spec:
           value: "{{ .Values.awsRegion }}"
         - name: LOG_LEVEL
           value: "{{ .Values.logLevel }}"
+        - name: DEFAULT_MTU
+          value: "{{ .Values.eniManager.defaultMTU | default "0" }}"
         {{- if .Values.metrics.enabled }}
         - name: METRICS_PORT
           value: "{{ .Values.metrics.port }}"

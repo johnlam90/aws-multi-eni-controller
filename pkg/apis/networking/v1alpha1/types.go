@@ -67,6 +67,10 @@ type NodeENISpec struct {
 	// Description is a description for the ENI
 	// +optional
 	Description string `json:"description,omitempty"`
+
+	// MTU is the Maximum Transmission Unit for the ENI (default: system default)
+	// +optional
+	MTU int `json:"mtu,omitempty"`
 }
 
 // NodeENIStatus is the status for a NodeENI resource
@@ -97,6 +101,10 @@ type ENIAttachment struct {
 	// SubnetCIDR is the CIDR block of the subnet where the ENI was created
 	// +optional
 	SubnetCIDR string `json:"subnetCIDR,omitempty"`
+
+	// MTU is the Maximum Transmission Unit configured for the ENI
+	// +optional
+	MTU int `json:"mtu,omitempty"`
 
 	// Status is the status of the attachment
 	Status string `json:"status"`

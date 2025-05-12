@@ -75,6 +75,9 @@ spec:
                 items:
                   type: string
                 type: array
+              mtu:
+                description: Maximum Transmission Unit (MTU) for the ENI (default system default)
+                type: integer
             required:
             - nodeSelector
             type: object
@@ -105,6 +108,9 @@ spec:
                     subnetCIDR:
                       description: CIDR block of the subnet where the ENI was created
                       type: string
+                    mtu:
+                      description: Maximum Transmission Unit (MTU) configured for the ENI
+                      type: integer
                     status:
                       description: Status of the attachment
                       type: string
