@@ -57,6 +57,7 @@ The following table lists the configurable parameters of the AWS Multi-ENI Contr
 | `namespace` | Namespace to deploy the controller | `eni-controller-system` |
 | `awsRegion` | AWS Region | `us-east-1` |
 | `controller.maxConcurrentENICleanup` | Maximum number of concurrent ENI cleanup operations | `3` |
+| `controller.maxConcurrentReconciles` | Maximum number of concurrent NodeENI reconciles | `5` |
 | `resources.controller.limits.cpu` | CPU limits for the controller | `500m` |
 | `resources.controller.limits.memory` | Memory limits for the controller | `512Mi` |
 | `resources.controller.requests.cpu` | CPU requests for the controller | `100m` |
@@ -92,6 +93,7 @@ namespace: custom-namespace
 awsRegion: us-west-2
 controller:
   maxConcurrentENICleanup: 5  # Increase for larger instances with many ENIs
+  maxConcurrentReconciles: 10  # Increase for larger deployments with many nodes
 nodeSelector:
   role: worker
   ng: multi-eni

@@ -18,6 +18,8 @@ awsRegion: us-east-1
 controller:
   # Maximum number of concurrent ENI cleanup operations
   maxConcurrentENICleanup: 3
+  # Maximum number of concurrent reconciles
+  maxConcurrentReconciles: 5
 
 # ENI Manager configuration
 eniManager:

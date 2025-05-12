@@ -41,6 +41,8 @@ spec:
           value: "{{ .Values.logLevel }}"
         - name: MAX_CONCURRENT_ENI_CLEANUP
           value: "{{ .Values.controller.maxConcurrentENICleanup }}"
+        - name: MAX_CONCURRENT_RECONCILES
+          value: "{{ .Values.controller.maxConcurrentReconciles }}"
         {{- if .Values.metrics.enabled }}
         - name: METRICS_PORT
           value: "{{ .Values.metrics.port }}"

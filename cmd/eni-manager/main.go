@@ -666,10 +666,8 @@ func sysfsSetMTU(ifaceName string, mtu int) error {
 	return nil
 }
 
-// updateMTUFromNodeENI updates the MTU values from NodeENI resources
-func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, cfg *config.ENIManagerConfig) {
-	log.Printf("Updating MTU values from NodeENI resources for node %s", nodeName)
-
+// getNodeENIResources gets all NodeENI resources
+func getNodeENIResources(ctx context.Context, clientset *kubernetes.Clientset) ([]networkingv1alpha1.NodeENI, error) {
 	// List all NodeENI resources
 	nodeENIList, err := clientset.CoreV1().RESTClient().
 		Get().
@@ -678,8 +676,7 @@ func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, 
 		Raw()
 
 	if err != nil {
-		log.Printf("Error listing NodeENI resources: %v", err)
-		return
+		return nil, fmt.Errorf("error listing NodeENI resources: %v", err)
 	}
 
 	// Parse the response
@@ -687,17 +684,146 @@ func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, 
 		Items []networkingv1alpha1.NodeENI `json:"items"`
 	}
 	if err := json.Unmarshal(nodeENIList, &nodeENIs); err != nil {
-		log.Printf("Error parsing NodeENI list: %v", err)
+		return nil, fmt.Errorf("error parsing NodeENI list: %v", err)
+	}
+
+	return nodeENIs.Items, nil
+}
+
+// getMTUFromAttachment gets the MTU value from an attachment or NodeENI spec
+func getMTUFromAttachment(attachment networkingv1alpha1.ENIAttachment, nodeENI networkingv1alpha1.NodeENI) int {
+	// Get the MTU value - first check the attachment MTU, then fall back to the spec MTU
+	mtuValue := attachment.MTU
+	if mtuValue <= 0 {
+		mtuValue = nodeENI.Spec.MTU
+	}
+	return mtuValue
+}
+
+// applyMTUToInterface applies the MTU value to an interface
+func applyMTUToInterface(ifaceName string, mtuValue int, cfg *config.ENIManagerConfig, source string) {
+	log.Printf("Setting MTU for interface %s to %d from %s", ifaceName, mtuValue, source)
+	cfg.InterfaceMTUs[ifaceName] = mtuValue
+
+	// Apply the MTU immediately
+	link, err := vnetlink.LinkByName(ifaceName)
+	if err != nil {
+		log.Printf("Error getting link for interface %s: %v", ifaceName, err)
 		return
 	}
 
-	log.Printf("Found %d NodeENI resources", len(nodeENIs.Items))
+	if err := setInterfaceMTU(link, cfg); err != nil {
+		log.Printf("Error setting MTU for interface %s: %v", ifaceName, err)
+	} else {
+		log.Printf("Successfully applied MTU %d to interface %s", mtuValue, ifaceName)
+	}
+}
+
+// findMostCommonMTU finds the most common MTU value from a map of MTU values
+func findMostCommonMTU(mtuValues map[int]int) int {
+	var mostCommonMTU int
+	var maxCount int
+	for mtu, count := range mtuValues {
+		if count > maxCount {
+			maxCount = count
+			mostCommonMTU = mtu
+		}
+	}
+	return mostCommonMTU
+}
+
+// applyCommonMTUToUnmappedInterfaces applies the common MTU value to all interfaces that don't have an MTU set
+func applyCommonMTUToUnmappedInterfaces(mostCommonMTU int, cfg *config.ENIManagerConfig) {
+	if mostCommonMTU <= 0 {
+		return
+	}
+
+	log.Printf("Found common MTU value %d from NodeENI resources", mostCommonMTU)
+
+	// Get all network interfaces
+	links, err := vnetlink.LinkList()
+	if err != nil {
+		log.Printf("Error listing network interfaces: %v", err)
+		return
+	}
+
+	// Apply the common MTU value to all interfaces that match our pattern
+	for _, link := range links {
+		ifaceName := link.Attrs().Name
+
+		// Skip loopback and primary interface
+		if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
+			continue
+		}
+
+		// Skip interfaces that don't match our ENI pattern or are in the ignore list
+		if !isAWSENI(ifaceName, cfg) {
+			continue
+		}
+
+		// Check if this interface already has an MTU set
+		if _, ok := cfg.InterfaceMTUs[ifaceName]; !ok {
+			// This interface doesn't have an MTU set, apply the common value
+			applyMTUToInterface(ifaceName, mostCommonMTU, cfg, "common MTU")
+		}
+	}
+}
+
+// processNodeENIAttachment processes a single NodeENI attachment
+func processNodeENIAttachment(attachment networkingv1alpha1.ENIAttachment, nodeENI networkingv1alpha1.NodeENI,
+	nodeName string, mtuValues map[int]int, cfg *config.ENIManagerConfig) {
+
+	if attachment.NodeID != nodeName {
+		return
+	}
+
+	// This attachment is for our node
+	log.Printf("Found NodeENI attachment for our node: %s, ENI: %s", nodeName, attachment.ENIID)
+
+	// Get the MTU value
+	mtuValue := getMTUFromAttachment(attachment, nodeENI)
+	log.Printf("MTU value from NodeENI: %d", mtuValue)
+
+	// Skip if MTU is not set
+	if mtuValue <= 0 {
+		log.Printf("No MTU specified in NodeENI %s, skipping", nodeENI.Name)
+		return
+	}
+
+	// Track this MTU value
+	mtuValues[mtuValue]++
+
+	// Get the interface name for this ENI
+	ifaceName, err := getInterfaceNameForENI(attachment.ENIID)
+	if err != nil {
+		log.Printf("Error getting interface name for ENI %s: %v", attachment.ENIID, err)
+		return
+	}
+
+	// Set the MTU for this interface
+	if ifaceName != "" {
+		applyMTUToInterface(ifaceName, mtuValue, cfg, fmt.Sprintf("NodeENI %s", nodeENI.Name))
+	}
+}
+
+// updateMTUFromNodeENI updates the MTU values from NodeENI resources
+func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, cfg *config.ENIManagerConfig) {
+	log.Printf("Updating MTU values from NodeENI resources for node %s", nodeName)
+
+	// Get all NodeENI resources
+	nodeENIs, err := getNodeENIResources(ctx, clientset)
+	if err != nil {
+		log.Printf("Error getting NodeENI resources: %v", err)
+		return
+	}
+
+	log.Printf("Found %d NodeENI resources", len(nodeENIs))
 
 	// Track the MTU values from NodeENI resources
 	mtuValues := make(map[int]int) // map[mtuValue]count
 
 	// Process each NodeENI resource
-	for _, nodeENI := range nodeENIs.Items {
+	for _, nodeENI := range nodeENIs {
 		log.Printf("Processing NodeENI: %s", nodeENI.Name)
 
 		// Check if this NodeENI applies to our node
@@ -708,105 +834,13 @@ func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, 
 
 		// Check each attachment
 		for _, attachment := range nodeENI.Status.Attachments {
-			if attachment.NodeID == nodeName {
-				// This attachment is for our node
-				log.Printf("Found NodeENI attachment for our node: %s, ENI: %s", nodeName, attachment.ENIID)
-
-				// Get the MTU value - first check the attachment MTU, then fall back to the spec MTU
-				mtuValue := attachment.MTU
-				if mtuValue <= 0 {
-					mtuValue = nodeENI.Spec.MTU
-				}
-
-				log.Printf("MTU value from NodeENI: %d", mtuValue)
-
-				// Skip if MTU is not set
-				if mtuValue <= 0 {
-					log.Printf("No MTU specified in NodeENI %s, skipping", nodeENI.Name)
-					continue
-				}
-
-				// Track this MTU value
-				mtuValues[mtuValue]++
-
-				// Get the interface name for this ENI
-				ifaceName, err := getInterfaceNameForENI(attachment.ENIID)
-				if err != nil {
-					log.Printf("Error getting interface name for ENI %s: %v", attachment.ENIID, err)
-					continue
-				}
-
-				// Set the MTU for this interface
-				if ifaceName != "" {
-					log.Printf("Setting MTU for interface %s to %d from NodeENI %s", ifaceName, mtuValue, nodeENI.Name)
-					cfg.InterfaceMTUs[ifaceName] = mtuValue
-
-					// Apply the MTU immediately
-					link, err := vnetlink.LinkByName(ifaceName)
-					if err != nil {
-						log.Printf("Error getting link for interface %s: %v", ifaceName, err)
-						continue
-					}
-
-					if err := setInterfaceMTU(link, cfg); err != nil {
-						log.Printf("Error setting MTU for interface %s: %v", ifaceName, err)
-					} else {
-						log.Printf("Successfully applied MTU %d to interface %s", mtuValue, ifaceName)
-					}
-				}
-			}
+			processNodeENIAttachment(attachment, nodeENI, nodeName, mtuValues, cfg)
 		}
 	}
 
-	// Find the most common MTU value
-	var mostCommonMTU int
-	var maxCount int
-	for mtu, count := range mtuValues {
-		if count > maxCount {
-			maxCount = count
-			mostCommonMTU = mtu
-		}
-	}
-
-	// If we found a common MTU value, apply it to all interfaces that don't have an MTU set
-	if mostCommonMTU > 0 {
-		log.Printf("Found common MTU value %d from NodeENI resources", mostCommonMTU)
-
-		// Get all network interfaces
-		links, err := vnetlink.LinkList()
-		if err != nil {
-			log.Printf("Error listing network interfaces: %v", err)
-		} else {
-			// Apply the common MTU value to all interfaces that match our pattern
-			for _, link := range links {
-				ifaceName := link.Attrs().Name
-
-				// Skip loopback and primary interface
-				if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
-					continue
-				}
-
-				// Skip interfaces that don't match our ENI pattern or are in the ignore list
-				if !isAWSENI(ifaceName, cfg) {
-					continue
-				}
-
-				// Check if this interface already has an MTU set
-				if _, ok := cfg.InterfaceMTUs[ifaceName]; !ok {
-					// This interface doesn't have an MTU set, apply the common value
-					log.Printf("Applying common MTU %d to interface %s", mostCommonMTU, ifaceName)
-					cfg.InterfaceMTUs[ifaceName] = mostCommonMTU
-
-					// Apply the MTU immediately
-					if err := setInterfaceMTU(link, cfg); err != nil {
-						log.Printf("Error setting MTU for interface %s: %v", ifaceName, err)
-					} else {
-						log.Printf("Successfully applied common MTU %d to interface %s", mostCommonMTU, ifaceName)
-					}
-				}
-			}
-		}
-	}
+	// Find the most common MTU value and apply it to unmapped interfaces
+	mostCommonMTU := findMostCommonMTU(mtuValues)
+	applyCommonMTUToUnmappedInterfaces(mostCommonMTU, cfg)
 
 	// Log the current MTU configuration
 	log.Printf("Current MTU configuration:")

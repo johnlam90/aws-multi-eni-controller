@@ -289,9 +289,13 @@ If you prefer to deploy manually:
      value: "your-preferred-region"  # e.g., eu-west-1, ap-southeast-1, etc.
    - name: MAX_CONCURRENT_ENI_CLEANUP
      value: "3"  # Number of concurrent ENI cleanup operations (default: 3)
+   - name: MAX_CONCURRENT_RECONCILES
+     value: "5"  # Number of concurrent NodeENI reconciles (default: 5)
    ```
 
    The `MAX_CONCURRENT_ENI_CLEANUP` setting controls how many ENIs can be cleaned up in parallel when a NodeENI resource is deleted or when nodes no longer match the selector. This is particularly useful for larger instances with many ENIs, as it can significantly reduce cleanup time.
+
+   The `MAX_CONCURRENT_RECONCILES` setting controls how many NodeENI resources can be reconciled in parallel. This is particularly useful for larger deployments with many nodes and ENIs, as it can significantly improve performance and responsiveness.
 
 ## Using the Controller
 

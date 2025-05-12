@@ -95,7 +95,7 @@ spec:
       serviceAccountName: eni-controller
       containers:
       - name: manager
-        image:  ghcr.io/johnlam90/aws-multi-eni-controller:beta.sandbox-test0-7.c1b5dcf
+        image:  ghcr.io/johnlam90/aws-multi-eni-controller:beta.sandbox-test0-7.9f625f3
         env:
         - name: COMPONENT
           value: "eni-controller"
@@ -106,6 +106,9 @@ spec:
         # Maximum number of concurrent ENI cleanup operations
         - name: MAX_CONCURRENT_ENI_CLEANUP
           value: "3"
+        # Maximum number of concurrent reconciles
+        - name: MAX_CONCURRENT_RECONCILES
+          value: "1"
         args:
         - --metrics-addr=:8080
         - --enable-leader-election
