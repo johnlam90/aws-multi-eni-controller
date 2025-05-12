@@ -124,11 +124,24 @@ func (c *EC2Client) AttachENI(ctx context.Context, eniID, instanceID string, dev
 // DetachENI detaches an ENI from an EC2 instance
 func (c *EC2Client) DetachENI(ctx context.Context, attachmentID string, force bool) error {
 	log := c.Logger.WithValues("attachmentID", attachmentID)
-	log.Info("Detaching ENI")
+
+	// If force is false, we're just checking if the attachment exists
+	// This is used by verifyENIAttachments to check if an ENI is still attached
+	if !force {
+		log.V(1).Info("Checking if ENI attachment exists")
+	} else {
+		log.Info("Detaching ENI")
+	}
 
 	input := &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String(attachmentID),
 		Force:        aws.Bool(force),
+	}
+
+	// If force is false, we're just checking if the attachment exists
+	// We don't actually want to detach it, so we'll use DryRun mode
+	if !force {
+		input.DryRun = aws.Bool(true)
 	}
 
 	_, err := c.EC2.DetachNetworkInterface(ctx, input)
@@ -139,6 +152,13 @@ func (c *EC2Client) DetachENI(ctx context.Context, attachmentID string, force bo
 			log.Info("ENI attachment no longer exists, considering detachment successful", "error", err.Error())
 			return nil
 		}
+
+		// If we're in DryRun mode and get a DryRunOperation error, the attachment exists
+		if !force && strings.Contains(err.Error(), "DryRunOperation") {
+			log.V(1).Info("ENI attachment exists (dry run succeeded)")
+			return fmt.Errorf("attachment exists but not detaching due to dry run")
+		}
+
 		return fmt.Errorf("failed to detach ENI: %v", err)
 	}
 
@@ -194,14 +214,31 @@ func (c *EC2Client) DescribeENI(ctx context.Context, eniID string) (*EC2v2Networ
 		Status:             EC2v2NetworkInterfaceStatus(result.NetworkInterfaces[0].Status),
 	}
 
-	// Add attachment if it exists
-	if result.NetworkInterfaces[0].Attachment != nil {
+	// Add attachment if it exists and is attached
+	// Note: We need to check both the existence of the Attachment field AND the status
+	// An ENI can have an Attachment field but still be in the "available" state if it was manually detached
+	if result.NetworkInterfaces[0].Attachment != nil &&
+		result.NetworkInterfaces[0].Status != "available" &&
+		result.NetworkInterfaces[0].Attachment.Status != "detached" {
 		eni.Attachment = &EC2v2NetworkInterfaceAttachment{
 			AttachmentID:        *result.NetworkInterfaces[0].Attachment.AttachmentId,
 			DeleteOnTermination: *result.NetworkInterfaces[0].Attachment.DeleteOnTermination,
 			DeviceIndex:         *result.NetworkInterfaces[0].Attachment.DeviceIndex,
 			InstanceID:          *result.NetworkInterfaces[0].Attachment.InstanceId,
 			Status:              string(result.NetworkInterfaces[0].Attachment.Status),
+		}
+	} else {
+		// Explicitly set Attachment to nil to indicate it's not attached
+		// This ensures we don't rely on the AWS response structure which might include
+		// attachment info even for detached ENIs
+		eni.Attachment = nil
+
+		// If the ENI has an attachment field but is in the available state,
+		// it means it was manually detached
+		if result.NetworkInterfaces[0].Attachment != nil &&
+			(result.NetworkInterfaces[0].Status == "available" ||
+				result.NetworkInterfaces[0].Attachment.Status == "detached") {
+			log.Info("ENI has attachment info but is in available state or detached status, considering it detached")
 		}
 	}
 

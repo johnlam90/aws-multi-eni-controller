@@ -856,6 +856,35 @@ func (r *NodeENIReconciler) verifyENIAttachments(ctx context.Context, nodeENI *n
 			continue
 		}
 
+		// First, directly check the attachment status with AWS
+		// This is a more reliable way to check if an ENI is still attached
+		attachmentExists := false
+		if attachment.AttachmentID != "" {
+			// Try to describe the attachment directly
+			// If this fails with InvalidAttachmentID.NotFound, the attachment no longer exists
+			err := r.AWS.DetachENI(ctx, attachment.AttachmentID, false)
+			if err != nil {
+				if strings.Contains(err.Error(), "InvalidAttachmentID.NotFound") {
+					log.Info("ENI attachment no longer exists in AWS, removing from status", "attachmentID", attachment.AttachmentID)
+					r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
+						"ENI %s was manually detached from node %s (attachment ID not found)", attachment.ENIID, attachment.NodeID)
+					// Don't add this attachment to the updated list
+					continue
+				}
+				// If we get a different error, the attachment might still exist
+				// We'll check the ENI status next
+				attachmentExists = true
+			} else {
+				// If DetachENI succeeds, it means the attachment existed and we just detached it
+				// This shouldn't happen in normal operation, but we'll handle it gracefully
+				log.Info("ENI attachment existed but was just detached, removing from status", "attachmentID", attachment.AttachmentID)
+				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
+					"ENI %s was detached from node %s during verification", attachment.ENIID, attachment.NodeID)
+				// Don't add this attachment to the updated list
+				continue
+			}
+		}
+
 		// Check if the ENI still exists and is attached
 		log.Info("Describing ENI in AWS", "eniID", attachment.ENIID)
 		eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
@@ -869,9 +898,18 @@ func (r *NodeENIReconciler) verifyENIAttachments(ctx context.Context, nodeENI *n
 				continue
 			}
 
-			// For other errors, keep the attachment as is
-			log.Error(err, "Failed to describe ENI, keeping attachment", "eniID", attachment.ENIID)
-			updatedAttachments = append(updatedAttachments, attachment)
+			// For other errors, we need to be careful
+			// If we previously determined the attachment exists, keep it
+			// Otherwise, assume it's detached to be safe
+			if attachmentExists {
+				log.Error(err, "Failed to describe ENI but attachment exists, keeping attachment", "eniID", attachment.ENIID)
+				updatedAttachments = append(updatedAttachments, attachment)
+			} else {
+				log.Error(err, "Failed to describe ENI and attachment status unknown, removing from status", "eniID", attachment.ENIID)
+				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
+					"ENI %s may have been detached from node %s (status unknown)", attachment.ENIID, attachment.NodeID)
+				// Don't add this attachment to the updated list
+			}
 			continue
 		}
 
@@ -896,6 +934,18 @@ func (r *NodeENIReconciler) verifyENIAttachments(ctx context.Context, nodeENI *n
 			continue
 		}
 
+		// Double-check that the ENI is attached to the correct instance
+		if eni.Attachment != nil && eni.Attachment.InstanceID != attachment.InstanceID {
+			log.Info("ENI is attached to a different instance, removing from status",
+				"eniID", attachment.ENIID,
+				"expectedInstance", attachment.InstanceID,
+				"actualInstance", eni.Attachment.InstanceID)
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
+				"ENI %s was detached from node %s and attached to a different instance", attachment.ENIID, attachment.NodeID)
+			// Don't add this attachment to the updated list
+			continue
+		}
+
 		// ENI is still attached, keep it in the list
 		log.Info("ENI is still attached, keeping in status", "eniID", attachment.ENIID)
 
@@ -913,22 +963,21 @@ func (r *NodeENIReconciler) verifyENIAttachments(ctx context.Context, nodeENI *n
 			}
 		}
 
+		// Update the last updated timestamp
+		attachment.LastUpdated = metav1.Now()
 		updatedAttachments = append(updatedAttachments, attachment)
 	}
 
 	// Update the NodeENI status with the verified attachments
-	if len(updatedAttachments) != len(nodeENI.Status.Attachments) {
-		log.Info("Updating NodeENI status with verified attachments",
-			"before", len(nodeENI.Status.Attachments), "after", len(updatedAttachments))
-		nodeENI.Status.Attachments = updatedAttachments
+	// Always update the status to ensure the LastUpdated timestamps are current
+	log.Info("Updating NodeENI status with verified attachments",
+		"before", len(nodeENI.Status.Attachments), "after", len(updatedAttachments))
+	nodeENI.Status.Attachments = updatedAttachments
 
-		// Update the NodeENI status
-		if err := r.Status().Update(ctx, nodeENI); err != nil {
-			log.Error(err, "Failed to update NodeENI status with verified attachments")
-		} else {
-			log.Info("Successfully updated NodeENI status with verified attachments")
-		}
+	// Update the NodeENI status
+	if err := r.Status().Update(ctx, nodeENI); err != nil {
+		log.Error(err, "Failed to update NodeENI status with verified attachments")
 	} else {
-		log.Info("No changes to NodeENI attachments needed")
+		log.Info("Successfully updated NodeENI status with verified attachments")
 	}
 }
