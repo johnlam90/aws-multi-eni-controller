@@ -2,8 +2,8 @@ apiVersion: v2
 name: aws-multi-eni-controller
 description: A Helm chart for AWS Multi-ENI Controller
 type: application
-version: 0.3.3
-appVersion: "v1.2.5"
+version: "1.26"
+appVersion: "v1.26"
 home: https://github.com/johnlam90/aws-multi-eni-controller
 sources:
   - https://github.com/johnlam90/aws-multi-eni-controller
@@ -18,8 +18,9 @@ keywords:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/changes: |
-    - Add configurable MTU option for ENIs in NodeENI resources
-    - Implement MTU configuration in ENI Manager
-    - Update ENI attachment status to include MTU information
+    - Update version to v1.26
+    - Add MAX_CONCURRENT_RECONCILES parameter for better scaling
+    - Improve MTU configuration for all interfaces
+    - Optimize Docker build process
     - Fix code quality issues and reduce cyclomatic complexity
-    - Improve error handling and logging for MTU configuration
+    - Improve error handling and logging
