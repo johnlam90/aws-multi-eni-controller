@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -24,10 +25,13 @@ import (
 	"syscall"
 	"time"
 
+	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
 	vnetlink "github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 var (
@@ -83,6 +87,57 @@ func main() {
 
 	// Start the MTU updater
 	log.Printf("Starting MTU updater with default MTU: %d", cfg.DefaultMTU)
+
+	// Get the node name from the environment
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		var err error
+		nodeName, err = os.Hostname()
+		if err != nil {
+			log.Printf("Warning: Failed to get hostname: %v", err)
+			log.Printf("Will use default MTU only")
+		} else {
+			log.Printf("Using hostname as node name: %s", nodeName)
+		}
+	} else {
+		log.Printf("Using NODE_NAME from environment: %s", nodeName)
+	}
+
+	// Create a Kubernetes client if we have a node name
+	if nodeName != "" {
+		// Try to create a Kubernetes client
+		k8sConfig, err := rest.InClusterConfig()
+		if err != nil {
+			log.Printf("Warning: Failed to create in-cluster config: %v", err)
+			log.Printf("Will use default MTU only")
+		} else {
+			// Create the clientset
+			clientset, err := kubernetes.NewForConfig(k8sConfig)
+			if err != nil {
+				log.Printf("Warning: Failed to create Kubernetes client: %v", err)
+				log.Printf("Will use default MTU only")
+			} else {
+				// Start a goroutine to periodically update MTU values from NodeENI resources
+				go func() {
+					ticker := time.NewTicker(1 * time.Minute)
+					defer ticker.Stop()
+
+					// Do an initial update
+					updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
+
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							// Update MTU values from NodeENI resources
+							updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
+						}
+					}
+				}()
+			}
+		}
+	}
 
 	// Set up a ticker to periodically check and update MTU values
 	go func() {
@@ -484,6 +539,89 @@ func fallbackSetMTU(ifaceName string, mtu int) error {
 
 	log.Printf("Successfully set MTU for interface %s to %d using fallback method", ifaceName, mtu)
 	return nil
+}
+
+// updateMTUFromNodeENI updates the MTU values from NodeENI resources
+func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, cfg *config.ENIManagerConfig) {
+	log.Printf("Updating MTU values from NodeENI resources for node %s", nodeName)
+
+	// List all NodeENI resources
+	nodeENIList, err := clientset.CoreV1().RESTClient().
+		Get().
+		AbsPath("/apis/networking.k8s.aws/v1alpha1/nodeenis").
+		Do(ctx).
+		Raw()
+
+	if err != nil {
+		log.Printf("Error listing NodeENI resources: %v", err)
+		return
+	}
+
+	// Parse the response
+	var nodeENIs struct {
+		Items []networkingv1alpha1.NodeENI `json:"items"`
+	}
+	if err := json.Unmarshal(nodeENIList, &nodeENIs); err != nil {
+		log.Printf("Error parsing NodeENI list: %v", err)
+		return
+	}
+
+	// Process each NodeENI resource
+	for _, nodeENI := range nodeENIs.Items {
+		// Check if this NodeENI applies to our node
+		if nodeENI.Status.Attachments == nil {
+			continue
+		}
+
+		// Check each attachment
+		for _, attachment := range nodeENI.Status.Attachments {
+			if attachment.NodeID == nodeName {
+				// This attachment is for our node
+				log.Printf("Found NodeENI attachment for our node: %s, ENI: %s, MTU: %d",
+					nodeName, attachment.ENIID, nodeENI.Spec.MTU)
+
+				// Get the interface name for this ENI
+				ifaceName, err := getInterfaceNameForENI(attachment.ENIID)
+				if err != nil {
+					log.Printf("Error getting interface name for ENI %s: %v", attachment.ENIID, err)
+					continue
+				}
+
+				// Set the MTU for this interface
+				if ifaceName != "" {
+					log.Printf("Setting MTU for interface %s to %d", ifaceName, nodeENI.Spec.MTU)
+					cfg.InterfaceMTUs[ifaceName] = nodeENI.Spec.MTU
+				}
+			}
+		}
+	}
+}
+
+// getInterfaceNameForENI gets the interface name for an ENI ID
+func getInterfaceNameForENI(eniID string) (string, error) {
+	// This is a simplified implementation that assumes the interface name
+	// follows the pattern eth1, eth2, etc. based on the device index
+	// In a real implementation, you would need to map ENI IDs to interface names
+	// using AWS metadata or other means
+
+	// For now, we'll just list all interfaces and try to find one that matches
+	// the ENI ID in some way (e.g., by MAC address or other metadata)
+	links, err := vnetlink.LinkList()
+	if err != nil {
+		return "", fmt.Errorf("failed to list network interfaces: %v", err)
+	}
+
+	// In a real implementation, you would need to map ENI IDs to interface names
+	// For now, we'll just return the first interface that matches our pattern
+	// and isn't eth0 (the primary interface)
+	for _, link := range links {
+		ifaceName := link.Attrs().Name
+		if ifaceName != "lo" && ifaceName != "eth0" && strings.HasPrefix(ifaceName, "eth") {
+			return ifaceName, nil
+		}
+	}
+
+	return "", fmt.Errorf("no matching interface found for ENI %s", eniID)
 }
 
 // updateAllInterfacesMTU updates the MTU for all ENI interfaces

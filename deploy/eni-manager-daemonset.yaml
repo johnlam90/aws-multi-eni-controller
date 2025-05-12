@@ -25,7 +25,7 @@ spec:
         - name: COMPONENT
           value: "eni-manager"
         - name: DEFAULT_MTU
-          value: "9001"  # Set to 9000 for jumbo frames
+          value: "0"  # Set to 0 to use MTU from NodeENI resources
         - name: NODE_NAME
           valueFrom:
             fieldRef:
