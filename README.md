@@ -698,6 +698,42 @@ The repository contains the following key components:
 - `deploy/samples/`: Sample NodeENI resources
 - `examples/library-usage/`: Examples of using the project as a library
 
+## Changelog
+
+### v1.26 (May 12, 2025)
+
+- Added MAX_CONCURRENT_RECONCILES parameter for better scaling with many nodes
+- Improved MTU configuration for all network interfaces
+- Enhanced interface detection for different naming patterns (eth*, ens*, etc.)
+- Fixed MTU application to interfaces not explicitly mapped to ENIs
+- Optimized Docker build process for faster builds
+- Reduced cyclomatic complexity in code
+- Improved error handling and logging
+
+### v1.2.5 (April 15, 2025)
+
+- Added configurable MTU option for ENIs in NodeENI resources
+- Implemented MTU configuration in ENI Manager
+- Updated ENI attachment status to include MTU information
+- Fixed code quality issues and reduced cyclomatic complexity
+- Improved error handling and logging for MTU configuration
+
+### v1.2.0 (March 10, 2025)
+
+- Added support for subnet names via AWS tags
+- Implemented multi-subnet support
+- Added support for security group names
+- Improved cleanup with finalizers
+- Enhanced AWS SDK v2 integration
+
+### v1.0.0 (February 1, 2025)
+
+- Initial stable release
+- Dynamic ENI management
+- Proper cleanup with finalizers
+- AWS SDK v2 integration
+- Optimized container image (22MB)
+
 ## Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this project.
