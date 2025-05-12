@@ -48,13 +48,25 @@ jobs:
           go-version: '1.23'
           check-latest: true
 
+      # Add Go module caching
+      - name: Go Module Cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
       - name: Prepare go.mod for CI
         run: |
           # Remove toolchain directive for CI compatibility
           sed -i '/^toolchain/d' go.mod
 
+      # Run tests in parallel
       - name: Run unit tests
-        run: go test -v ./pkg/... -coverprofile=coverage.txt -covermode=atomic
+        run: go test -v -parallel 4 ./pkg/... -coverprofile=coverage.txt -covermode=atomic
 
       - name: Display test coverage
         run: go tool cover -func=coverage.txt
@@ -157,8 +169,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             GOTOOLCHAIN=auto
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            SKIP_TESTS=true
+            SKIP_UPX=false
+          cache-from: type=gha,scope=${{ github.workflow }}
+          cache-to: type=gha,mode=max,scope=${{ github.workflow }}
+          platforms: linux/amd64
+          provenance: false
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=false
           build-contexts: |
             golang:1.23-alpine=docker-image://golang:1.23-alpine
 

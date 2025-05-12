@@ -2,6 +2,8 @@ FROM golang:1.23-alpine AS builder
 
 # Set build arguments
 ARG GOTOOLCHAIN=auto
+ARG SKIP_TESTS=false
+ARG TARGETARCH=amd64
 
 WORKDIR /workspace
 
@@ -18,9 +20,16 @@ RUN sed -i '/^toolchain/d' go.mod && GOTOOLCHAIN=${GOTOOLCHAIN} go mod download
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 
+# Run tests if not skipped (can be skipped in CI since tests are run separately)
+RUN if [ "$SKIP_TESTS" = "false" ]; then \
+      echo "Running tests..." && \
+      go test -v ./pkg/...; \
+    else \
+      echo "Skipping tests..."; \
+    fi
+
 # Build the ENI Controller with optimizations for size
 # Use the TARGETARCH build arg to support multi-architecture builds
-ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} GOTOOLCHAIN=${GOTOOLCHAIN} \
     go build -a -ldflags="-s -w" -trimpath -o manager cmd/main.go
 
@@ -28,12 +37,18 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} GOTOOLCHAIN=${GOTOOLCHAIN} \
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} GOTOOLCHAIN=${GOTOOLCHAIN} \
     go build -a -ldflags="-s -w" -trimpath -o eni-manager cmd/eni-manager/main.go
 
-# Use UPX to compress the binaries
+# Use UPX to compress the binaries (only if not in CI to save time)
 FROM alpine:3.19 AS compressor
 RUN apk --no-cache add upx
 COPY --from=builder /workspace/manager /manager
 COPY --from=builder /workspace/eni-manager /eni-manager
-RUN upx --best --lzma /manager /eni-manager
+ARG SKIP_UPX=false
+RUN if [ "$SKIP_UPX" = "true" ]; then \
+      echo "Skipping UPX compression..."; \
+    else \
+      echo "Compressing binaries with UPX..." && \
+      upx --best --lzma /manager /eni-manager; \
+    fi
 
 # Use a minimal base image for the final image
 FROM alpine:3.19

@@ -1,0 +1,35 @@
+# Git
+.git
+.github
+.gitignore
+
+# Build artifacts
+bin/
+coverage.txt
+*.out
+*.prof
+
+# Helm charts
+charts/
+
+# Documentation
+*.md
+LICENSE
+docs/
+
+# Development tools
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test data
+testdata/
+
+# Temporary files
+tmp/
+temp/
+
+# Deployment files
+deploy/
+hack/
