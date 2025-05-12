@@ -227,6 +227,10 @@ The diagram shows the flow from NodeENI creation through ENI creation, attachmen
 
 For a code-based version of this diagram (using Mermaid.js), see [ENI Lifecycle Diagram](docs/diagrams/eni-lifecycle.md).
 
+### Component Architecture
+
+To understand the relationships between the key components of the AWS Multi-ENI Controller, see the [Class Diagram](docs/diagrams/class-diagram.md).
+
 ## Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
