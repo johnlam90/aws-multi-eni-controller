@@ -30,6 +30,12 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
+        - name: AWS_REGION
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+              # This is a placeholder - in a real deployment, you would use a configmap or
+              # the downward API to get the AWS region
         securityContext:
           privileged: true
           capabilities:

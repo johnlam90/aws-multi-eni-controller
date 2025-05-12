@@ -888,7 +888,7 @@ func (r *NodeENIReconciler) verifyAndUpdateAttachment(
 	}
 
 	// ENI is still attached, update it and keep it in the list
-	r.updateAttachmentInfo(ctx, &attachment)
+	r.updateAttachmentInfo(ctx, &attachment, nodeENI)
 
 	// Add the updated attachment to the list
 	*updatedAttachments = append(*updatedAttachments, attachment)
@@ -1017,10 +1017,11 @@ func (r *NodeENIReconciler) handleENIDescribeError(
 	return false
 }
 
-// updateAttachmentInfo updates the attachment information (subnet CIDR, timestamp)
+// updateAttachmentInfo updates the attachment information (subnet CIDR, MTU, timestamp)
 func (r *NodeENIReconciler) updateAttachmentInfo(
 	ctx context.Context,
 	attachment *networkingv1alpha1.ENIAttachment,
+	nodeENI *networkingv1alpha1.NodeENI,
 ) {
 	log := r.Log.WithValues("eniID", attachment.ENIID, "node", attachment.NodeID)
 
@@ -1036,6 +1037,13 @@ func (r *NodeENIReconciler) updateAttachmentInfo(
 			attachment.SubnetCIDR = subnetCIDR
 			log.Info("Updated subnet CIDR for existing attachment", "subnetID", attachment.SubnetID, "subnetCIDR", subnetCIDR)
 		}
+	}
+
+	// Check if we need to update the MTU
+	if attachment.MTU <= 0 && nodeENI.Spec.MTU > 0 {
+		// Update the attachment with the MTU from the NodeENI spec
+		attachment.MTU = nodeENI.Spec.MTU
+		log.Info("Updated MTU for existing attachment", "eniID", attachment.ENIID, "mtu", attachment.MTU)
 	}
 
 	// Update the last updated timestamp

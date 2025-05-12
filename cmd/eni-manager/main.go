@@ -566,10 +566,15 @@ func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, 
 		return
 	}
 
+	log.Printf("Found %d NodeENI resources", len(nodeENIs.Items))
+
 	// Process each NodeENI resource
 	for _, nodeENI := range nodeENIs.Items {
+		log.Printf("Processing NodeENI: %s", nodeENI.Name)
+
 		// Check if this NodeENI applies to our node
 		if nodeENI.Status.Attachments == nil {
+			log.Printf("NodeENI %s has no attachments, skipping", nodeENI.Name)
 			continue
 		}
 
@@ -577,8 +582,21 @@ func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, 
 		for _, attachment := range nodeENI.Status.Attachments {
 			if attachment.NodeID == nodeName {
 				// This attachment is for our node
-				log.Printf("Found NodeENI attachment for our node: %s, ENI: %s, MTU: %d",
-					nodeName, attachment.ENIID, nodeENI.Spec.MTU)
+				log.Printf("Found NodeENI attachment for our node: %s, ENI: %s", nodeName, attachment.ENIID)
+
+				// Get the MTU value - first check the attachment MTU, then fall back to the spec MTU
+				mtuValue := attachment.MTU
+				if mtuValue <= 0 {
+					mtuValue = nodeENI.Spec.MTU
+				}
+
+				log.Printf("MTU value from NodeENI: %d", mtuValue)
+
+				// Skip if MTU is not set
+				if mtuValue <= 0 {
+					log.Printf("No MTU specified in NodeENI %s, skipping", nodeENI.Name)
+					continue
+				}
 
 				// Get the interface name for this ENI
 				ifaceName, err := getInterfaceNameForENI(attachment.ENIID)
@@ -589,39 +607,152 @@ func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, 
 
 				// Set the MTU for this interface
 				if ifaceName != "" {
-					log.Printf("Setting MTU for interface %s to %d", ifaceName, nodeENI.Spec.MTU)
-					cfg.InterfaceMTUs[ifaceName] = nodeENI.Spec.MTU
+					log.Printf("Setting MTU for interface %s to %d from NodeENI %s", ifaceName, mtuValue, nodeENI.Name)
+					cfg.InterfaceMTUs[ifaceName] = mtuValue
+
+					// Apply the MTU immediately
+					link, err := vnetlink.LinkByName(ifaceName)
+					if err != nil {
+						log.Printf("Error getting link for interface %s: %v", ifaceName, err)
+						continue
+					}
+
+					if err := setInterfaceMTU(link, cfg); err != nil {
+						log.Printf("Error setting MTU for interface %s: %v", ifaceName, err)
+					} else {
+						log.Printf("Successfully applied MTU %d to interface %s", mtuValue, ifaceName)
+					}
 				}
 			}
 		}
+	}
+
+	// Log the current MTU configuration
+	log.Printf("Current MTU configuration:")
+	log.Printf("Default MTU: %d", cfg.DefaultMTU)
+	for iface, mtu := range cfg.InterfaceMTUs {
+		log.Printf("Interface %s: MTU %d", iface, mtu)
 	}
 }
 
 // getInterfaceNameForENI gets the interface name for an ENI ID
 func getInterfaceNameForENI(eniID string) (string, error) {
-	// This is a simplified implementation that assumes the interface name
-	// follows the pattern eth1, eth2, etc. based on the device index
-	// In a real implementation, you would need to map ENI IDs to interface names
-	// using AWS metadata or other means
+	// Get the MAC address for this ENI from AWS metadata
+	// We'll use the EC2 instance metadata service to get the MAC addresses of all interfaces
+	// and then match them to the ENI ID
 
-	// For now, we'll just list all interfaces and try to find one that matches
-	// the ENI ID in some way (e.g., by MAC address or other metadata)
+	// First, try to get the MAC address from the ENI ID using the AWS metadata service
+	macAddress, err := getMacAddressForENI(eniID)
+	if err != nil {
+		log.Printf("Warning: Failed to get MAC address for ENI %s: %v", eniID, err)
+		// Fall back to the old method if we can't get the MAC address
+	} else if macAddress != "" {
+		// If we have a MAC address, find the interface with this MAC
+		ifaceName, err := getInterfaceNameByMAC(macAddress)
+		if err != nil {
+			log.Printf("Warning: Failed to find interface with MAC %s: %v", macAddress, err)
+		} else if ifaceName != "" {
+			log.Printf("Successfully mapped ENI %s to interface %s using MAC %s", eniID, ifaceName, macAddress)
+			return ifaceName, nil
+		}
+	}
+
+	// Fall back to checking all interfaces
+	log.Printf("Falling back to interface pattern matching for ENI %s", eniID)
 	links, err := vnetlink.LinkList()
 	if err != nil {
 		return "", fmt.Errorf("failed to list network interfaces: %v", err)
 	}
 
-	// In a real implementation, you would need to map ENI IDs to interface names
-	// For now, we'll just return the first interface that matches our pattern
-	// and isn't eth0 (the primary interface)
+	// Get the primary interface name to exclude it
+	primaryIface, err := detectPrimaryInterface()
+	if err != nil {
+		log.Printf("Warning: Failed to detect primary interface: %v", err)
+		// Default to eth0 if we can't detect the primary interface
+		primaryIface = "eth0"
+	}
+
+	// Try to find a secondary interface
+	// We'll look for interfaces that match common AWS ENI patterns
+	// and aren't the primary interface or loopback
 	for _, link := range links {
 		ifaceName := link.Attrs().Name
-		if ifaceName != "lo" && ifaceName != "eth0" && strings.HasPrefix(ifaceName, "eth") {
-			return ifaceName, nil
+		if ifaceName != "lo" && ifaceName != primaryIface {
+			// Check if it matches common AWS ENI patterns
+			if strings.HasPrefix(ifaceName, "eth") ||
+				strings.HasPrefix(ifaceName, "ens") ||
+				strings.HasPrefix(ifaceName, "eni") ||
+				strings.HasPrefix(ifaceName, "en") {
+				log.Printf("Found potential interface %s for ENI %s (using pattern matching)", ifaceName, eniID)
+				return ifaceName, nil
+			}
 		}
 	}
 
 	return "", fmt.Errorf("no matching interface found for ENI %s", eniID)
+}
+
+// getMacAddressForENI attempts to get the MAC address for an ENI using the AWS metadata service
+func getMacAddressForENI(eniID string) (string, error) {
+	// This is a simplified implementation that uses the EC2 instance metadata service
+	// to get information about network interfaces
+
+	// Try to get the MAC addresses from the metadata service
+	cmd := exec.Command("curl", "-s", "http://169.254.169.254/latest/meta-data/network/interfaces/macs/")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to get MAC addresses from metadata service: %v", err)
+	}
+
+	// Parse the output - it should be a list of MAC addresses with trailing slashes
+	macAddresses := strings.Split(strings.TrimSpace(string(output)), "\n")
+
+	// For each MAC address, check if it corresponds to our ENI
+	for _, macWithSlash := range macAddresses {
+		// Remove the trailing slash
+		mac := strings.TrimSuffix(macWithSlash, "/")
+
+		// Get the interface ID for this MAC
+		cmd = exec.Command("curl", "-s", fmt.Sprintf("http://169.254.169.254/latest/meta-data/network/interfaces/macs/%s/interface-id", macWithSlash))
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("Warning: Failed to get interface ID for MAC %s: %v", mac, err)
+			continue
+		}
+
+		interfaceID := strings.TrimSpace(string(output))
+		if interfaceID == eniID {
+			log.Printf("Found MAC address %s for ENI %s", mac, eniID)
+			return mac, nil
+		}
+	}
+
+	return "", fmt.Errorf("no MAC address found for ENI %s", eniID)
+}
+
+// getInterfaceNameByMAC finds the interface name for a given MAC address
+func getInterfaceNameByMAC(macAddress string) (string, error) {
+	// Normalize the MAC address format (lowercase, no colons)
+	normalizedMAC := strings.ToLower(strings.ReplaceAll(macAddress, ":", ""))
+
+	// List all interfaces
+	links, err := vnetlink.LinkList()
+	if err != nil {
+		return "", fmt.Errorf("failed to list network interfaces: %v", err)
+	}
+
+	// Check each interface's MAC address
+	for _, link := range links {
+		ifaceMAC := link.Attrs().HardwareAddr.String()
+		// Normalize the interface MAC address format
+		normalizedIfaceMAC := strings.ToLower(strings.ReplaceAll(ifaceMAC, ":", ""))
+
+		if normalizedIfaceMAC == normalizedMAC {
+			return link.Attrs().Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("no interface found with MAC address %s", macAddress)
 }
 
 // updateAllInterfacesMTU updates the MTU for all ENI interfaces
