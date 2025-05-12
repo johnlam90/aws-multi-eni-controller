@@ -21,9 +21,9 @@ This diagram illustrates the complete lifecycle of an ENI managed by the AWS Mul
 }%%
 
 flowchart TD
-    Start([Start]) --> NodeENICreated[NodeENI created with\nnode selector]
+    Start([Start]) --> NodeENICreated["NodeENI created with<br/>node selector"]
     NodeENICreated --> Requested[Requested]
-    Requested --> ControllerIdentifies[Controller identifies\nmatching node]
+    Requested --> ControllerIdentifies["Controller identifies<br/>matching node"]
     ControllerIdentifies --> Creating[Creating]
     Creating --> ENICreated[ENI created in AWS]
     ENICreated --> Created[Created]
@@ -31,7 +31,7 @@ flowchart TD
     AttachingToNode --> Attaching[Attaching]
     Attaching --> SuccessfullyAttached[Successfully attached]
     SuccessfullyAttached --> Attached[Attached]
-    Attached --> ENIManagerConfigures[ENI Manager configures\ninterface]
+    Attached --> ENIManagerConfigures["ENI Manager configures<br/>interface"]
     ENIManagerConfigures --> Configured[Configured]
     Configured --> ENIReady[ENI ready for use]
     ENIReady --> Running[Running]
@@ -41,7 +41,7 @@ flowchart TD
     ENIStillValid -->|Yes| Verifying[Verifying]
     Verifying --> Running
 
-    NodeENIDeleted[NodeENI deleted/updated] --> ENIInvalid{ENI invalid/stale}
+    NodeENIDeleted["NodeENI deleted/updated"] --> ENIInvalid{"ENI invalid/stale"}
     ENIStillValid -->|No| ENIInvalid
     ENIInvalid --> Detaching[Detaching]
     Detaching --> SuccessfullyDetached[Successfully detached]
