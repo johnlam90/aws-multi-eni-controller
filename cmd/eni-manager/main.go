@@ -979,12 +979,11 @@ func updateAllInterfacesMTU(cfg *config.ENIManagerConfig) error {
 
 		// If it's not mapped and we have a default MTU from NodeENI resources, use that
 		if !isMapped && defaultMTUFromNodeENI > 0 {
-			// Check if the interface matches the eth pattern
-			if strings.HasPrefix(ifaceName, "eth") {
-				log.Printf("Interface %s is not mapped to any ENI, using default MTU %d from NodeENI resources",
-					ifaceName, defaultMTUFromNodeENI)
-				cfg.InterfaceMTUs[ifaceName] = defaultMTUFromNodeENI
-			}
+			// Apply to all interfaces that match our ENI pattern
+			// This will include eth*, ens*, eni*, en* interfaces based on the default pattern
+			log.Printf("Interface %s is not mapped to any ENI, using default MTU %d from NodeENI resources",
+				ifaceName, defaultMTUFromNodeENI)
+			cfg.InterfaceMTUs[ifaceName] = defaultMTUFromNodeENI
 		}
 
 		// Set MTU if configured
