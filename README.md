@@ -700,6 +700,15 @@ The repository contains the following key components:
 
 ## Changelog
 
+### v1.2.7 (May 15, 2025)
+
+- Optimized AWS API calls with caching for subnet and security group information
+- Improved parallel cleanup implementation with worker pool pattern
+- Optimized interface monitoring with caching for pattern matching
+- Streamlined MTU configuration logic
+- Reduced verbose logging in performance-critical paths
+- Enhanced error handling in ENI cleanup operations
+
 ### v1.26 (May 12, 2025)
 
 - Added MAX_CONCURRENT_RECONCILES parameter for better scaling with many nodes
