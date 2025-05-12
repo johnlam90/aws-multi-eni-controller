@@ -22,7 +22,7 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
-	version  = "1.0.0" // Version of the controller
+	version  = "v1.2.5" // Version of the controller
 )
 
 func init() {

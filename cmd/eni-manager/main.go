@@ -38,7 +38,7 @@ var (
 	eniPattern    = flag.String("eni-pattern", "^(eth|ens|eni|en)[0-9]+", "Regex pattern to identify ENI interfaces")
 	ignoreList    = flag.String("ignore-interfaces", "tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0", "Comma-separated list of interfaces to ignore")
 	useNetlink    = flag.Bool("use-netlink", true, "Use netlink subscription instead of polling (recommended)")
-	version       = "1.0.0" // Version of the ENI Manager
+	version       = "v1.2.5" // Version of the ENI Manager
 )
 
 func main() {
