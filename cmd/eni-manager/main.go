@@ -952,6 +952,12 @@ func updateAllInterfacesMTU(cfg *config.ENIManagerConfig) error {
 		return fmt.Errorf("failed to list network interfaces: %v", err)
 	}
 
+	// Get the default MTU from the NodeENI resources
+	defaultMTUFromNodeENI := getDefaultMTUFromNodeENI(cfg)
+	if defaultMTUFromNodeENI > 0 {
+		log.Printf("Using default MTU %d from NodeENI resources for unmapped interfaces", defaultMTUFromNodeENI)
+	}
+
 	for _, link := range links {
 		ifaceName := link.Attrs().Name
 
@@ -968,6 +974,19 @@ func updateAllInterfacesMTU(cfg *config.ENIManagerConfig) error {
 			continue
 		}
 
+		// Check if this interface is mapped to an ENI
+		_, isMapped := usedInterfaces[ifaceName]
+
+		// If it's not mapped and we have a default MTU from NodeENI resources, use that
+		if !isMapped && defaultMTUFromNodeENI > 0 {
+			// Check if the interface matches the eth pattern
+			if strings.HasPrefix(ifaceName, "eth") {
+				log.Printf("Interface %s is not mapped to any ENI, using default MTU %d from NodeENI resources",
+					ifaceName, defaultMTUFromNodeENI)
+				cfg.InterfaceMTUs[ifaceName] = defaultMTUFromNodeENI
+			}
+		}
+
 		// Set MTU if configured
 		if err := setInterfaceMTU(link, cfg); err != nil {
 			log.Printf("Warning: Failed to set MTU for interface %s: %v", ifaceName, err)
@@ -976,4 +995,33 @@ func updateAllInterfacesMTU(cfg *config.ENIManagerConfig) error {
 	}
 
 	return nil
+}
+
+// getDefaultMTUFromNodeENI gets the default MTU from NodeENI resources
+func getDefaultMTUFromNodeENI(cfg *config.ENIManagerConfig) int {
+	// If we have any interface MTUs configured, use the most common value
+	if len(cfg.InterfaceMTUs) > 0 {
+		// Count the occurrences of each MTU value
+		mtuCounts := make(map[int]int)
+		for _, mtu := range cfg.InterfaceMTUs {
+			if mtu > 0 {
+				mtuCounts[mtu]++
+			}
+		}
+
+		// Find the most common MTU value
+		var mostCommonMTU int
+		var maxCount int
+		for mtu, count := range mtuCounts {
+			if count > maxCount {
+				maxCount = count
+				mostCommonMTU = mtu
+			}
+		}
+
+		return mostCommonMTU
+	}
+
+	// If no interface MTUs are configured, return 0 (use system default)
+	return 0
 }
