@@ -2,8 +2,8 @@ apiVersion: v2
 name: aws-multi-eni-controller
 description: A Helm chart for AWS Multi-ENI Controller
 type: application
-version: 0.3.0
-appVersion: "v1.2.2"
+version: 0.3.1
+appVersion: "v1.2.3"
 home: https://github.com/johnlam90/aws-multi-eni-controller
 sources:
   - https://github.com/johnlam90/aws-multi-eni-controller
@@ -18,8 +18,8 @@ keywords:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/changes: |
-    - Add subnet CIDR display in ENI attachment status
-    - Add support for MAX_CONCURRENT_ENI_CLEANUP environment variable
-    - Update CRD to include SubnetCIDR field
-    - Improve error handling for ENI cleanup operations
-    - Update documentation for new features
+    - Improve detection of manually detached ENIs to avoid manual intervention
+    - Enhance ENI attachment verification to be more reliable
+    - Add more robust checks for ENI attachment status
+    - Fix issue where controller would not detect manually detached ENIs
+    - Update subnet CIDR display in ENI attachment status
