@@ -52,6 +52,7 @@ func main() {
 		cfg.CheckInterval, cfg.DebugMode, cfg.InterfaceUpTimeout, *useNetlink)
 	log.Printf("ENI pattern: %s, Ignored interfaces: %v",
 		cfg.ENIPattern, cfg.IgnoreInterfaces)
+	log.Printf("Default MTU: %d", cfg.DefaultMTU)
 
 	// Auto-detect primary interface if not specified
 	if cfg.PrimaryInterface == "" {
@@ -79,6 +80,10 @@ func main() {
 		log.Printf("Received signal %v, shutting down", sig)
 		cancel()
 	}()
+
+	// Start the MTU updater
+	log.Printf("Starting MTU updater")
+	StartMTUUpdater(ctx, cfg)
 
 	// Use netlink subscription if enabled, otherwise use polling
 	if *useNetlink {
@@ -413,25 +418,31 @@ func fallbackBringUpInterface(ifaceName string, timeout time.Duration) error {
 // setInterfaceMTU sets the MTU for an interface
 func setInterfaceMTU(link vnetlink.Link, cfg *config.ENIManagerConfig) error {
 	ifaceName := link.Attrs().Name
+	currentMTU := link.Attrs().MTU
 
 	// Check if we have a specific MTU for this interface
 	mtu, ok := cfg.InterfaceMTUs[ifaceName]
 	if !ok {
 		// Use default MTU if specified
 		mtu = cfg.DefaultMTU
+		log.Printf("Using default MTU %d for interface %s (current MTU: %d)", mtu, ifaceName, currentMTU)
+	} else {
+		log.Printf("Using interface-specific MTU %d for interface %s (current MTU: %d)", mtu, ifaceName, currentMTU)
 	}
 
 	// If MTU is 0 or negative, don't change it (use system default)
 	if mtu <= 0 {
-		if cfg.DebugMode {
-			log.Printf("No MTU specified for interface %s, using system default", ifaceName)
-		}
+		log.Printf("No MTU specified for interface %s, using system default (current MTU: %d)", ifaceName, currentMTU)
 		return nil
 	}
 
-	if cfg.DebugMode {
-		log.Printf("Setting MTU for interface %s to %d", ifaceName, mtu)
+	// If the MTU is already set correctly, don't change it
+	if currentMTU == mtu {
+		log.Printf("Interface %s already has the correct MTU: %d", ifaceName, mtu)
+		return nil
 	}
+
+	log.Printf("Setting MTU for interface %s from %d to %d", ifaceName, currentMTU, mtu)
 
 	// Try using netlink first
 	err := vnetlink.LinkSetMTU(link, mtu)

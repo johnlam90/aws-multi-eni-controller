@@ -20,12 +20,16 @@ spec:
         ng: multi-eni
       containers:
       - name: eni-manager
-        image: ghcr.io/johnlam90/aws-multi-eni-controller:beta-latest
+        image:  ghcr.io/johnlam90/aws-multi-eni-controller:beta.sandbox-test0-6.5e7890f
         env:
         - name: COMPONENT
           value: "eni-manager"
         - name: DEFAULT_MTU
-          value: "0"  # 0 means use system default
+          value: "9001"  # Set to 9000 for jumbo frames
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
         securityContext:
           privileged: true
           capabilities:

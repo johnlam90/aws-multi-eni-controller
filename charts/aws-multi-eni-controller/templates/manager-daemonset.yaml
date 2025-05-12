@@ -39,7 +39,11 @@ spec:
         - name: LOG_LEVEL
           value: "{{ .Values.logLevel }}"
         - name: DEFAULT_MTU
-          value: "{{ .Values.eniManager.defaultMTU | default "0" }}"
+          value: "{{ .Values.eniManager.defaultMTU | default "9000" }}"
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
         {{- if .Values.metrics.enabled }}
         - name: METRICS_PORT
           value: "{{ .Values.metrics.port }}"
