@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -91,7 +89,7 @@ func (h *MTUHandler) Initialize() error {
 	crdConfig := *config
 	crdConfig.GroupVersion = &schema.GroupVersion{Group: "networking.k8s.aws", Version: "v1alpha1"}
 	crdConfig.APIPath = "/apis"
-	crdConfig.NegotiatedSerializer = serializer.WithoutConversion{Scheme: scheme}
+	crdConfig.NegotiatedSerializer = serializer.NewCodecFactory(scheme)
 	crdConfig.UserAgent = rest.DefaultKubernetesUserAgent()
 
 	restClient, err := rest.RESTClientFor(&crdConfig)
@@ -135,7 +133,7 @@ func (h *MTUHandler) UpdateMTUConfig(ctx context.Context) error {
 					if ifaceName != "" {
 						// Set the MTU for this interface
 						h.config.InterfaceMTUs[ifaceName] = attachment.MTU
-						log.Printf("Set MTU for interface %s to %d from NodeENI %s", 
+						log.Printf("Set MTU for interface %s to %d from NodeENI %s",
 							ifaceName, attachment.MTU, nodeENI.Name)
 					}
 				}
@@ -159,7 +157,7 @@ func getInterfaceNameFromDeviceIndex(deviceIndex int) string {
 // StartMTUUpdater starts a goroutine that periodically updates the MTU configuration
 func StartMTUUpdater(ctx context.Context, cfg *config.ENIManagerConfig) {
 	handler := NewMTUHandler(cfg)
-	
+
 	// Initialize the handler
 	if err := handler.Initialize(); err != nil {
 		log.Printf("Failed to initialize MTU handler: %v", err)
