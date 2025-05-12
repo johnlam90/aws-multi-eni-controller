@@ -217,6 +217,14 @@ The AWS Multi-ENI Controller follows the Kubernetes operator pattern with two ma
 1. **NodeENI Controller**: Manages the lifecycle of ENIs based on NodeENI resources
 2. **ENI Manager**: Brings up secondary interfaces on nodes
 
+### ENI Lifecycle
+
+The following diagram illustrates the complete lifecycle of an ENI managed by the controller:
+
+![ENI Lifecycle](docs/images/eni-lifecycle-diagram.png)
+
+The diagram shows the flow from NodeENI creation through ENI creation, attachment, configuration, and eventual cleanup when the NodeENI is deleted or updated.
+
 ## Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
