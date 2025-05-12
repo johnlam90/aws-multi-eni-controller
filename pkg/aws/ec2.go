@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -26,6 +27,19 @@ type EC2Client struct {
 	EC2 *ec2.Client
 	// Logger is used for structured logging
 	Logger logr.Logger
+
+	// Cache for subnet information
+	subnetCache     map[string]string // subnetID -> CIDR
+	subnetNameCache map[string]string // subnetName -> subnetID
+	subnetMutex     sync.RWMutex
+
+	// Cache for security group information
+	sgCache map[string]string // sgName -> sgID
+	sgMutex sync.RWMutex
+
+	// Cache expiration
+	cacheExpiration time.Duration
+	lastCacheUpdate time.Time
 }
 
 // NewEC2Client creates a new EC2 client using AWS SDK v2
@@ -37,8 +51,13 @@ func NewEC2Client(ctx context.Context, region string, logger logr.Logger) (*EC2C
 	}
 
 	return &EC2Client{
-		EC2:    ec2.NewFromConfig(cfg),
-		Logger: logger.WithName("aws-ec2"),
+		EC2:             ec2.NewFromConfig(cfg),
+		Logger:          logger.WithName("aws-ec2"),
+		subnetCache:     make(map[string]string),
+		subnetNameCache: make(map[string]string),
+		sgCache:         make(map[string]string),
+		cacheExpiration: 5 * time.Minute, // Cache expires after 5 minutes
+		lastCacheUpdate: time.Now(),
 	}, nil
 }
 
@@ -250,6 +269,19 @@ func (c *EC2Client) GetSubnetIDByName(ctx context.Context, subnetName string) (s
 	log := c.Logger.WithValues("subnetName", subnetName)
 	log.Info("Looking up subnet ID by name")
 
+	// Check cache first
+	c.subnetMutex.RLock()
+	if subnetID, ok := c.subnetNameCache[subnetName]; ok {
+		// Check if cache is still valid
+		if time.Since(c.lastCacheUpdate) < c.cacheExpiration {
+			log.Info("Using cached subnet ID", "subnetName", subnetName, "subnetID", subnetID)
+			c.subnetMutex.RUnlock()
+			return subnetID, nil
+		}
+	}
+	c.subnetMutex.RUnlock()
+
+	// Cache miss or expired, fetch from AWS
 	input := &ec2.DescribeSubnetsInput{
 		Filters: []types.Filter{
 			{
@@ -274,6 +306,17 @@ func (c *EC2Client) GetSubnetIDByName(ctx context.Context, subnetName string) (s
 
 	subnetID := *result.Subnets[0].SubnetId
 	log.Info("Found subnet ID", "subnetID", subnetID)
+
+	// Update cache
+	c.subnetMutex.Lock()
+	c.subnetNameCache[subnetName] = subnetID
+	// Also cache the CIDR if available
+	if result.Subnets[0].CidrBlock != nil {
+		c.subnetCache[subnetID] = *result.Subnets[0].CidrBlock
+	}
+	c.lastCacheUpdate = time.Now()
+	c.subnetMutex.Unlock()
+
 	return subnetID, nil
 }
 
@@ -282,6 +325,19 @@ func (c *EC2Client) GetSubnetCIDRByID(ctx context.Context, subnetID string) (str
 	log := c.Logger.WithValues("subnetID", subnetID)
 	log.V(1).Info("Looking up subnet CIDR by ID")
 
+	// Check cache first
+	c.subnetMutex.RLock()
+	if cidr, ok := c.subnetCache[subnetID]; ok {
+		// Check if cache is still valid
+		if time.Since(c.lastCacheUpdate) < c.cacheExpiration {
+			log.V(1).Info("Using cached subnet CIDR", "subnetID", subnetID, "cidrBlock", cidr)
+			c.subnetMutex.RUnlock()
+			return cidr, nil
+		}
+	}
+	c.subnetMutex.RUnlock()
+
+	// Cache miss or expired, fetch from AWS
 	input := &ec2.DescribeSubnetsInput{
 		SubnetIds: []string{subnetID},
 	}
@@ -297,6 +353,13 @@ func (c *EC2Client) GetSubnetCIDRByID(ctx context.Context, subnetID string) (str
 
 	cidrBlock := *result.Subnets[0].CidrBlock
 	log.V(1).Info("Found subnet CIDR", "subnetID", subnetID, "cidrBlock", cidrBlock)
+
+	// Update cache
+	c.subnetMutex.Lock()
+	c.subnetCache[subnetID] = cidrBlock
+	c.lastCacheUpdate = time.Now()
+	c.subnetMutex.Unlock()
+
 	return cidrBlock, nil
 }
 
@@ -305,6 +368,19 @@ func (c *EC2Client) GetSecurityGroupIDByName(ctx context.Context, securityGroupN
 	log := c.Logger.WithValues("securityGroupName", securityGroupName)
 	log.Info("Looking up security group ID by name")
 
+	// Check cache first
+	c.sgMutex.RLock()
+	if sgID, ok := c.sgCache[securityGroupName]; ok {
+		// Check if cache is still valid
+		if time.Since(c.lastCacheUpdate) < c.cacheExpiration {
+			log.Info("Using cached security group ID", "securityGroupName", securityGroupName, "sgID", sgID)
+			c.sgMutex.RUnlock()
+			return sgID, nil
+		}
+	}
+	c.sgMutex.RUnlock()
+
+	// Cache miss or expired, fetch from AWS
 	// Try with group-name first
 	input := &ec2.DescribeSecurityGroupsInput{
 		Filters: []types.Filter{
@@ -347,6 +423,13 @@ func (c *EC2Client) GetSecurityGroupIDByName(ctx context.Context, securityGroupN
 
 	sgID := *result.SecurityGroups[0].GroupId
 	log.Info("Found security group ID", "securityGroupID", sgID)
+
+	// Update cache
+	c.sgMutex.Lock()
+	c.sgCache[securityGroupName] = sgID
+	c.lastCacheUpdate = time.Now()
+	c.sgMutex.Unlock()
+
 	return sgID, nil
 }
 

@@ -251,7 +251,11 @@ func monitorInterfaces(ctx context.Context, cfg *config.ENIManagerConfig) {
 	interfaceStates := make(map[string]bool) // map[ifaceName]isUp
 
 	// Initial scan to populate the interface states
-	updateInterfaceStates(interfaceStates, cfg)
+	// Create a cache for interface filtering
+	interfaceCache := make(map[string]bool) // map[ifaceName]isENI
+
+	// Do an initial check for interface changes to populate the states
+	checkInterfaceChanges(interfaceStates, cfg, interfaceCache)
 
 	// Monitor for changes
 	ticker := time.NewTicker(monitorInterval)
@@ -264,7 +268,7 @@ func monitorInterfaces(ctx context.Context, cfg *config.ENIManagerConfig) {
 			return
 		case <-ticker.C:
 			// Check for interface changes
-			changed := checkInterfaceChanges(interfaceStates, cfg)
+			changed := checkInterfaceChanges(interfaceStates, cfg, interfaceCache)
 			if changed && cfg.DebugMode {
 				log.Printf("Detected interface changes")
 			}
@@ -272,13 +276,29 @@ func monitorInterfaces(ctx context.Context, cfg *config.ENIManagerConfig) {
 	}
 }
 
-// updateInterfaceStates updates the map of interface states
-func updateInterfaceStates(states map[string]bool, cfg *config.ENIManagerConfig) {
+// isENICached checks if an interface is an AWS ENI using a cache to avoid repeated regex compilation
+func isENICached(ifaceName string, cfg *config.ENIManagerConfig, cache map[string]bool) bool {
+	// Check cache first
+	if isENI, ok := cache[ifaceName]; ok {
+		return isENI
+	}
+
+	// Not in cache, compute and store result
+	isENI := isAWSENI(ifaceName, cfg)
+	cache[ifaceName] = isENI
+	return isENI
+}
+
+// checkInterfaceChanges checks for interface changes and brings up interfaces as needed
+// Uses a combined approach to reduce redundant operations
+func checkInterfaceChanges(states map[string]bool, cfg *config.ENIManagerConfig, cache map[string]bool) bool {
 	links, err := vnetlink.LinkList()
 	if err != nil {
 		log.Printf("Error listing interfaces: %v", err)
-		return
+		return false
 	}
+
+	changed := false
 
 	// Create a new map to detect removed interfaces
 	newStates := make(map[string]bool)
@@ -292,58 +312,19 @@ func updateInterfaceStates(states map[string]bool, cfg *config.ENIManagerConfig)
 		}
 
 		// Skip interfaces that don't match our ENI pattern or are in the ignore list
-		if !isAWSENI(ifaceName, cfg) {
+		if !isENICached(ifaceName, cfg, cache) {
 			continue
 		}
 
 		// Check if interface is UP
 		isUp := link.Attrs().OperState == vnetlink.OperUp
 		newStates[ifaceName] = isUp
-	}
 
-	// Update the states map
-	for k := range states {
-		if _, exists := newStates[k]; !exists {
-			delete(states, k) // Interface was removed
-		}
-	}
-
-	for k, v := range newStates {
-		states[k] = v // Add or update interface state
-	}
-}
-
-// checkInterfaceChanges checks for interface changes and brings up interfaces as needed
-func checkInterfaceChanges(states map[string]bool, cfg *config.ENIManagerConfig) bool {
-	links, err := vnetlink.LinkList()
-	if err != nil {
-		log.Printf("Error listing interfaces: %v", err)
-		return false
-	}
-
-	changed := false
-
-	for _, link := range links {
-		ifaceName := link.Attrs().Name
-
-		// Skip loopback and primary interface
-		if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
-			continue
-		}
-
-		// Skip interfaces that don't match our ENI pattern or are in the ignore list
-		if !isAWSENI(ifaceName, cfg) {
-			continue
-		}
-
-		// Check if interface is UP
-		isUp := link.Attrs().OperState == vnetlink.OperUp
 		prevState, exists := states[ifaceName]
 
 		// If this is a new interface or its state has changed
 		if !exists || prevState != isUp {
 			changed = true
-			states[ifaceName] = isUp
 
 			// If the interface is DOWN, bring it up
 			if !isUp {
@@ -355,6 +336,22 @@ func checkInterfaceChanges(states map[string]bool, cfg *config.ENIManagerConfig)
 				log.Printf("Monitor detected new UP ENI interface: %s", ifaceName)
 			}
 		}
+	}
+
+	// Update the states map - detect removed interfaces
+	for k := range states {
+		if _, exists := newStates[k]; !exists {
+			delete(states, k) // Interface was removed
+			changed = true
+			if cfg.DebugMode {
+				log.Printf("Interface removed: %s", k)
+			}
+		}
+	}
+
+	// Update the states map with current values
+	for k, v := range newStates {
+		states[k] = v
 	}
 
 	return changed
@@ -559,62 +556,58 @@ func setInterfaceMTU(link vnetlink.Link, cfg *config.ENIManagerConfig) error {
 	if !ok {
 		// Use default MTU if specified
 		mtu = cfg.DefaultMTU
-		log.Printf("Using default MTU %d for interface %s (current MTU: %d)", mtu, ifaceName, currentMTU)
-	} else {
+		if cfg.DebugMode {
+			log.Printf("Using default MTU %d for interface %s (current MTU: %d)", mtu, ifaceName, currentMTU)
+		}
+	} else if cfg.DebugMode {
 		log.Printf("Using interface-specific MTU %d for interface %s (current MTU: %d)", mtu, ifaceName, currentMTU)
 	}
 
 	// If MTU is 0 or negative, don't change it (use system default)
 	if mtu <= 0 {
-		log.Printf("No MTU specified for interface %s, using system default (current MTU: %d)", ifaceName, currentMTU)
+		if cfg.DebugMode {
+			log.Printf("No MTU specified for interface %s, using system default (current MTU: %d)", ifaceName, currentMTU)
+		}
 		return nil
 	}
 
 	// If the MTU is already set correctly, don't change it
 	if currentMTU == mtu {
-		log.Printf("Interface %s already has the correct MTU: %d", ifaceName, mtu)
+		if cfg.DebugMode {
+			log.Printf("Interface %s already has the correct MTU: %d", ifaceName, mtu)
+		}
 		return nil
 	}
 
 	log.Printf("Setting MTU for interface %s from %d to %d", ifaceName, currentMTU, mtu)
 
-	// Try using netlink first
-	err := vnetlink.LinkSetMTU(link, mtu)
-	if err != nil {
-		log.Printf("Netlink method failed to set MTU, trying fallback method: %v", err)
-		// Fall back to using ip command
-		err = fallbackSetMTU(ifaceName, mtu)
-		if err != nil {
-			log.Printf("Fallback method failed to set MTU, trying direct sysfs method: %v", err)
-			// Try direct sysfs method as a last resort
-			return sysfsSetMTU(ifaceName, mtu)
+	// Try the most direct method first - sysfs
+	if err := sysfsSetMTU(ifaceName, mtu); err == nil {
+		// Verify the MTU was set correctly
+		updatedLink, err := vnetlink.LinkByName(ifaceName)
+		if err == nil && updatedLink.Attrs().MTU == mtu {
+			log.Printf("Successfully set MTU for interface %s to %d using sysfs method", ifaceName, mtu)
+			return nil
 		}
+	}
+
+	// Try using netlink next
+	if err := vnetlink.LinkSetMTU(link, mtu); err == nil {
+		// Verify the MTU was set correctly
+		updatedLink, err := vnetlink.LinkByName(ifaceName)
+		if err == nil && updatedLink.Attrs().MTU == mtu {
+			log.Printf("Successfully set MTU for interface %s to %d using netlink method", ifaceName, mtu)
+			return nil
+		}
+	}
+
+	// Fall back to using ip command as last resort
+	if err := fallbackSetMTU(ifaceName, mtu); err != nil {
+		log.Printf("All methods failed to set MTU for interface %s: %v", ifaceName, err)
 		return err
 	}
 
-	// Verify the MTU was set correctly
-	updatedLink, err := vnetlink.LinkByName(ifaceName)
-	if err != nil {
-		log.Printf("Warning: Failed to verify MTU for interface %s: %v", ifaceName, err)
-		return nil // Continue anyway
-	}
-
-	if updatedLink.Attrs().MTU != mtu {
-		log.Printf("Warning: MTU verification failed for interface %s. Expected: %d, Actual: %d",
-			ifaceName, mtu, updatedLink.Attrs().MTU)
-
-		// Try the fallback method
-		log.Printf("Trying fallback method to set MTU")
-		err = fallbackSetMTU(ifaceName, mtu)
-		if err != nil {
-			log.Printf("Fallback method failed to set MTU, trying direct sysfs method: %v", err)
-			// Try direct sysfs method as a last resort
-			return sysfsSetMTU(ifaceName, mtu)
-		}
-	} else {
-		log.Printf("Successfully set and verified MTU for interface %s to %d", ifaceName, mtu)
-	}
-
+	log.Printf("Successfully set MTU for interface %s to %d using fallback method", ifaceName, mtu)
 	return nil
 }
 
@@ -647,13 +640,13 @@ func sysfsSetMTU(ifaceName string, mtu int) error {
 		return fmt.Errorf("failed to write MTU to sysfs for interface %s: %v", ifaceName, err)
 	}
 
-	log.Printf("Successfully set MTU for interface %s to %d using sysfs method", ifaceName, mtu)
+	// No need to log success here as the caller will log it if verification succeeds
 
-	// Verify the MTU was set correctly
+	// Verify the MTU was set correctly - just return the error if it fails
+	// The caller will try other methods if this fails
 	mtuBytes, err := os.ReadFile(mtuPath)
 	if err != nil {
-		log.Printf("Warning: Failed to verify MTU for interface %s: %v", ifaceName, err)
-		return nil // Continue anyway
+		return fmt.Errorf("failed to verify MTU for interface %s: %v", ifaceName, err)
 	}
 
 	actualMTU := strings.TrimSpace(string(mtuBytes))
@@ -662,7 +655,6 @@ func sysfsSetMTU(ifaceName string, mtu int) error {
 			ifaceName, mtuStr, actualMTU)
 	}
 
-	log.Printf("Successfully verified MTU for interface %s is now %s", ifaceName, actualMTU)
 	return nil
 }
 

@@ -198,7 +198,7 @@ func (r *NodeENIReconciler) handleDeletion(ctx context.Context, nodeENI *network
 // Returns true if cleanup was successful, false otherwise
 func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
-	log.Info("Detaching and deleting ENI")
+	log.V(1).Info("Detaching and deleting ENI") // Reduced log level for routine operations
 
 	// Track if any operation failed
 	success := true
@@ -208,7 +208,7 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 	if err != nil {
 		// Check if the error indicates the ENI doesn't exist
 		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
-			log.Info("ENI no longer exists (not found in AWS), considering cleanup successful", "error", err.Error())
+			log.V(1).Info("ENI no longer exists (not found in AWS), considering cleanup successful")
 			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
 				"ENI %s was already deleted (possibly manually)", attachment.ENIID)
 			return true
@@ -220,7 +220,7 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 
 	// If ENI doesn't exist, cleanup is already done
 	if eni == nil && err == nil {
-		log.Info("ENI no longer exists, considering cleanup successful")
+		log.V(1).Info("ENI no longer exists, considering cleanup successful")
 		return true
 	}
 
@@ -229,7 +229,7 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 		if err := r.AWS.DetachENI(ctx, attachment.AttachmentID, true); err != nil {
 			// Check if the error indicates the attachment doesn't exist
 			if strings.Contains(err.Error(), "InvalidAttachmentID.NotFound") {
-				log.Info("ENI attachment no longer exists, considering detachment successful", "error", err.Error())
+				log.V(1).Info("ENI attachment no longer exists, considering detachment successful")
 				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAttachmentAlreadyRemoved",
 					"ENI attachment for %s was already removed (possibly manually)", attachment.ENIID)
 			} else {
@@ -248,7 +248,7 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 		if err := r.AWS.WaitForENIDetachment(ctx, attachment.ENIID, r.Config.DetachmentTimeout); err != nil {
 			// Check if the error indicates the ENI doesn't exist
 			if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
-				log.Info("ENI no longer exists when waiting for detachment, considering detachment successful", "error", err.Error())
+				log.V(1).Info("ENI no longer exists when waiting for detachment, considering detachment successful")
 				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
 					"ENI %s was already deleted (possibly manually) when waiting for detachment", attachment.ENIID)
 				// ENI is already gone, so we can consider the cleanup successful
@@ -277,7 +277,7 @@ func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *netw
 	if err != nil {
 		// Check if the error indicates the ENI doesn't exist
 		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
-			log.Info("ENI no longer exists (not found in AWS)", "error", err.Error())
+			log.V(1).Info("ENI no longer exists (not found in AWS)")
 			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
 				"ENI %s was already deleted (possibly manually)", attachment.ENIID)
 			return true
@@ -288,13 +288,13 @@ func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *netw
 	}
 
 	if eni == nil {
-		log.Info("ENI no longer exists")
+		log.V(1).Info("ENI no longer exists")
 		return true
 	}
 
 	// Check if the ENI is still attached
 	if eni.Attachment != nil && eni.Status != awsutil.EC2v2NetworkInterfaceStatusAvailable {
-		log.Info("ENI is still attached, waiting longer", "status", eni.Status)
+		log.V(1).Info("ENI is still attached, waiting longer", "status", eni.Status)
 		time.Sleep(r.Config.DetachmentTimeout)
 
 		// Check again after waiting
@@ -302,7 +302,7 @@ func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *netw
 		if err != nil {
 			// Check if the error indicates the ENI doesn't exist
 			if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
-				log.Info("ENI no longer exists after waiting (not found in AWS)", "error", err.Error())
+				log.V(1).Info("ENI no longer exists after waiting (not found in AWS)")
 				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
 					"ENI %s was already deleted (possibly manually) after waiting", attachment.ENIID)
 				return true
@@ -313,7 +313,7 @@ func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *netw
 		}
 
 		if eni == nil {
-			log.Info("ENI no longer exists after waiting")
+			log.V(1).Info("ENI no longer exists after waiting")
 			return true
 		}
 	}
@@ -322,7 +322,7 @@ func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *netw
 	if err := r.AWS.DeleteENI(ctx, attachment.ENIID); err != nil {
 		// Check if the error indicates the ENI doesn't exist
 		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
-			log.Info("ENI was already deleted when attempting to delete it", "error", err.Error())
+			log.V(1).Info("ENI was already deleted when attempting to delete it")
 			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
 				"ENI %s was already deleted (possibly manually) when attempting to delete it", attachment.ENIID)
 			return true
