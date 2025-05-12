@@ -82,8 +82,25 @@ func main() {
 	}()
 
 	// Start the MTU updater
-	log.Printf("Starting MTU updater")
-	StartMTUUpdater(ctx, cfg)
+	log.Printf("Starting MTU updater with default MTU: %d", cfg.DefaultMTU)
+
+	// Set up a ticker to periodically check and update MTU values
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Check all interfaces and update MTU if needed
+				if err := updateAllInterfacesMTU(cfg); err != nil {
+					log.Printf("Failed to update interface MTUs: %v", err)
+				}
+			}
+		}
+	}()
 
 	// Use netlink subscription if enabled, otherwise use polling
 	if *useNetlink {
@@ -466,5 +483,39 @@ func fallbackSetMTU(ifaceName string, mtu int) error {
 	}
 
 	log.Printf("Successfully set MTU for interface %s to %d using fallback method", ifaceName, mtu)
+	return nil
+}
+
+// updateAllInterfacesMTU updates the MTU for all ENI interfaces
+func updateAllInterfacesMTU(cfg *config.ENIManagerConfig) error {
+	// Get all network interfaces
+	links, err := vnetlink.LinkList()
+	if err != nil {
+		return fmt.Errorf("failed to list network interfaces: %v", err)
+	}
+
+	for _, link := range links {
+		ifaceName := link.Attrs().Name
+
+		// Skip loopback and primary interface
+		if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
+			continue
+		}
+
+		// Skip interfaces that don't match our ENI pattern or are in the ignore list
+		if !isAWSENI(ifaceName, cfg) {
+			if cfg.DebugMode {
+				log.Printf("Skipping non-ENI interface: %s", ifaceName)
+			}
+			continue
+		}
+
+		// Set MTU if configured
+		if err := setInterfaceMTU(link, cfg); err != nil {
+			log.Printf("Warning: Failed to set MTU for interface %s: %v", ifaceName, err)
+			// Continue with other interfaces
+		}
+	}
+
 	return nil
 }
