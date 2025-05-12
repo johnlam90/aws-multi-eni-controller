@@ -229,7 +229,9 @@ For a code-based version of this diagram (using Mermaid.js), see [ENI Lifecycle 
 
 ### Component Architecture
 
-To understand the relationships between the key components of the AWS Multi-ENI Controller, see the [Class Diagram](docs/diagrams/class-diagram.md).
+The AWS Multi-ENI Controller consists of several components working together. To see a visual representation of the system architecture, check out the [Architecture Diagram](docs/diagrams/architecture-diagram.md).
+
+To understand the detailed relationships between the key components of the AWS Multi-ENI Controller, see the [Class Diagram](docs/diagrams/class-diagram.md).
 
 ## Contributing
 
