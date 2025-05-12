@@ -461,7 +461,28 @@ func bringUpInterface(link vnetlink.Link, cfg *config.ENIManagerConfig) error {
 	if err != nil {
 		log.Printf("Netlink method failed, trying fallback method: %v", err)
 		// Fall back to using ip command
-		return fallbackBringUpInterface(ifaceName, cfg.InterfaceUpTimeout)
+		err = fallbackBringUpInterface(ifaceName, cfg.InterfaceUpTimeout)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Check if we have any NodeENI resources with MTU settings
+	// This is a more aggressive approach to ensure the MTU is set correctly
+	// even if the interface is brought up before the NodeENI resources are processed
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName != "" {
+		// Try to create a Kubernetes client
+		k8sConfig, err := rest.InClusterConfig()
+		if err == nil {
+			// Create the clientset
+			clientset, err := kubernetes.NewForConfig(k8sConfig)
+			if err == nil {
+				// Force an immediate update of MTU values from NodeENI resources
+				log.Printf("Forcing immediate MTU update for interface %s", ifaceName)
+				updateMTUFromNodeENI(context.Background(), clientset, nodeName, cfg)
+			}
+		}
 	}
 
 	// Set MTU if configured
@@ -672,6 +693,9 @@ func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, 
 
 	log.Printf("Found %d NodeENI resources", len(nodeENIs.Items))
 
+	// Track the MTU values from NodeENI resources
+	mtuValues := make(map[int]int) // map[mtuValue]count
+
 	// Process each NodeENI resource
 	for _, nodeENI := range nodeENIs.Items {
 		log.Printf("Processing NodeENI: %s", nodeENI.Name)
@@ -702,6 +726,9 @@ func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, 
 					continue
 				}
 
+				// Track this MTU value
+				mtuValues[mtuValue]++
+
 				// Get the interface name for this ENI
 				ifaceName, err := getInterfaceNameForENI(attachment.ENIID)
 				if err != nil {
@@ -725,6 +752,56 @@ func updateMTUFromNodeENI(ctx context.Context, clientset *kubernetes.Clientset, 
 						log.Printf("Error setting MTU for interface %s: %v", ifaceName, err)
 					} else {
 						log.Printf("Successfully applied MTU %d to interface %s", mtuValue, ifaceName)
+					}
+				}
+			}
+		}
+	}
+
+	// Find the most common MTU value
+	var mostCommonMTU int
+	var maxCount int
+	for mtu, count := range mtuValues {
+		if count > maxCount {
+			maxCount = count
+			mostCommonMTU = mtu
+		}
+	}
+
+	// If we found a common MTU value, apply it to all interfaces that don't have an MTU set
+	if mostCommonMTU > 0 {
+		log.Printf("Found common MTU value %d from NodeENI resources", mostCommonMTU)
+
+		// Get all network interfaces
+		links, err := vnetlink.LinkList()
+		if err != nil {
+			log.Printf("Error listing network interfaces: %v", err)
+		} else {
+			// Apply the common MTU value to all interfaces that match our pattern
+			for _, link := range links {
+				ifaceName := link.Attrs().Name
+
+				// Skip loopback and primary interface
+				if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
+					continue
+				}
+
+				// Skip interfaces that don't match our ENI pattern or are in the ignore list
+				if !isAWSENI(ifaceName, cfg) {
+					continue
+				}
+
+				// Check if this interface already has an MTU set
+				if _, ok := cfg.InterfaceMTUs[ifaceName]; !ok {
+					// This interface doesn't have an MTU set, apply the common value
+					log.Printf("Applying common MTU %d to interface %s", mostCommonMTU, ifaceName)
+					cfg.InterfaceMTUs[ifaceName] = mostCommonMTU
+
+					// Apply the MTU immediately
+					if err := setInterfaceMTU(link, cfg); err != nil {
+						log.Printf("Error setting MTU for interface %s: %v", ifaceName, err)
+					} else {
+						log.Printf("Successfully applied common MTU %d to interface %s", mostCommonMTU, ifaceName)
 					}
 				}
 			}
