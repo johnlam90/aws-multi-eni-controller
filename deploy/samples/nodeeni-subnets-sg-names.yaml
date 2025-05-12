@@ -19,6 +19,9 @@ spec:
   # Device index for the ENI (1-based)
   deviceIndex: 2
 
+  # MTU for the ENI (9000 for jumbo frames)
+  mtu: 9000
+
   # Whether to delete the ENI when the instance terminates
   deleteOnTermination: true
 

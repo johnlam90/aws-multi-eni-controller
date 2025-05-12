@@ -148,11 +148,8 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	return config, nil
 }
 
-// LoadENIManagerConfigFromFlags loads ENI manager configuration from command-line flags
-// This is used by the ENI manager component
-func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *string, debugMode *bool, eniPattern *string, ignoreList *string) *ENIManagerConfig {
-	config := DefaultENIManagerConfig()
-
+// applyFlagOverrides applies command-line flag overrides to the config
+func applyFlagOverrides(config *ENIManagerConfig, checkInterval *time.Duration, primaryIface *string, debugMode *bool, eniPattern *string, ignoreList *string) {
 	if checkInterval != nil {
 		config.CheckInterval = *checkInterval
 	}
@@ -173,7 +170,10 @@ func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *s
 		// Split the comma-separated list
 		config.IgnoreInterfaces = splitCSV(*ignoreList)
 	}
+}
 
+// applyEnvOverrides applies environment variable overrides to the config
+func applyEnvOverrides(config *ENIManagerConfig) {
 	// Check for environment variable overrides
 	if timeoutStr := os.Getenv("INTERFACE_UP_TIMEOUT"); timeoutStr != "" {
 		if timeout, err := time.ParseDuration(timeoutStr); err == nil {
@@ -188,7 +188,10 @@ func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *s
 	if ignoreStr := os.Getenv("IGNORE_INTERFACES"); ignoreStr != "" {
 		config.IgnoreInterfaces = splitCSV(ignoreStr)
 	}
+}
 
+// loadMTUConfig loads MTU configuration from environment variables
+func loadMTUConfig(config *ENIManagerConfig) {
 	// Load default MTU from environment variable
 	if mtuStr := os.Getenv("DEFAULT_MTU"); mtuStr != "" {
 		if mtu, err := strconv.Atoi(mtuStr); err == nil {
@@ -197,6 +200,11 @@ func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *s
 	}
 
 	// Load interface-specific MTUs from environment variable
+	loadInterfaceMTUs(config)
+}
+
+// loadInterfaceMTUs loads interface-specific MTUs from environment variables
+func loadInterfaceMTUs(config *ENIManagerConfig) {
 	// Format: "eth1:9000,eth2:1500"
 	if mtuMapStr := os.Getenv("INTERFACE_MTUS"); mtuMapStr != "" {
 		pairs := splitCSV(mtuMapStr)
@@ -211,6 +219,20 @@ func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *s
 			}
 		}
 	}
+}
+
+// LoadENIManagerConfigFromFlags loads ENI manager configuration from command-line flags
+func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *string, debugMode *bool, eniPattern *string, ignoreList *string) *ENIManagerConfig {
+	config := DefaultENIManagerConfig()
+
+	// Apply command-line flag overrides
+	applyFlagOverrides(config, checkInterval, primaryIface, debugMode, eniPattern, ignoreList)
+
+	// Apply environment variable overrides
+	applyEnvOverrides(config)
+
+	// Load MTU configuration
+	loadMTUConfig(config)
 
 	return config
 }
