@@ -111,6 +111,9 @@ spec:
                     mtu:
                       description: Maximum Transmission Unit (MTU) configured for the ENI
                       type: integer
+                    deviceIndex:
+                      description: Device index used for this ENI attachment
+                      type: integer
                     status:
                       description: Status of the attachment
                       type: string

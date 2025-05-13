@@ -425,11 +425,17 @@ func (r *NodeENIReconciler) processNode(ctx context.Context, nodeENI *networking
 
 	// Check existing attachments for this node
 	existingSubnets := make(map[string]bool)
+	// Track device indices that are already in use
+	usedDeviceIndices := make(map[int]bool)
 	for _, attachment := range nodeENI.Status.Attachments {
 		if attachment.NodeID == node.Name {
 			// Mark this subnet as already having an ENI
 			if attachment.SubnetID != "" {
 				existingSubnets[attachment.SubnetID] = true
+			}
+			// Mark this device index as used
+			if attachment.DeviceIndex > 0 {
+				usedDeviceIndices[attachment.DeviceIndex] = true
 			}
 		}
 	}
@@ -442,14 +448,22 @@ func (r *NodeENIReconciler) processNode(ctx context.Context, nodeENI *networking
 			continue
 		}
 
-		// Calculate device index - increment from base for multiple ENIs
-		deviceIndex := nodeENI.Spec.DeviceIndex
-		if deviceIndex <= 0 {
-			deviceIndex = r.Config.DefaultDeviceIndex
+		// Calculate device index - use the base device index as a starting point
+		baseDeviceIndex := nodeENI.Spec.DeviceIndex
+		if baseDeviceIndex <= 0 {
+			baseDeviceIndex = r.Config.DefaultDeviceIndex
 		}
-		// Increment device index for each additional ENI
+
+		// Start with the base device index plus the subnet index
+		deviceIndex := baseDeviceIndex
 		if i > 0 {
 			deviceIndex += i
+		}
+
+		// If this device index is already in use, find the next available one
+		for usedDeviceIndices[deviceIndex] {
+			deviceIndex++
+			log.Info("Device index already in use, incrementing", "originalIndex", baseDeviceIndex+i, "newIndex", deviceIndex)
 		}
 
 		// Create and attach a new ENI for this subnet
@@ -532,6 +546,7 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 		SubnetID:     subnetID,
 		SubnetCIDR:   subnetCIDR,
 		MTU:          nodeENI.Spec.MTU,
+		DeviceIndex:  deviceIndex,
 		Status:       "attached",
 		LastUpdated:  metav1.Now(),
 	})
@@ -1044,6 +1059,20 @@ func (r *NodeENIReconciler) updateAttachmentInfo(
 		// Update the attachment with the MTU from the NodeENI spec
 		attachment.MTU = nodeENI.Spec.MTU
 		log.Info("Updated MTU for existing attachment", "eniID", attachment.ENIID, "mtu", attachment.MTU)
+	}
+
+	// Check if we need to update the device index
+	if attachment.DeviceIndex <= 0 {
+		// Try to get the device index from the ENI description
+		eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
+		if err != nil {
+			log.Error(err, "Failed to get device index for existing attachment", "eniID", attachment.ENIID)
+			// Continue without the device index, it's not critical
+		} else if eni != nil && eni.Attachment != nil {
+			// Update the attachment with the device index from the ENI
+			attachment.DeviceIndex = int(eni.Attachment.DeviceIndex)
+			log.Info("Updated device index for existing attachment", "eniID", attachment.ENIID, "deviceIndex", attachment.DeviceIndex)
+		}
 	}
 
 	// Update the last updated timestamp

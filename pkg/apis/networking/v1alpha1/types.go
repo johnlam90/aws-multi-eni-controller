@@ -106,6 +106,10 @@ type ENIAttachment struct {
 	// +optional
 	MTU int `json:"mtu,omitempty"`
 
+	// DeviceIndex is the device index used for this ENI attachment
+	// +optional
+	DeviceIndex int `json:"deviceIndex,omitempty"`
+
 	// Status is the status of the attachment
 	Status string `json:"status"`
 
