@@ -427,16 +427,28 @@ func (r *NodeENIReconciler) processNode(ctx context.Context, nodeENI *networking
 	existingSubnets := make(map[string]bool)
 	// Track device indices that are already in use
 	usedDeviceIndices := make(map[int]bool)
+	// Track subnet to device index mapping
+	subnetToDeviceIndex := make(map[string]int)
+
+	// First pass: build the subnet to device index mapping from existing attachments
 	for _, attachment := range nodeENI.Status.Attachments {
-		if attachment.NodeID == node.Name {
-			// Mark this subnet as already having an ENI
-			if attachment.SubnetID != "" {
-				existingSubnets[attachment.SubnetID] = true
+		// We want to build a global mapping across all nodes
+		if attachment.SubnetID != "" && attachment.DeviceIndex > 0 {
+			// If we haven't seen this subnet before, or if this device index is lower
+			// than what we've seen before (prefer lower indices), update the mapping
+			if existingIndex, exists := subnetToDeviceIndex[attachment.SubnetID]; !exists || attachment.DeviceIndex < existingIndex {
+				subnetToDeviceIndex[attachment.SubnetID] = attachment.DeviceIndex
 			}
-			// Mark this device index as used
-			if attachment.DeviceIndex > 0 {
-				usedDeviceIndices[attachment.DeviceIndex] = true
-			}
+		}
+
+		// For this specific node, track which subnets already have ENIs
+		if attachment.NodeID == node.Name && attachment.SubnetID != "" {
+			existingSubnets[attachment.SubnetID] = true
+		}
+
+		// For this specific node, track which device indices are already in use
+		if attachment.NodeID == node.Name && attachment.DeviceIndex > 0 {
+			usedDeviceIndices[attachment.DeviceIndex] = true
 		}
 	}
 
@@ -448,22 +460,39 @@ func (r *NodeENIReconciler) processNode(ctx context.Context, nodeENI *networking
 			continue
 		}
 
-		// Calculate device index - use the base device index as a starting point
-		baseDeviceIndex := nodeENI.Spec.DeviceIndex
-		if baseDeviceIndex <= 0 {
-			baseDeviceIndex = r.Config.DefaultDeviceIndex
+		// Determine the device index to use for this subnet
+		var deviceIndex int
+
+		// First, check if we already have a mapping for this subnet
+		if existingIndex, exists := subnetToDeviceIndex[subnetID]; exists {
+			// Use the existing mapping for consistency across nodes
+			deviceIndex = existingIndex
+			log.Info("Using existing device index mapping for subnet", "subnetID", subnetID, "deviceIndex", deviceIndex)
+		} else {
+			// No existing mapping, calculate a new one
+			baseDeviceIndex := nodeENI.Spec.DeviceIndex
+			if baseDeviceIndex <= 0 {
+				baseDeviceIndex = r.Config.DefaultDeviceIndex
+			}
+
+			// Start with the base device index plus the subnet index
+			// This ensures a deterministic mapping between subnet and device index
+			deviceIndex = baseDeviceIndex + i
+			log.Info("Calculated new device index for subnet", "subnetID", subnetID, "deviceIndex", deviceIndex)
+
+			// Store this mapping for future reference
+			subnetToDeviceIndex[subnetID] = deviceIndex
 		}
 
-		// Start with the base device index plus the subnet index
-		deviceIndex := baseDeviceIndex
-		if i > 0 {
-			deviceIndex += i
-		}
-
-		// If this device index is already in use, find the next available one
+		// If this device index is already in use on this node, find the next available one
+		// This is a fallback for conflict resolution, but should rarely happen with consistent mapping
+		originalIndex := deviceIndex
 		for usedDeviceIndices[deviceIndex] {
 			deviceIndex++
-			log.Info("Device index already in use, incrementing", "originalIndex", baseDeviceIndex+i, "newIndex", deviceIndex)
+			log.Info("Device index already in use on this node, incrementing",
+				"subnetID", subnetID,
+				"originalIndex", originalIndex,
+				"newIndex", deviceIndex)
 		}
 
 		// Create and attach a new ENI for this subnet
