@@ -1046,6 +1046,7 @@ func (r *NodeENIReconciler) isENIProperlyAttached(
 		log.Info("ENI no longer exists, removing from status", "eniID", attachment.ENIID)
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
 			"ENI %s was manually detached and deleted from node %s", attachment.ENIID, attachment.NodeID)
+		// No need to delete the ENI as it already doesn't exist
 		return false
 	}
 
@@ -1058,6 +1059,23 @@ func (r *NodeENIReconciler) isENIProperlyAttached(
 		log.Info("ENI is no longer attached to the instance, removing from status", "eniID", attachment.ENIID)
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
 			"ENI %s was manually detached from node %s", attachment.ENIID, attachment.NodeID)
+
+		// Delete the manually detached ENI to avoid resource leakage
+		log.Info("Deleting manually detached ENI", "eniID", attachment.ENIID)
+		if err := r.AWS.DeleteENI(ctx, attachment.ENIID); err != nil {
+			// Check if the error indicates the ENI doesn't exist
+			if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+				log.Info("Manually detached ENI was already deleted", "eniID", attachment.ENIID)
+			} else {
+				log.Error(err, "Failed to delete manually detached ENI", "eniID", attachment.ENIID)
+				// We still return false to remove it from status, even if deletion failed
+			}
+		} else {
+			log.Info("Successfully deleted manually detached ENI", "eniID", attachment.ENIID)
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDeleted",
+				"Successfully deleted manually detached ENI %s", attachment.ENIID)
+		}
+
 		return false
 	}
 
@@ -1069,6 +1087,12 @@ func (r *NodeENIReconciler) isENIProperlyAttached(
 			"actualInstance", eni.Attachment.InstanceID)
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIDetached",
 			"ENI %s was detached from node %s and attached to a different instance", attachment.ENIID, attachment.NodeID)
+
+		// We don't delete the ENI in this case since it's being used by another instance
+		log.Info("Not deleting ENI as it's attached to another instance",
+			"eniID", attachment.ENIID,
+			"instance", eni.Attachment.InstanceID)
+
 		return false
 	}
 
