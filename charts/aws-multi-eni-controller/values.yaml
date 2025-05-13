@@ -5,7 +5,7 @@
 # Image configuration
 image:
   repository: ghcr.io/johnlam90/aws-multi-eni-controller
-  tag: v1.2.8
+  tag: v1.2.9
   pullPolicy: IfNotPresent
 
 # Namespace to deploy the controller

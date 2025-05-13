@@ -4,7 +4,7 @@
 [![Go Report Card](https://img.shields.io/badge/Go%20Report-A%2B-brightgreen?logo=go)](https://github.com/johnlam90/aws-multi-eni-controller/actions/workflows/go-report.yml)
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8.svg)](https://go.dev/)
 [![Helm](https://img.shields.io/badge/Helm-v3-0F1689.svg)](https://helm.sh)
-[![Version](https://img.shields.io/badge/Version-v1.2.8-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
+[![Version](https://img.shields.io/badge/Version-v1.2.9-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
 
 A Kubernetes controller that automatically creates and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels. This controller is useful for workloads that require multiple network interfaces, such as networking plugins, security tools, or specialized applications.
 
@@ -47,10 +47,10 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 
 ```bash
 # Install the latest version
-helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.2.8
+helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.2.9
 
 # With custom values
-helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.2.8 \
+helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.2.9 \
   --set awsRegion=us-east-1 \
   --set nodeSelector.ng=multi-eni
 ```
