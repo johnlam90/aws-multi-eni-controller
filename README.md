@@ -32,6 +32,7 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 - **AWS SDK v2 Integration**: Uses the latest AWS SDK Go v2 for improved performance and features
 - **Optimized Image**: Lightweight container image (22MB) for fast deployments
 - **Helm Support**: Easy deployment with Helm charts and OCI registry
+- **Library Support**: Can be used as a Go library for programmatic ENI management
 
 ## Quick Start
 
@@ -203,12 +204,72 @@ controller:
    - Ensure MTU is set in the NodeENI resource
    - Check ENI Manager logs for MTU configuration issues
 
+## Using as a Library
+
+The AWS Multi-ENI Controller can also be used as a Go library for programmatic ENI management:
+
+```bash
+go get github.com/johnlam90/aws-multi-eni-controller
+```
+
+### Basic Example
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "time"
+
+    "github.com/go-logr/logr"
+    "github.com/go-logr/zapr"
+    "github.com/johnlam90/aws-multi-eni-controller/pkg/lib"
+    "go.uber.org/zap"
+)
+
+func main() {
+    // Create a logger
+    zapLog, _ := zap.NewDevelopment()
+    logger := zapr.NewLogger(zapLog)
+
+    // Create a context with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+    defer cancel()
+
+    // Create an ENI manager
+    eniManager, err := lib.NewENIManager(ctx, "us-east-1", logger)
+    if err != nil {
+        log.Fatalf("Failed to create ENI manager: %v", err)
+    }
+
+    // Create an ENI
+    options := lib.ENIOptions{
+        SubnetID:           "subnet-12345678",
+        SecurityGroupIDs:   []string{"sg-12345678"},
+        Description:        "Example ENI",
+        DeviceIndex:        1,
+        DeleteOnTermination: true,
+    }
+
+    eniID, err := eniManager.CreateENI(ctx, options)
+    if err != nil {
+        log.Fatalf("Failed to create ENI: %v", err)
+    }
+
+    log.Printf("Created ENI: %s", eniID)
+}
+```
+
+For more details, see the [Library Documentation](pkg/lib/README.md).
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) - Detailed architecture and workflow
 - [Deployment](docs/deployment.md) - Comprehensive deployment options
 - [Configuration](docs/configuration.md) - Advanced configuration options
 - [Troubleshooting](docs/troubleshooting.md) - Detailed troubleshooting guide
+- [Library Usage](pkg/lib/README.md) - Using as a Go library
 
 ## Architecture
 
