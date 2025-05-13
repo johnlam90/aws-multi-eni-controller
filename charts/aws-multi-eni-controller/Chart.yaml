@@ -2,8 +2,8 @@ apiVersion: v2
 name: aws-multi-eni-controller
 description: A Helm chart for AWS Multi-ENI Controller
 type: application
-version: "1.2.7"
-appVersion: "v1.2.7"
+version: "1.2.8"
+appVersion: "v1.2.8"
 home: https://github.com/johnlam90/aws-multi-eni-controller
 sources:
   - https://github.com/johnlam90/aws-multi-eni-controller
@@ -18,9 +18,9 @@ keywords:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/changes: |
-    - Update version to v1.2.7
-    - Optimize AWS API calls with caching for subnet and security group information
-    - Improve parallel cleanup implementation with worker pool pattern
-    - Optimize interface monitoring with caching for pattern matching
-    - Streamline MTU configuration logic
-    - Reduce verbose logging in performance-critical paths
+    - Update version to v1.2.8
+    - Add library support for programmatic ENI management
+    - Update Go module to support Go 1.22+
+    - Improve documentation for library usage
+    - Add example code for using as a library
+    - Fix package naming to comply with Go style guide
