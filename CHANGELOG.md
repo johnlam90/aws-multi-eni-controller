@@ -5,6 +5,22 @@ All notable changes to the AWS Multi-ENI Controller will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.3.0] - 2025-05-13
+
+### Added
+- Device index tracking in ENI attachments for better reconciliation
+- Consistent device index to subnet mapping across all nodes
+- Automatic cleanup of manually detached ENIs to prevent resource leakage
+
+### Changed
+- Refactored code to reduce cyclomatic complexity
+- Enhanced controller stability and reliability
+- Improved logging for ENI attachment operations
+
+### Fixed
+- Fixed issue where manually detached ENIs were left in the available state
+- Fixed device index type conversion in ENI attachment status
+
 ## [v1.2.7] - 2025-05-15
 
 ### Added
