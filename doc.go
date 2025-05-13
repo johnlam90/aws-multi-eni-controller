@@ -1,5 +1,6 @@
 // Package aws_multi_eni_controller is a Kubernetes controller that automatically creates
 // and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels.
+// Version: v1.2.8
 //
 // This package can be used in two ways:
 //
