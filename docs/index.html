@@ -24,6 +24,30 @@
     <!-- Favicon -->
     <link rel="icon" href="favicon.ico" type="image/x-icon">
 
+    <!-- JSON-LD for structured data -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "AWS Multi-ENI Controller for Kubernetes",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "Linux",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "description": "A Kubernetes controller that automatically creates and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels.",
+      "softwareVersion": "v1.3.0",
+      "author": {
+        "@type": "Person",
+        "name": "John Lam"
+      },
+      "url": "https://johnlam90.github.io/aws-multi-eni-controller/",
+      "keywords": "AWS, ENI, Kubernetes, Controller, Multus CNI, Network Interfaces, EKS"
+    }
+    </script>
+
     <!-- CSS -->
     <style>
         :root {
@@ -125,6 +149,28 @@
             margin: 10px;
         }
 
+        .main-nav {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+
+        .main-nav a {
+            margin: 0 15px;
+            text-decoration: none;
+            color: var(--primary-color);
+            font-weight: bold;
+            padding: 5px 10px;
+            border-radius: 5px;
+            transition: background-color 0.2s;
+        }
+
+        .main-nav a:hover {
+            background-color: var(--secondary-color);
+            text-decoration: none;
+        }
+
         footer {
             text-align: center;
             margin-top: 50px;
@@ -145,6 +191,14 @@
             <img class="badge" src="https://img.shields.io/badge/Helm-v3-0F1689.svg" alt="Helm">
             <img class="badge" src="https://img.shields.io/badge/Version-v1.3.0-blue.svg" alt="Version">
         </div>
+        <nav class="main-nav">
+            <a href="index.html">Home</a>
+            <a href="features.html">Features</a>
+            <a href="documentation.html">Documentation</a>
+            <a href="architecture.html">Architecture</a>
+            <a href="quickstart.html">Quick Start</a>
+            <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a>
+        </nav>
     </header>
 
     <main>
@@ -175,16 +229,52 @@
                     <p>Can attach ENIs from different subnets to the same or different nodes</p>
                 </div>
                 <div class="feature-card">
+                    <h3>Subnet Flexibility</h3>
+                    <p>Supports both subnet IDs and subnet names (via AWS tags)</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Security Group Flexibility</h3>
+                    <p>Supports both security group IDs and names</p>
+                </div>
+                <div class="feature-card">
+                    <h3>MTU Configuration</h3>
+                    <p>Configure custom MTU settings for ENIs (e.g., jumbo frames)</p>
+                </div>
+                <div class="feature-card">
                     <h3>Proper Cleanup</h3>
                     <p>Uses finalizers to ensure ENIs are properly detached and deleted when no longer needed</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Parallel ENI Cleanup</h3>
+                    <p>Efficiently cleans up multiple ENIs in parallel for improved performance</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Configurable Concurrency</h3>
+                    <p>Control the number of concurrent operations for better scaling</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Cross-Distribution Compatibility</h3>
+                    <p>Works across all Linux distributions with different interface naming patterns</p>
                 </div>
                 <div class="feature-card">
                     <h3>AWS SDK v2 Integration</h3>
                     <p>Uses the latest AWS SDK Go v2 for improved performance and features</p>
                 </div>
                 <div class="feature-card">
+                    <h3>Optimized Image</h3>
+                    <p>Lightweight container image (22MB) for fast deployments</p>
+                </div>
+                <div class="feature-card">
                     <h3>Helm Support</h3>
                     <p>Easy deployment with Helm charts and OCI registry</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Library Support</h3>
+                    <p>Can be used as a Go library for programmatic ENI management</p>
+                </div>
+                <div class="feature-card">
+                    <h3>No Infrastructure Changes</h3>
+                    <p>Works with vanilla EKS/Kubernetes clusters without complex IaC templates</p>
                 </div>
             </div>
         </section>
@@ -192,14 +282,24 @@
         <section class="cta">
             <h2>Get Started</h2>
             <p>Install the AWS Multi-ENI Controller and simplify your Kubernetes networking on AWS.</p>
+            <a href="quickstart.html" class="button">Quick Start Guide</a>
+            <a href="architecture.html" class="button">View Architecture</a>
             <a href="https://github.com/johnlam90/aws-multi-eni-controller" class="button">GitHub Repository</a>
-            <a href="https://github.com/johnlam90/aws-multi-eni-controller#quick-start" class="button">Quick Start Guide</a>
         </section>
     </main>
 
     <footer>
         <p>&copy; 2023-2025 John Lam. Licensed under the Apache License 2.0.</p>
-        <p><a href="sitemap.html">Sitemap</a> | <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a></p>
+        <p>
+            <a href="index.html">Home</a> |
+            <a href="features.html">Features</a> |
+            <a href="documentation.html">Documentation</a> |
+            <a href="architecture.html">Architecture</a> |
+            <a href="quickstart.html">Quick Start</a> |
+            <a href="sitemap.html">Sitemap</a> |
+            <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a>
+        </p>
+        <p><small>Last updated: May 2024</small></p>
     </footer>
 </body>
 </html>

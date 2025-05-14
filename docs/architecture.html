@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Architecture | AWS Multi-ENI Controller for Kubernetes</title>
+    
+    <!-- SEO Meta Tags -->
+    <meta name="description" content="Detailed architecture diagrams and component explanations for the AWS Multi-ENI Controller for Kubernetes.">
+    <meta name="keywords" content="AWS ENI Architecture, Kubernetes Controller Design, Multus CNI Integration, Network Interfaces Architecture, EKS Design Patterns">
+    <meta name="author" content="John Lam">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://johnlam90.github.io/aws-multi-eni-controller/architecture.html">
+    
+    <!-- Open Graph / Social Media Meta Tags -->
+    <meta property="og:title" content="Architecture | AWS Multi-ENI Controller for Kubernetes">
+    <meta property="og:description" content="Detailed architecture diagrams and component explanations for the AWS Multi-ENI Controller for Kubernetes.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://johnlam90.github.io/aws-multi-eni-controller/architecture.html">
+    
+    <!-- Google Search Console Verification -->
+    <meta name="google-site-verification" content="s-X3jksq6ke_D6N64D5nkx82dQDCQxW15jrVjmoWnPA">
+    
+    <!-- Favicon -->
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
+    
+    <!-- Mermaid.js for rendering diagrams -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'neutral',
+            flowchart: {
+                curve: 'basis',
+                diagramPadding: 20
+            }
+        });
+    </script>
+    
+    <!-- CSS -->
+    <style>
+        :root {
+            --primary-color: #0066cc;
+            --secondary-color: #f8f9fa;
+            --text-color: #333;
+            --light-text: #6c757d;
+            --border-color: #dee2e6;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding: 20px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        nav {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
+        
+        nav a {
+            margin: 0 15px;
+            text-decoration: none;
+            color: var(--primary-color);
+            font-weight: bold;
+        }
+        
+        nav a:hover {
+            text-decoration: underline;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            color: var(--primary-color);
+        }
+        
+        h2 {
+            font-size: 1.8rem;
+            margin: 30px 0 15px;
+            color: var(--primary-color);
+        }
+        
+        h3 {
+            font-size: 1.4rem;
+            margin: 25px 0 10px;
+        }
+        
+        p {
+            margin-bottom: 20px;
+        }
+        
+        .diagram-container {
+            margin: 30px 0;
+            padding: 20px;
+            background-color: var(--secondary-color);
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .diagram-description {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #fff;
+            border-radius: 8px;
+            border-left: 4px solid var(--primary-color);
+        }
+        
+        footer {
+            margin-top: 60px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border-color);
+            text-align: center;
+            color: var(--light-text);
+        }
+        
+        footer a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+        
+        footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>AWS Multi-ENI Controller Architecture</h1>
+        <p>Detailed architecture diagrams and component explanations</p>
+    </header>
+    
+    <nav>
+        <a href="index.html">Home</a>
+        <a href="features.html">Features</a>
+        <a href="documentation.html">Documentation</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a>
+    </nav>
+    
+    <main>
+        <section>
+            <h2>System Architecture</h2>
+            <p>The AWS Multi-ENI Controller follows the Kubernetes operator pattern with two main components: the NodeENI Controller and the ENI Manager DaemonSet. This diagram illustrates the high-level architecture and component interactions.</p>
+            
+            <div class="diagram-container">
+                <div class="mermaid">
+flowchart TB
+    subgraph k8s["Kubernetes Cluster"]
+        crd["NodeENI CRD"]
+        resources["NodeENI Resources"]
+        controller["NodeENI Controller"]
+        daemonset["ENI Manager DaemonSet"]
+        nodes["Kubernetes Nodes"]
+    end
+    
+    subgraph aws["AWS Cloud"]
+        ec2api["EC2 API"]
+        enis["Elastic Network Interfaces"]
+    end
+    
+    %% Connections with labels
+    crd -->|"Defines"| resources
+    resources -->|"Watched by"| controller
+    controller -->|"API Calls"| ec2api
+    controller -->|"Creates/Manages"| enis
+    daemonset -->|"Configures interfaces on"| nodes
+    enis -->|"Attached to"| nodes
+                </div>
+                <div class="diagram-description">
+                    <h3>Component Descriptions:</h3>
+                    <ul>
+                        <li><strong>NodeENI CRD:</strong> The Custom Resource Definition that defines the NodeENI resource type in Kubernetes</li>
+                        <li><strong>NodeENI Resources:</strong> Instances of the NodeENI custom resource that specify which nodes should get ENIs and how they should be configured</li>
+                        <li><strong>NodeENI Controller:</strong> The main controller that watches NodeENI resources and creates/manages ENIs in AWS</li>
+                        <li><strong>ENI Manager DaemonSet:</strong> Runs on nodes with matching labels and configures the network interfaces</li>
+                        <li><strong>Kubernetes Nodes:</strong> The worker nodes in the Kubernetes cluster that receive the ENIs</li>
+                        <li><strong>EC2 API:</strong> The AWS EC2 API that the controller uses to create, attach, and manage ENIs</li>
+                        <li><strong>Elastic Network Interfaces:</strong> The AWS ENIs that are created and attached to the nodes</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+        
+        <section>
+            <h2>ENI Lifecycle</h2>
+            <p>This diagram illustrates the complete lifecycle of an ENI managed by the AWS Multi-ENI Controller, from creation to cleanup.</p>
+            
+            <div class="diagram-container">
+                <div class="mermaid">
+flowchart TD
+    start([Start]) --> nodeeni[NodeENI Created]
+    nodeeni --> match{Node Matches\nSelector?}
+    match -->|Yes| create[Create ENI]
+    match -->|No| wait[Wait for\nMatching Node]
+    wait --> match
+    
+    create --> attach[Attach ENI\nto Node]
+    attach --> update[Update NodeENI\nStatus]
+    
+    update --> monitor[Monitor Node\nand NodeENI]
+    monitor --> change{Change\nDetected?}
+    change -->|No| monitor
+    change -->|Yes| check{Node Still\nMatches?}
+    
+    check -->|Yes| update
+    check -->|No| detach[Detach ENI]
+    
+    nodeeni_del[NodeENI Deleted] --> finalizer[Finalizer\nTriggered]
+    finalizer --> detach
+    
+    detach --> delete[Delete ENI]
+    delete --> cleanup[Update Status\nor Remove Finalizer]
+    cleanup --> end([End])
+                </div>
+                <div class="diagram-description">
+                    <h3>Lifecycle Stages:</h3>
+                    <ol>
+                        <li><strong>Creation:</strong> When a NodeENI resource is created and a node matches its selector, the controller creates an ENI in the specified subnet</li>
+                        <li><strong>Attachment:</strong> The controller attaches the ENI to the node at the specified device index</li>
+                        <li><strong>Configuration:</strong> The ENI Manager DaemonSet configures the network interface on the node</li>
+                        <li><strong>Monitoring:</strong> The controller continuously monitors the NodeENI resource and matching nodes</li>
+                        <li><strong>Detachment:</strong> When a node no longer matches or the NodeENI is deleted, the controller detaches the ENI</li>
+                        <li><strong>Cleanup:</strong> The controller deletes the ENI and updates the NodeENI status or removes the finalizer</li>
+                    </ol>
+                </div>
+            </div>
+        </section>
+    </main>
+    
+    <footer>
+        <p>&copy; 2023-2025 John Lam. Licensed under the Apache License 2.0.</p>
+        <p><a href="sitemap.html">Sitemap</a> | <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a></p>
+    </footer>
+</body>
+</html>

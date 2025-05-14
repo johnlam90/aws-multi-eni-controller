@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quick Start Guide | AWS Multi-ENI Controller for Kubernetes</title>
+    
+    <!-- SEO Meta Tags -->
+    <meta name="description" content="Step-by-step guide to get started with AWS Multi-ENI Controller for Kubernetes. Learn how to install, configure, and use the controller to manage AWS ENIs.">
+    <meta name="keywords" content="AWS ENI Quick Start, Kubernetes Controller Setup, Multus CNI Integration, Network Interfaces Setup, EKS Configuration, Helm Chart Installation">
+    <meta name="author" content="John Lam">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://johnlam90.github.io/aws-multi-eni-controller/quickstart.html">
+    
+    <!-- Open Graph / Social Media Meta Tags -->
+    <meta property="og:title" content="Quick Start Guide | AWS Multi-ENI Controller for Kubernetes">
+    <meta property="og:description" content="Step-by-step guide to get started with AWS Multi-ENI Controller for Kubernetes.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://johnlam90.github.io/aws-multi-eni-controller/quickstart.html">
+    
+    <!-- Google Search Console Verification -->
+    <meta name="google-site-verification" content="s-X3jksq6ke_D6N64D5nkx82dQDCQxW15jrVjmoWnPA">
+    
+    <!-- Favicon -->
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
+    
+    <!-- CSS -->
+    <style>
+        :root {
+            --primary-color: #0066cc;
+            --secondary-color: #f8f9fa;
+            --text-color: #333;
+            --light-text: #6c757d;
+            --border-color: #dee2e6;
+            --code-bg: #f5f5f5;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding: 20px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .main-nav {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .main-nav a {
+            margin: 0 15px;
+            text-decoration: none;
+            color: var(--primary-color);
+            font-weight: bold;
+            padding: 5px 10px;
+            border-radius: 5px;
+            transition: background-color 0.2s;
+        }
+        
+        .main-nav a:hover {
+            background-color: var(--secondary-color);
+            text-decoration: none;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            color: var(--primary-color);
+        }
+        
+        h2 {
+            font-size: 1.8rem;
+            margin: 30px 0 15px;
+            color: var(--primary-color);
+        }
+        
+        h3 {
+            font-size: 1.4rem;
+            margin: 25px 0 10px;
+        }
+        
+        p {
+            margin-bottom: 20px;
+        }
+        
+        ul, ol {
+            margin-bottom: 20px;
+            padding-left: 25px;
+        }
+        
+        li {
+            margin-bottom: 10px;
+        }
+        
+        pre {
+            background-color: var(--code-bg);
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            margin-bottom: 20px;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.9rem;
+        }
+        
+        code {
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            background-color: var(--code-bg);
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 0.9rem;
+        }
+        
+        .step-container {
+            margin-bottom: 40px;
+            padding: 20px;
+            background-color: var(--secondary-color);
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .note {
+            background-color: #e8f4fd;
+            border-left: 4px solid var(--primary-color);
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 0 5px 5px 0;
+        }
+        
+        .note strong {
+            color: var(--primary-color);
+        }
+        
+        footer {
+            text-align: center;
+            margin-top: 50px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border-color);
+            color: var(--light-text);
+        }
+        
+        footer a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+        
+        footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>AWS Multi-ENI Controller Quick Start Guide</h1>
+        <p>Get up and running with AWS Multi-ENI Controller in minutes</p>
+        <nav class="main-nav">
+            <a href="index.html">Home</a>
+            <a href="features.html">Features</a>
+            <a href="documentation.html">Documentation</a>
+            <a href="architecture.html">Architecture</a>
+            <a href="quickstart.html">Quick Start</a>
+            <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a>
+        </nav>
+    </header>
+    
+    <main>
+        <section>
+            <h2>Prerequisites</h2>
+            <ul>
+                <li>Kubernetes cluster running on AWS (e.g., EKS)</li>
+                <li>kubectl configured to access your cluster</li>
+                <li>Helm 3.0+ (for Helm installation)</li>
+                <li>IAM permissions for EC2 ENI operations</li>
+            </ul>
+            
+            <div class="note">
+                <strong>Note:</strong> The AWS Multi-ENI Controller requires IAM permissions to create, attach, detach, and delete ENIs. Make sure your nodes have the appropriate IAM role with these permissions.
+            </div>
+        </section>
+        
+        <section>
+            <h2>Installation Steps</h2>
+            
+            <div class="step-container">
+                <h3>Step 1: Install with Helm (Recommended)</h3>
+                <p>The easiest way to install the AWS Multi-ENI Controller is using Helm:</p>
+                <pre>
+# Install the latest version
+helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 \
+  --namespace eni-controller-system --create-namespace
+
+# With custom values
+helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 \
+  --namespace eni-controller-system --create-namespace \
+  --set awsRegion=us-east-1 \
+  --set nodeSelector.ng=multi-eni</pre>
+                
+                <div class="note">
+                    <strong>Important:</strong> Always specify the <code>--namespace eni-controller-system</code> flag and the <code>--create-namespace</code> flag when installing the chart to ensure all resources are created in the correct namespace.
+                </div>
+            </div>
+            
+            <div class="step-container">
+                <h3>Step 2: Create a NodeENI Resource</h3>
+                <p>Create a YAML file named <code>nodeeni.yaml</code> with the following content:</p>
+                <pre>
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: multus-eni-config
+spec:
+  nodeSelector:
+    ng: multi-eni
+  subnetID: subnet-0f59b4f14737be9ad  # Use your subnet ID
+  securityGroupIDs:
+  - sg-05da196f3314d4af8  # Use your security group ID
+  deviceIndex: 2
+  mtu: 9001  # Optional: Set MTU for jumbo frames
+  deleteOnTermination: true
+  description: "Multus ENI for secondary network interfaces"</pre>
+                
+                <p>Apply the NodeENI resource to your cluster:</p>
+                <pre>kubectl apply -f nodeeni.yaml</pre>
+            </div>
+            
+            <div class="step-container">
+                <h3>Step 3: Label Your Nodes</h3>
+                <p>Label the nodes where you want to attach ENIs:</p>
+                <pre>kubectl label node your-node-name ng=multi-eni</pre>
+                
+                <p>Replace <code>your-node-name</code> with the actual name of your node. You can get a list of your nodes with:</p>
+                <pre>kubectl get nodes</pre>
+            </div>
+            
+            <div class="step-container">
+                <h3>Step 4: Verify ENI Creation</h3>
+                <p>Check the status of your NodeENI resource:</p>
+                <pre>kubectl get nodeeni multus-eni-config -o yaml</pre>
+                
+                <p>You should see the ENI attachments in the status section of the output. You can also verify in the AWS Console that the ENIs have been created and attached to your EC2 instances.</p>
+            </div>
+        </section>
+        
+        <section>
+            <h2>Next Steps</h2>
+            <p>Now that you have the AWS Multi-ENI Controller up and running, you can:</p>
+            <ul>
+                <li>Integrate with Multus CNI to use the secondary interfaces for your pods</li>
+                <li>Create additional NodeENI resources for different subnets or node groups</li>
+                <li>Configure custom MTU settings for your ENIs</li>
+                <li>Explore advanced configuration options</li>
+            </ul>
+            
+            <p>For more detailed information, check out the <a href="documentation.html">Documentation</a> and <a href="architecture.html">Architecture</a> pages.</p>
+        </section>
+    </main>
+    
+    <footer>
+        <p>&copy; 2023-2025 John Lam. Licensed under the Apache License 2.0.</p>
+        <p>
+            <a href="index.html">Home</a> | 
+            <a href="features.html">Features</a> | 
+            <a href="documentation.html">Documentation</a> | 
+            <a href="architecture.html">Architecture</a> | 
+            <a href="quickstart.html">Quick Start</a> | 
+            <a href="sitemap.html">Sitemap</a> | 
+            <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a>
+        </p>
+        <p><small>Last updated: May 2024</small></p>
+    </footer>
+</body>
+</html>
