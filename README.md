@@ -6,7 +6,7 @@
 [![Helm](https://img.shields.io/badge/Helm-v3-0F1689.svg)](https://helm.sh)
 [![Version](https://img.shields.io/badge/Version-v1.3.0-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
 
-A Kubernetes controller that automatically creates and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels. This controller is useful for workloads that require multiple network interfaces, such as networking plugins, security tools, or specialized applications.
+A Kubernetes controller that automatically creates and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels. Primarily designed to simplify Multus CNI deployments on AWS, this controller enables attaching multiple network interfaces to pods without complex infrastructure templates. It's ideal for workloads that require multiple network interfaces, such as networking plugins, security tools, or specialized applications.
 
 ## Overview
 
@@ -20,6 +20,7 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 
 ## Features
 
+- **Multus CNI Integration**: Simplifies deploying Multus CNI on AWS by automating ENI management
 - **Dynamic ENI Management**: Automatically creates and attaches ENIs to nodes based on labels
 - **Multi-Subnet Support**: Can attach ENIs from different subnets to the same or different nodes
 - **Subnet Flexibility**: Supports both subnet IDs and subnet names (via AWS tags)
@@ -33,6 +34,7 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 - **Optimized Image**: Lightweight container image (22MB) for fast deployments
 - **Helm Support**: Easy deployment with Helm charts and OCI registry
 - **Library Support**: Can be used as a Go library for programmatic ENI management
+- **No Infrastructure Changes**: Works with vanilla EKS/Kubernetes clusters without complex IaC templates
 
 ## Quick Start
 
@@ -89,6 +91,72 @@ kubectl label node your-node-name ng=multi-eni
 ```bash
 kubectl get nodeeni multus-eni-config -o yaml
 ```
+
+## Integration with Multus CNI
+
+The AWS Multi-ENI Controller was primarily built to simplify the use of [Multus CNI](https://github.com/k8snetworkplumbingwg/multus-cni) with AWS EC2 instances. Multus CNI enables attaching multiple network interfaces to Kubernetes pods, but it requires those interfaces to exist on the node first.
+
+### Why Use AWS Multi-ENI Controller with Multus
+
+Traditional approaches to provisioning secondary ENIs for Multus have significant drawbacks:
+
+- **Complex Infrastructure as Code**: Typically requires complex CloudFormation, CDK, Terraform, or Crossplane templates
+- **Static Configuration**: ENIs are often statically defined at node creation time
+- **Difficult Maintenance**: Updating or changing ENI configurations requires node replacement
+- **Manual Cleanup**: ENIs may be left orphaned when nodes are terminated
+
+The AWS Multi-ENI Controller solves these problems by:
+
+1. **Dynamic ENI Provisioning**: Automatically creates and attaches ENIs to nodes based on labels
+2. **Declarative Configuration**: Uses Kubernetes-native NodeENI resources
+3. **No Infrastructure Changes**: Works with vanilla EKS/Kubernetes clusters
+4. **Automatic Cleanup**: Properly detaches and deletes ENIs when no longer needed
+
+### How It Works with Multus
+
+1. **Install AWS Multi-ENI Controller**: Deploy the controller to your cluster
+2. **Create NodeENI Resources**: Define which nodes should get which ENIs
+3. **Install Multus CNI**: Deploy Multus to your cluster
+4. **Create NetworkAttachmentDefinition**: Configure Multus to use the secondary interfaces
+
+Example NetworkAttachmentDefinition for Multus using a secondary interface:
+
+```yaml
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: secondary-network
+spec:
+  config: '{
+    "cniVersion": "0.3.1",
+    "type": "macvlan",
+    "master": "eth2",
+    "mode": "bridge",
+    "ipam": {
+      "type": "host-local",
+      "subnet": "192.168.1.0/24",
+      "rangeStart": "192.168.1.200",
+      "rangeEnd": "192.168.1.250"
+    }
+  }'
+```
+
+### Benefits of This Approach
+
+- **Simplified Operations**: No need for complex IaC templates or custom AMIs
+- **Kubernetes-Native**: Manage network interfaces using Kubernetes resources
+- **Flexible Deployment**: Add or remove secondary interfaces without rebuilding nodes
+- **Multi-Subnet Support**: Attach ENIs from different subnets to the same node
+- **Consistent Device Indices**: Maintain predictable interface naming across nodes
+- **Automatic MTU Configuration**: Configure jumbo frames or other MTU settings
+
+### Example Use Cases
+
+- **Network Isolation**: Separate application traffic from control plane traffic
+- **Multi-VPC Connectivity**: Connect pods to multiple VPCs
+- **Network Security Appliances**: Deploy firewalls, IDS/IPS, or other security tools
+- **Specialized Networking**: Support for SR-IOV, DPDK, or other high-performance networking
+- **Legacy Network Integration**: Connect to non-Kubernetes networks
 
 ## Configuration Options
 
