@@ -1,5 +1,8 @@
 name: Go Quality Checks
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [ main ]
