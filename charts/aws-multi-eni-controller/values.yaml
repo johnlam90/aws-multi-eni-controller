@@ -20,11 +20,27 @@ controller:
   maxConcurrentENICleanup: 3
   # Maximum number of concurrent reconciles
   maxConcurrentReconciles: 5
+  # Enable leader election for controller manager
+  enableLeaderElection: true
+  # Metrics address
+  metricsAddr: ":8080"
+  # Termination grace period in seconds
+  terminationGracePeriodSeconds: 10
 
 # ENI Manager configuration
 eniManager:
   # Default MTU to set on ENIs (0 to use MTU from NodeENI resources)
   defaultMTU: 0
+  # Check interval for interface monitoring
+  checkInterval: 30s
+  # Enable debug logging
+  debug: true
+  # Pattern to match ENI interfaces
+  eniPattern: "^(eth|ens|eni|en)[0-9]+"
+  # Interfaces to ignore
+  ignoreInterfaces: "tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0"
+  # Use netlink for interface monitoring
+  useNetlink: true
 
 # Resource configuration for the controller
 resources:
@@ -45,8 +61,8 @@ resources:
 
 # Node selector for the ENI manager daemonset
 nodeSelector:
-  # Empty by default, users should specify their own node selector
-  # Example: ng: multi-eni
+  # Default node selector for ENI manager
+  ng: multi-eni
 
 # Security context for the controller and manager
 securityContext:

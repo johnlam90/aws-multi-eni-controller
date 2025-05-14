@@ -47,6 +47,9 @@ spec:
         - name: METRICS_PORT
           value: "{{ .Values.metrics.port }}"
         {{- end }}
+        args:
+        - --metrics-addr={{ .Values.controller.metricsAddr }}
+        - --enable-leader-election={{ .Values.controller.enableLeaderElection }}
         resources:
           {{- toYaml .Values.resources.controller | nindent 10 }}
         {{- if .Values.metrics.enabled }}
@@ -55,6 +58,7 @@ spec:
           containerPort: {{ .Values.metrics.port }}
           protocol: TCP
         {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.controller.terminationGracePeriodSeconds }}
       {{- with .Values.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
