@@ -4,26 +4,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Architecture | AWS Multi-ENI Controller for Kubernetes</title>
-    
+
     <!-- SEO Meta Tags -->
     <meta name="description" content="Detailed architecture diagrams and component explanations for the AWS Multi-ENI Controller for Kubernetes.">
     <meta name="keywords" content="AWS ENI Architecture, Kubernetes Controller Design, Multus CNI Integration, Network Interfaces Architecture, EKS Design Patterns">
     <meta name="author" content="John Lam">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://johnlam90.github.io/aws-multi-eni-controller/architecture.html">
-    
+
     <!-- Open Graph / Social Media Meta Tags -->
     <meta property="og:title" content="Architecture | AWS Multi-ENI Controller for Kubernetes">
     <meta property="og:description" content="Detailed architecture diagrams and component explanations for the AWS Multi-ENI Controller for Kubernetes.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://johnlam90.github.io/aws-multi-eni-controller/architecture.html">
-    
+
     <!-- Google Search Console Verification -->
     <meta name="google-site-verification" content="s-X3jksq6ke_D6N64D5nkx82dQDCQxW15jrVjmoWnPA">
-    
+
     <!-- Favicon -->
     <link rel="icon" href="favicon.ico" type="image/x-icon">
-    
+
     <!-- Mermaid.js for rendering diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>
@@ -36,7 +36,7 @@
             }
         });
     </script>
-    
+
     <!-- CSS -->
     <style>
         :root {
@@ -46,13 +46,13 @@
             --light-text: #6c757d;
             --border-color: #dee2e6;
         }
-        
+
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
         }
-        
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
             line-height: 1.6;
@@ -61,52 +61,52 @@
             margin: 0 auto;
             padding: 20px;
         }
-        
+
         header {
             text-align: center;
             margin-bottom: 40px;
             padding: 20px 0;
             border-bottom: 1px solid var(--border-color);
         }
-        
+
         nav {
             display: flex;
             justify-content: center;
             margin-bottom: 30px;
         }
-        
+
         nav a {
             margin: 0 15px;
             text-decoration: none;
             color: var(--primary-color);
             font-weight: bold;
         }
-        
+
         nav a:hover {
             text-decoration: underline;
         }
-        
+
         h1 {
             font-size: 2.5rem;
             margin-bottom: 10px;
             color: var(--primary-color);
         }
-        
+
         h2 {
             font-size: 1.8rem;
             margin: 30px 0 15px;
             color: var(--primary-color);
         }
-        
+
         h3 {
             font-size: 1.4rem;
             margin: 25px 0 10px;
         }
-        
+
         p {
             margin-bottom: 20px;
         }
-        
+
         .diagram-container {
             margin: 30px 0;
             padding: 20px;
@@ -114,7 +114,7 @@
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
-        
+
         .diagram-description {
             margin-top: 20px;
             padding: 15px;
@@ -122,7 +122,7 @@
             border-radius: 8px;
             border-left: 4px solid var(--primary-color);
         }
-        
+
         footer {
             margin-top: 60px;
             padding-top: 20px;
@@ -130,12 +130,12 @@
             text-align: center;
             color: var(--light-text);
         }
-        
+
         footer a {
             color: var(--primary-color);
             text-decoration: none;
         }
-        
+
         footer a:hover {
             text-decoration: underline;
         }
@@ -146,7 +146,7 @@
         <h1>AWS Multi-ENI Controller Architecture</h1>
         <p>Detailed architecture diagrams and component explanations</p>
     </header>
-    
+
     <nav>
         <a href="index.html">Home</a>
         <a href="features.html">Features</a>
@@ -154,12 +154,12 @@
         <a href="architecture.html">Architecture</a>
         <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a>
     </nav>
-    
+
     <main>
         <section>
             <h2>System Architecture</h2>
             <p>The AWS Multi-ENI Controller follows the Kubernetes operator pattern with two main components: the NodeENI Controller and the ENI Manager DaemonSet. This diagram illustrates the high-level architecture and component interactions.</p>
-            
+
             <div class="diagram-container">
                 <div class="mermaid">
 flowchart TB
@@ -170,12 +170,12 @@ flowchart TB
         daemonset["ENI Manager DaemonSet"]
         nodes["Kubernetes Nodes"]
     end
-    
+
     subgraph aws["AWS Cloud"]
         ec2api["EC2 API"]
         enis["Elastic Network Interfaces"]
     end
-    
+
     %% Connections with labels
     crd -->|"Defines"| resources
     resources -->|"Watched by"| controller
@@ -198,36 +198,36 @@ flowchart TB
                 </div>
             </div>
         </section>
-        
+
         <section>
             <h2>ENI Lifecycle</h2>
             <p>This diagram illustrates the complete lifecycle of an ENI managed by the AWS Multi-ENI Controller, from creation to cleanup.</p>
-            
+
             <div class="diagram-container">
                 <div class="mermaid">
-flowchart TD
+graph TD
     start([Start]) --> nodeeni[NodeENI Created]
-    nodeeni --> match{Node Matches\nSelector?}
+    nodeeni --> match{Node Matches Selector?}
     match -->|Yes| create[Create ENI]
-    match -->|No| wait[Wait for\nMatching Node]
+    match -->|No| wait[Wait for Matching Node]
     wait --> match
-    
-    create --> attach[Attach ENI\nto Node]
-    attach --> update[Update NodeENI\nStatus]
-    
-    update --> monitor[Monitor Node\nand NodeENI]
-    monitor --> change{Change\nDetected?}
+
+    create --> attach[Attach ENI to Node]
+    attach --> update[Update NodeENI Status]
+
+    update --> monitor[Monitor Node and NodeENI]
+    monitor --> change{Change Detected?}
     change -->|No| monitor
-    change -->|Yes| check{Node Still\nMatches?}
-    
+    change -->|Yes| check{Node Still Matches?}
+
     check -->|Yes| update
     check -->|No| detach[Detach ENI]
-    
-    nodeeni_del[NodeENI Deleted] --> finalizer[Finalizer\nTriggered]
+
+    nodeeni_del[NodeENI Deleted] --> finalizer[Finalizer Triggered]
     finalizer --> detach
-    
+
     detach --> delete[Delete ENI]
-    delete --> cleanup[Update Status\nor Remove Finalizer]
+    delete --> cleanup[Update Status or Remove Finalizer]
     cleanup --> end([End])
                 </div>
                 <div class="diagram-description">
@@ -244,7 +244,7 @@ flowchart TD
             </div>
         </section>
     </main>
-    
+
     <footer>
         <p>&copy; 2023-2025 John Lam. Licensed under the Apache License 2.0.</p>
         <p><a href="sitemap.html">Sitemap</a> | <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a></p>
