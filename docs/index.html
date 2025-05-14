@@ -4,21 +4,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AWS Multi-ENI Controller for Kubernetes | Automatic ENI Management</title>
-    
+
     <!-- SEO Meta Tags -->
     <meta name="description" content="A Kubernetes controller that automatically creates and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels. Simplify Multus CNI deployments on AWS.">
     <meta name="keywords" content="AWS, ENI, Kubernetes, Controller, Multus CNI, Network Interfaces, EKS, AWS SDK, Helm, Elastic Network Interface">
     <meta name="author" content="John Lam">
-    
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://johnlam90.github.io/aws-multi-eni-controller/">
+
     <!-- Open Graph / Social Media Meta Tags -->
     <meta property="og:title" content="AWS Multi-ENI Controller for Kubernetes">
     <meta property="og:description" content="Automatically create and attach AWS Elastic Network Interfaces (ENIs) to Kubernetes nodes based on labels.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://johnlam90.github.io/aws-multi-eni-controller/">
-    
+
+    <!-- Google Search Console Verification -->
+    <meta name="google-site-verification" content="add-your-verification-code-here">
+
     <!-- Favicon -->
     <link rel="icon" href="favicon.ico" type="image/x-icon">
-    
+
     <!-- CSS -->
     <style>
         :root {
@@ -28,13 +33,13 @@
             --light-text: #6c757d;
             --border-color: #dee2e6;
         }
-        
+
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
         }
-        
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
             line-height: 1.6;
@@ -43,64 +48,64 @@
             margin: 0 auto;
             padding: 20px;
         }
-        
+
         header {
             text-align: center;
             margin-bottom: 40px;
             padding: 20px 0;
             border-bottom: 1px solid var(--border-color);
         }
-        
+
         h1 {
             font-size: 2.5rem;
             margin-bottom: 10px;
             color: var(--primary-color);
         }
-        
+
         h2 {
             font-size: 1.8rem;
             margin: 30px 0 15px;
             color: var(--primary-color);
         }
-        
+
         h3 {
             font-size: 1.4rem;
             margin: 25px 0 10px;
         }
-        
+
         p {
             margin-bottom: 15px;
         }
-        
+
         .badges {
             margin: 20px 0;
         }
-        
+
         .badge {
             display: inline-block;
             margin-right: 10px;
             margin-bottom: 10px;
         }
-        
+
         .features {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
             gap: 20px;
             margin: 30px 0;
         }
-        
+
         .feature-card {
             background-color: var(--secondary-color);
             padding: 20px;
             border-radius: 5px;
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
-        
+
         .feature-card h3 {
             margin-top: 0;
             color: var(--primary-color);
         }
-        
+
         .cta {
             text-align: center;
             margin: 40px 0;
@@ -108,7 +113,7 @@
             background-color: var(--secondary-color);
             border-radius: 5px;
         }
-        
+
         .button {
             display: inline-block;
             padding: 10px 20px;
@@ -119,7 +124,7 @@
             font-weight: bold;
             margin: 10px;
         }
-        
+
         footer {
             text-align: center;
             margin-top: 50px;
@@ -141,19 +146,19 @@
             <img class="badge" src="https://img.shields.io/badge/Version-v1.3.0-blue.svg" alt="Version">
         </div>
     </header>
-    
+
     <main>
         <section>
             <h2>Overview</h2>
             <p>The AWS Multi-ENI Controller simplifies the management of AWS Elastic Network Interfaces (ENIs) in Kubernetes environments. It's primarily designed to work with Multus CNI for secondary interfaces, allowing attachment of multiple interfaces for Multus using a vanilla cluster without complex templates like CloudFormation, CDK, Crossplane, or Terraform.</p>
-            
+
             <p>The controller consists of two main components:</p>
             <ol>
                 <li><strong>NodeENI Controller:</strong> Watches for NodeENI custom resources and creates/attaches ENIs</li>
                 <li><strong>ENI Manager:</strong> DaemonSet that brings up secondary interfaces</li>
             </ol>
         </section>
-        
+
         <section>
             <h2>Key Features</h2>
             <div class="features">
@@ -183,7 +188,7 @@
                 </div>
             </div>
         </section>
-        
+
         <section class="cta">
             <h2>Get Started</h2>
             <p>Install the AWS Multi-ENI Controller and simplify your Kubernetes networking on AWS.</p>
@@ -191,9 +196,10 @@
             <a href="https://github.com/johnlam90/aws-multi-eni-controller#quick-start" class="button">Quick Start Guide</a>
         </section>
     </main>
-    
+
     <footer>
         <p>&copy; 2023-2025 John Lam. Licensed under the Apache License 2.0.</p>
+        <p><a href="sitemap.xml">Sitemap</a> | <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a></p>
     </footer>
 </body>
 </html>
