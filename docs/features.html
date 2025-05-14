@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Features | AWS Multi-ENI Controller for Kubernetes</title>
+    
+    <!-- SEO Meta Tags -->
+    <meta name="description" content="Explore the features of AWS Multi-ENI Controller: dynamic ENI management, multi-subnet support, MTU configuration, proper cleanup with finalizers, and more.">
+    <meta name="keywords" content="AWS ENI, Kubernetes Controller, Multus CNI, Network Interfaces, EKS, AWS SDK, Helm, Elastic Network Interface, MTU Configuration">
+    <meta name="author" content="John Lam">
+    
+    <!-- Open Graph / Social Media Meta Tags -->
+    <meta property="og:title" content="Features | AWS Multi-ENI Controller for Kubernetes">
+    <meta property="og:description" content="Explore the features of AWS Multi-ENI Controller: dynamic ENI management, multi-subnet support, MTU configuration, proper cleanup with finalizers, and more.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://johnlam90.github.io/aws-multi-eni-controller/features.html">
+    
+    <!-- Favicon -->
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
+    
+    <!-- CSS -->
+    <style>
+        :root {
+            --primary-color: #0066cc;
+            --secondary-color: #f8f9fa;
+            --text-color: #333;
+            --light-text: #6c757d;
+            --border-color: #dee2e6;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding: 20px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        nav {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
+        
+        nav a {
+            margin: 0 15px;
+            text-decoration: none;
+            color: var(--primary-color);
+            font-weight: bold;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            color: var(--primary-color);
+        }
+        
+        h2 {
+            font-size: 1.8rem;
+            margin: 30px 0 15px;
+            color: var(--primary-color);
+        }
+        
+        h3 {
+            font-size: 1.4rem;
+            margin: 25px 0 10px;
+        }
+        
+        p {
+            margin-bottom: 15px;
+        }
+        
+        .feature-section {
+            margin-bottom: 40px;
+            padding: 20px;
+            background-color: var(--secondary-color);
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .feature-section h2 {
+            margin-top: 0;
+        }
+        
+        code {
+            background-color: #f1f1f1;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        
+        pre {
+            background-color: #f1f1f1;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            margin: 15px 0;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        
+        footer {
+            text-align: center;
+            margin-top: 50px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border-color);
+            color: var(--light-text);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>AWS Multi-ENI Controller for Kubernetes</h1>
+        <p>Detailed Features and Capabilities</p>
+    </header>
+    
+    <nav>
+        <a href="index.html">Home</a>
+        <a href="features.html">Features</a>
+        <a href="documentation.html">Documentation</a>
+        <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a>
+    </nav>
+    
+    <main>
+        <section class="feature-section">
+            <h2>Dynamic ENI Management</h2>
+            <p>The AWS Multi-ENI Controller automatically creates and attaches ENIs to nodes based on node labels. When a node matches the selector in a NodeENI resource, the controller creates an ENI in the specified subnet with the specified security groups and attaches it to the node at the specified device index.</p>
+            <p>This dynamic approach eliminates the need for complex infrastructure templates or manual ENI management, making it easier to deploy and manage multi-interface workloads on AWS.</p>
+        </section>
+        
+        <section class="feature-section">
+            <h2>Multi-Subnet Support</h2>
+            <p>The controller can attach ENIs from different subnets to the same or different nodes. This is particularly useful for workloads that need to communicate with different VPCs or network segments.</p>
+            <p>Example configuration with multiple subnets:</p>
+            <pre>
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: multi-subnet-nodeeni
+spec:
+  nodeSelector:
+    ng: multi-eni
+  subnetNames:
+  - multus-test-subnet-1
+  - multus-test-subnet-2
+  securityGroupNames:
+  - multus-test-sg
+  deviceIndex: 2
+  mtu: 9001
+  deleteOnTermination: true</pre>
+        </section>
+        
+        <section class="feature-section">
+            <h2>MTU Configuration</h2>
+            <p>The controller supports configuring custom MTU values for ENIs, which is useful for enabling jumbo frames (9001 bytes) or other specialized network configurations.</p>
+            <p>This feature allows you to optimize network performance for specific workloads without having to modify the underlying infrastructure or use custom AMIs.</p>
+        </section>
+        
+        <section class="feature-section">
+            <h2>Proper Cleanup with Finalizers</h2>
+            <p>The AWS Multi-ENI Controller uses Kubernetes finalizers to ensure ENIs are properly detached and deleted when they're no longer needed. This prevents orphaned ENIs in your AWS account and ensures clean resource management.</p>
+            <p>The controller also automatically detects and cleans up manually detached ENIs, preventing resource leakage and unnecessary AWS costs.</p>
+        </section>
+        
+        <section class="feature-section">
+            <h2>Consistent Device Indices</h2>
+            <p>The controller maintains consistent device indices across all nodes, ensuring that network interfaces are always attached at the same device index. This is crucial for applications that rely on specific interface ordering.</p>
+            <p>When ENIs are detached and reattached, the controller preserves the device indices to ensure network interface order remains consistent, as applications may stop working if the order changes.</p>
+        </section>
+        
+        <section class="feature-section">
+            <h2>Subnet and Security Group Flexibility</h2>
+            <p>The AWS Multi-ENI Controller supports both subnet IDs and subnet names (via AWS tags), as well as both security group IDs and security group names. This flexibility makes it easier to manage ENIs across different environments and AWS accounts.</p>
+        </section>
+        
+        <section class="feature-section">
+            <h2>Configurable Concurrency</h2>
+            <p>The controller includes configuration options to optimize performance in larger deployments. You can control how many NodeENI resources can be reconciled in parallel and how many ENIs can be cleaned up in parallel.</p>
+        </section>
+    </main>
+    
+    <footer>
+        <p>&copy; 2023-2025 John Lam. Licensed under the Apache License 2.0.</p>
+        <p><a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub Repository</a></p>
+    </footer>
+</body>
+</html>

@@ -5,6 +5,7 @@
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8.svg)](https://go.dev/)
 [![Helm](https://img.shields.io/badge/Helm-v3-0F1689.svg)](https://helm.sh)
 [![Version](https://img.shields.io/badge/Version-v1.3.0-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
+[![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-Active-brightgreen)](https://johnlam90.github.io/aws-multi-eni-controller/)
 
 A Kubernetes controller that automatically creates and attaches AWS Elastic Network Interfaces (ENIs) to nodes based on node labels. Primarily designed to simplify Multus CNI deployments on AWS, this controller enables attaching multiple network interfaces to pods without complex infrastructure templates. It's ideal for workloads that require multiple network interfaces, such as networking plugins, security tools, or specialized applications.
 
@@ -342,6 +343,10 @@ For more details, see the [Library Documentation](pkg/lib/README.md).
 - [Configuration](docs/configuration.md) - Advanced configuration options
 - [Troubleshooting](docs/troubleshooting.md) - Detailed troubleshooting guide
 - [Library Usage](pkg/lib/README.md) - Using as a Go library
+
+## Website
+
+Visit our [project website](https://johnlam90.github.io/aws-multi-eni-controller/) for more information, detailed documentation, and usage examples.
 
 ## Architecture
 
