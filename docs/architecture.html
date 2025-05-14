@@ -25,11 +25,12 @@
     <link rel="icon" href="favicon.ico" type="image/x-icon">
 
     <!-- Mermaid.js for rendering diagrams -->
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js"></script>
     <script>
         mermaid.initialize({
             startOnLoad: true,
             theme: 'neutral',
+            securityLevel: 'loose',
             flowchart: {
                 curve: 'basis',
                 diagramPadding: 20
@@ -162,27 +163,26 @@
 
             <div class="diagram-container">
                 <div class="mermaid">
-flowchart TB
-    subgraph k8s["Kubernetes Cluster"]
-        crd["NodeENI CRD"]
-        resources["NodeENI Resources"]
-        controller["NodeENI Controller"]
-        daemonset["ENI Manager DaemonSet"]
-        nodes["Kubernetes Nodes"]
+graph TB
+    subgraph K8s[Kubernetes Cluster]
+        A[NodeENI CRD]
+        B[NodeENI Resources]
+        C[NodeENI Controller]
+        D[ENI Manager DaemonSet]
+        E[Kubernetes Nodes]
     end
 
-    subgraph aws["AWS Cloud"]
-        ec2api["EC2 API"]
-        enis["Elastic Network Interfaces"]
+    subgraph AWS[AWS Cloud]
+        F[EC2 API]
+        G[Elastic Network Interfaces]
     end
 
-    %% Connections with labels
-    crd -->|"Defines"| resources
-    resources -->|"Watched by"| controller
-    controller -->|"API Calls"| ec2api
-    controller -->|"Creates/Manages"| enis
-    daemonset -->|"Configures interfaces on"| nodes
-    enis -->|"Attached to"| nodes
+    A -->|Defines| B
+    B -->|Watched by| C
+    C -->|API Calls| F
+    C -->|Creates/Manages| G
+    D -->|Configures interfaces on| E
+    G -->|Attached to| E
                 </div>
                 <div class="diagram-description">
                     <h3>Component Descriptions:</h3>
@@ -206,29 +206,24 @@ flowchart TB
             <div class="diagram-container">
                 <div class="mermaid">
 graph TD
-    start([Start]) --> nodeeni[NodeENI Created]
-    nodeeni --> match{Node Matches Selector?}
-    match -->|Yes| create[Create ENI]
-    match -->|No| wait[Wait for Matching Node]
-    wait --> match
-
-    create --> attach[Attach ENI to Node]
-    attach --> update[Update NodeENI Status]
-
-    update --> monitor[Monitor Node and NodeENI]
-    monitor --> change{Change Detected?}
-    change -->|No| monitor
-    change -->|Yes| check{Node Still Matches?}
-
-    check -->|Yes| update
-    check -->|No| detach[Detach ENI]
-
-    nodeeni_del[NodeENI Deleted] --> finalizer[Finalizer Triggered]
-    finalizer --> detach
-
-    detach --> delete[Delete ENI]
-    delete --> cleanup[Update Status or Remove Finalizer]
-    cleanup --> end([End])
+    A[Start] --> B[NodeENI Created]
+    B --> C{Node Matches Selector?}
+    C -->|Yes| D[Create ENI]
+    C -->|No| E[Wait for Matching Node]
+    E --> C
+    D --> F[Attach ENI to Node]
+    F --> G[Update NodeENI Status]
+    G --> H[Monitor Node and NodeENI]
+    H --> I{Change Detected?}
+    I -->|No| H
+    I -->|Yes| J{Node Still Matches?}
+    J -->|Yes| G
+    J -->|No| K[Detach ENI]
+    L[NodeENI Deleted] --> M[Finalizer Triggered]
+    M --> K
+    K --> N[Delete ENI]
+    N --> O[Update Status or Remove Finalizer]
+    O --> P[End]
                 </div>
                 <div class="diagram-description">
                     <h3>Lifecycle Stages:</h3>
