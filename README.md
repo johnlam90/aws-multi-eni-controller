@@ -47,13 +47,17 @@ When a node no longer matches the selector or when the NodeENI resource is delet
 
 ```bash
 # Install the latest version
-helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0
+helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 \
+  --namespace eni-controller-system --create-namespace
 
 # With custom values
 helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 \
+  --namespace eni-controller-system --create-namespace \
   --set awsRegion=us-east-1 \
   --set nodeSelector.ng=multi-eni
 ```
+
+> **Important**: Always specify the `--namespace eni-controller-system` flag and the `--create-namespace` flag when installing the chart to ensure all resources are created in the correct namespace.
 
 ### Create a NodeENI Resource
 

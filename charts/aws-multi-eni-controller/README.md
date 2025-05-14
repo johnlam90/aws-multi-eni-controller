@@ -14,14 +14,32 @@ The AWS Multi-ENI Controller manages multiple Elastic Network Interfaces (ENIs) 
 
 ## Installing the Chart
 
+### Important Note on Namespaces
+
+This chart uses the `eni-controller-system` namespace by default. To ensure proper installation:
+
+1. Always specify the namespace and create-namespace flags when installing:
+   ```bash
+   helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --namespace eni-controller-system --create-namespace
+   ```
+
+   This ensures the namespace is created if it doesn't exist.
+
+2. The namespace is also configurable in your values.yaml:
+   ```yaml
+   namespace: eni-controller-system
+   ```
+
+   However, you should still use the `--namespace` flag to ensure Helm knows which namespace to install into.
+
 ### Option 1: Install from OCI Registry (Recommended)
 
 ```bash
 # Install the latest version
-helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 0.1.0
+helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 --namespace eni-controller-system --create-namespace
 
 # Or specify a specific version
-helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.1.1
+helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 --namespace eni-controller-system --create-namespace
 ```
 
 ### Option 2: Install from GitHub Release
@@ -89,7 +107,8 @@ The following table lists the configurable parameters of the AWS Multi-ENI Contr
 Create a `values.yaml` file:
 
 ```yaml
-namespace: custom-namespace
+# IMPORTANT: Always keep this as eni-controller-system
+namespace: eni-controller-system
 awsRegion: us-west-2
 controller:
   maxConcurrentENICleanup: 5  # Increase for larger instances with many ENIs
@@ -102,8 +121,10 @@ nodeSelector:
 Then install the chart:
 
 ```bash
-helm install my-release ./charts/aws-multi-eni-controller -f values.yaml
+helm install my-release ./charts/aws-multi-eni-controller -f values.yaml --namespace eni-controller-system --create-namespace
 ```
+
+> **Note**: Always specify the `--namespace eni-controller-system` flag when installing, even if the namespace is defined in your values.yaml file.
 
 ## Creating a NodeENI Resource
 

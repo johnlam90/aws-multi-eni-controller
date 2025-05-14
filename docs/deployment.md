@@ -34,30 +34,40 @@ Helm charts are published to GitHub Container Registry (GHCR) as OCI artifacts:
 
    ```bash
    # Install the latest version
-   helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.2.7
+   helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 \
+     --namespace eni-controller-system --create-namespace
 
    # Or specify a specific version
-   helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.1.1
+   helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 \
+     --namespace eni-controller-system --create-namespace
    ```
+
+   > **Important**: Always specify the `--namespace eni-controller-system` flag and the `--create-namespace` flag when installing the chart to ensure all resources are created in the correct namespace.
 
 2. Customize the installation with values:
 
    ```bash
    # Create a values.yaml file
    cat > values.yaml <<EOF
+   # IMPORTANT: Keep this as eni-controller-system
+   namespace: eni-controller-system
    awsRegion: us-east-1
    nodeSelector:
      ng: multi-eni
    EOF
 
    # Install with custom values
-   helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.2.7 -f values.yaml
+   helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 \
+     --namespace eni-controller-system --create-namespace \
+     -f values.yaml
    ```
 
 3. Upgrade an existing installation:
 
    ```bash
-   helm upgrade aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.2.7 -f values.yaml
+   helm upgrade aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 \
+     --namespace eni-controller-system \
+     -f values.yaml
    ```
 
 #### Option 2: Install from GitHub Release
@@ -77,14 +87,17 @@ Alternatively, you can download the chart from GitHub releases:
 2. Install the chart:
 
    ```bash
-   helm install aws-multi-eni ./aws-multi-eni-controller-${CHART_VERSION}.tgz
+   helm install aws-multi-eni ./aws-multi-eni-controller-${CHART_VERSION}.tgz \
+     --namespace eni-controller-system --create-namespace
    ```
 
 3. Customize the installation with values:
 
    ```bash
    # Install with custom values
-   helm install aws-multi-eni ./aws-multi-eni-controller-${CHART_VERSION}.tgz -f values.yaml
+   helm install aws-multi-eni ./aws-multi-eni-controller-${CHART_VERSION}.tgz \
+     --namespace eni-controller-system --create-namespace \
+     -f values.yaml
    ```
 
 For more information about the Helm chart and its configuration options, see the [Helm Chart README](../charts/aws-multi-eni-controller/README.md).
@@ -163,6 +176,7 @@ USE_GHCR=true ./hack/deploy.sh
 ```
 
 The script will:
+
 - Either use the pre-built GitHub Container Registry image or build your own
 - Apply the CRDs to the cluster
 - Deploy the controller and ENI Manager to the cluster
