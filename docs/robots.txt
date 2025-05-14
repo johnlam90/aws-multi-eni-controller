@@ -1,6 +1,9 @@
 User-agent: *
 Allow: /
 
+# Sitemap Index (primary)
+Sitemap: https://johnlam90.github.io/aws-multi-eni-controller/sitemap_index.xml
+
 # XML Sitemap
 Sitemap: https://johnlam90.github.io/aws-multi-eni-controller/sitemap.xml
 
