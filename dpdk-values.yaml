@@ -1,0 +1,24 @@
+# Image configuration
+image:
+  repository: ghcr.io/johnlam90/aws-multi-eni-controller
+  tag: beta-sandbox-dpdk-sriov
+  pullPolicy: Always
+
+# ENI Manager configuration
+eniManager:
+  # Default MTU to set on ENIs (0 to use MTU from NodeENI resources)
+  defaultMTU: 0
+  # Check interval for interface monitoring
+  checkInterval: 30s
+  # Enable debug logging
+  debug: true
+  # DPDK configuration
+  dpdk:
+    # Enable DPDK device binding
+    enabled: true
+    # Default DPDK driver to use
+    driver: "vfio-pci"
+    # Path to DPDK binding script
+    bindingScript: "/opt/dpdk/dpdk-devbind.py"
+    # Path to SRIOV device plugin config
+    sriovDPConfigPath: "/etc/pcidp/config.json"

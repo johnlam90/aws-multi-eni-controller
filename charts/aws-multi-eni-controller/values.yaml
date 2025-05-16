@@ -4,9 +4,9 @@
 
 # Image configuration
 image:
-  repository: ghcr.io/johnlam90/aws-multi-eni-controller
-  tag: v1.3.0
-  pullPolicy: IfNotPresent
+  repository: aws-multi-eni-controller
+  tag: dpdk
+  pullPolicy: Never
 
 # Namespace to deploy the controller
 namespace: eni-controller-system
@@ -44,7 +44,7 @@ eniManager:
   # DPDK configuration
   dpdk:
     # Enable DPDK device binding
-    enabled: false
+    enabled: true
     # Default DPDK driver to use
     driver: "vfio-pci"
     # Path to DPDK binding script
