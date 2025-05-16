@@ -18,6 +18,70 @@ spec:
       hostNetwork: true
       nodeSelector:
         ng: multi-eni
+      initContainers:
+      - name: dpdk-setup
+        image: alpine:3.19
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          echo "Setting up DPDK environment..."
+          # Install required packages
+          apk --no-cache add kmod pciutils python3 build-base linux-headers git
+
+          # Check if vfio-pci is already loaded with WC support
+          if lsmod | grep -q vfio_pci; then
+            echo "vfio-pci module is already loaded"
+          else
+            echo "Loading vfio and vfio-pci modules"
+            modprobe vfio || echo "Failed to load vfio module"
+            modprobe vfio-pci || echo "Failed to load vfio-pci module"
+          fi
+
+          # Enable unsafe NOIOMMU mode
+          echo 1 > /sys/module/vfio/parameters/enable_unsafe_noiommu_mode || echo "Failed to enable unsafe NOIOMMU mode"
+
+          # Copy DPDK binding script to host
+          mkdir -p /host/usr/bin
+          cp -f /opt/dpdk/dpdk-devbind.py /host/usr/bin/
+          chmod 755 /host/usr/bin/dpdk-devbind.py
+
+          # Create module load configuration for persistence across reboots
+          mkdir -p /host/etc/modules-load.d
+          echo "vfio" > /host/etc/modules-load.d/dpdk.conf
+          echo "vfio-pci" >> /host/etc/modules-load.d/dpdk.conf
+          chmod 644 /host/etc/modules-load.d/dpdk.conf
+
+          # Create modprobe configuration for persistence across reboots
+          mkdir -p /host/etc/modprobe.d
+          echo "options vfio enable_unsafe_noiommu_mode=1" > /host/etc/modprobe.d/dpdk.conf
+          chmod 644 /host/etc/modprobe.d/dpdk.conf
+
+          # Check if vfio-pci has Write Combining support
+          if grep -q "write-combining" /sys/kernel/debug/x86/pat_memtype_list 2>/dev/null; then
+            echo "Write Combining is already enabled"
+          else
+            echo "Write Combining is not enabled, attempting to patch vfio-pci"
+
+            # Clone the amzn-drivers repository to get the patch script
+            cd /tmp
+            git clone https://github.com/amzn/amzn-drivers.git
+            cd amzn-drivers/userspace/dpdk/enav2-vfio-patch
+
+            # Run the patch script to enable Write Combining
+            chmod +x get-vfio-with-wc.sh
+            ./get-vfio-with-wc.sh || echo "Failed to patch vfio-pci for Write Combining"
+          fi
+
+          echo "DPDK setup completed successfully."
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-sys
+          mountPath: /sys
+        - name: host-root
+          mountPath: /host
+        - name: dpdk-tools
+          mountPath: /opt/dpdk
       containers:
       - name: eni-manager
         image:  ghcr.io/johnlam90/aws-multi-eni-controller:v1.3.0
@@ -31,14 +95,10 @@ spec:
             fieldRef:
               fieldPath: spec.nodeName
         - name: AWS_REGION
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
-              # This is a placeholder - in a real deployment, you would use a configmap or
-              # the downward API to get the AWS region
+          value: "us-west-2"  # Set your AWS region here
         # DPDK Configuration
         - name: ENABLE_DPDK
-          value: "false"  # Set to true to enable DPDK device binding
+          value: "true"  # Enable DPDK device binding
         - name: DEFAULT_DPDK_DRIVER
           value: "vfio-pci"  # Default DPDK driver to use
         - name: DPDK_BINDING_SCRIPT
@@ -84,6 +144,9 @@ spec:
       - name: host-run
         hostPath:
           path: /run
+      - name: host-root
+        hostPath:
+          path: /
       - name: dpdk-tools
         hostPath:
           path: /opt/dpdk
