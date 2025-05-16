@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
@@ -27,9 +26,9 @@ type PCIDeviceInfo struct {
 
 // SRIOVDeviceConfig represents the configuration for a SRIOV device
 type SRIOVDeviceConfig struct {
-	ResourceName string         `json:"resourceName"`
-	RootDevices  []string       `json:"rootDevices,omitempty"`
-	DeviceType   string         `json:"deviceType,omitempty"`
+	ResourceName string          `json:"resourceName"`
+	RootDevices  []string        `json:"rootDevices,omitempty"`
+	DeviceType   string          `json:"deviceType,omitempty"`
 	Devices      []PCIDeviceInfo `json:"devices,omitempty"`
 }
 
@@ -285,6 +284,8 @@ func processDPDKBindingForAttachment(attachment networkingv1alpha1.ENIAttachment
 		}
 	}
 }
+
+// Note: We're using the getInterfaceNameForENI function from main.go
 
 // updateDPDKBindingFromNodeENI updates DPDK binding from NodeENI resources
 func updateDPDKBindingFromNodeENI(nodeName string, cfg *config.ENIManagerConfig, nodeENIs []networkingv1alpha1.NodeENI) {

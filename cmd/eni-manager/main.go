@@ -471,6 +471,30 @@ func checkAndBringUpInterfaces(cfg *config.ENIManagerConfig) error {
 	return nil
 }
 
+// getNodeENIResources gets all NodeENI resources
+func getNodeENIResources(ctx context.Context, clientset *kubernetes.Clientset) ([]networkingv1alpha1.NodeENI, error) {
+	// List all NodeENI resources
+	nodeENIList, err := clientset.CoreV1().RESTClient().
+		Get().
+		AbsPath("/apis/networking.k8s.aws/v1alpha1/nodeenis").
+		Do(ctx).
+		Raw()
+
+	if err != nil {
+		return nil, fmt.Errorf("error listing NodeENI resources: %v", err)
+	}
+
+	// Parse the response
+	var nodeENIs struct {
+		Items []networkingv1alpha1.NodeENI `json:"items"`
+	}
+	if err := json.Unmarshal(nodeENIList, &nodeENIs); err != nil {
+		return nil, fmt.Errorf("error parsing NodeENI list: %v", err)
+	}
+
+	return nodeENIs.Items, nil
+}
+
 // bringUpInterface brings up a network interface
 func bringUpInterface(link vnetlink.Link, cfg *config.ENIManagerConfig) error {
 	ifaceName := link.Attrs().Name
@@ -691,29 +715,7 @@ func sysfsSetMTU(ifaceName string, mtu int) error {
 	return nil
 }
 
-// getNodeENIResources gets all NodeENI resources
-func getNodeENIResources(ctx context.Context, clientset *kubernetes.Clientset) ([]networkingv1alpha1.NodeENI, error) {
-	// List all NodeENI resources
-	nodeENIList, err := clientset.CoreV1().RESTClient().
-		Get().
-		AbsPath("/apis/networking.k8s.aws/v1alpha1/nodeenis").
-		Do(ctx).
-		Raw()
-
-	if err != nil {
-		return nil, fmt.Errorf("error listing NodeENI resources: %v", err)
-	}
-
-	// Parse the response
-	var nodeENIs struct {
-		Items []networkingv1alpha1.NodeENI `json:"items"`
-	}
-	if err := json.Unmarshal(nodeENIList, &nodeENIs); err != nil {
-		return nil, fmt.Errorf("error parsing NodeENI list: %v", err)
-	}
-
-	return nodeENIs.Items, nil
-}
+// Note: getNodeENIResources function is defined earlier in the file
 
 // getMTUFromAttachment gets the MTU value from an attachment or NodeENI spec
 func getMTUFromAttachment(attachment networkingv1alpha1.ENIAttachment, nodeENI networkingv1alpha1.NodeENI) int {
