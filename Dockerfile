@@ -57,9 +57,12 @@ FROM alpine:3.19
 RUN apk --no-cache add iproute2 pciutils python3 --no-scripts
 
 # Create DPDK directories and add DPDK binding script
-RUN mkdir -p /opt/dpdk /etc/pcidp
+RUN mkdir -p /opt/dpdk /etc/pcidp /opt/dpdk/scripts /opt/dpdk/scripts/patches
 COPY build/dpdk-devbind.py /opt/dpdk/
-RUN chmod +x /opt/dpdk/dpdk-devbind.py
+COPY build/dpdk-scripts/dpdk-setup.sh /opt/dpdk/scripts/
+COPY build/dpdk-scripts/get-vfio-with-wc.sh /opt/dpdk/scripts/
+COPY build/dpdk-scripts/patches/ /opt/dpdk/scripts/patches/
+RUN chmod +x /opt/dpdk/dpdk-devbind.py /opt/dpdk/scripts/*.sh
 
 # Copy the compressed binaries from the compressor stage
 WORKDIR /

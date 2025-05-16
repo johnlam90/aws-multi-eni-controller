@@ -62,13 +62,10 @@ spec:
           else
             echo "Write Combining is not enabled, attempting to patch vfio-pci"
 
-            # Clone the amzn-drivers repository to get the patch script
-            cd /tmp
-            git clone https://github.com/amzn/amzn-drivers.git
-            cd amzn-drivers/userspace/dpdk/enav2-vfio-patch
+            # Use the pre-packaged patch script
+            cd /opt/dpdk/scripts
 
             # Run the patch script to enable Write Combining
-            chmod +x get-vfio-with-wc.sh
             ./get-vfio-with-wc.sh || echo "Failed to patch vfio-pci for Write Combining"
           fi
 
