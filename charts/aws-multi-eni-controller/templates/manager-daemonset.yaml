@@ -51,6 +51,21 @@ spec:
         - name: METRICS_PORT
           value: "{{ .Values.metrics.port }}"
         {{- end }}
+        {{- if .Values.eniManager.dpdk }}
+        # DPDK Configuration
+        - name: ENABLE_DPDK
+          value: "{{ .Values.eniManager.dpdk.enabled }}"
+        - name: DEFAULT_DPDK_DRIVER
+          value: "{{ .Values.eniManager.dpdk.driver }}"
+        - name: DPDK_BINDING_SCRIPT
+          value: "{{ .Values.eniManager.dpdk.bindingScript }}"
+        - name: SRIOV_DP_CONFIG_PATH
+          value: "{{ .Values.eniManager.dpdk.sriovDPConfigPath }}"
+        {{- if .Values.eniManager.dpdk.resourceNames }}
+        - name: DPDK_RESOURCE_NAMES
+          value: "{{ .Values.eniManager.dpdk.resourceNames }}"
+        {{- end }}
+        {{- end }}
         args:
         - --check-interval={{ .Values.eniManager.checkInterval }}
         - --debug={{ .Values.eniManager.debug }}
@@ -72,6 +87,12 @@ spec:
           mountPath: /host/proc
         - name: host-run
           mountPath: /host/run
+        {{- if .Values.eniManager.dpdk }}
+        - name: dpdk-tools
+          mountPath: /opt/dpdk
+        - name: sriov-dp-config
+          mountPath: /etc/pcidp
+        {{- end }}
       volumes:
       - name: host-sys
         hostPath:
@@ -82,6 +103,16 @@ spec:
       - name: host-run
         hostPath:
           path: /run
+      {{- if .Values.eniManager.dpdk }}
+      - name: dpdk-tools
+        hostPath:
+          path: /opt/dpdk
+          type: DirectoryOrCreate
+      - name: sriov-dp-config
+        hostPath:
+          path: /etc/pcidp
+          type: DirectoryOrCreate
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

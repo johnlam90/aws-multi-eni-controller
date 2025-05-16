@@ -71,6 +71,19 @@ type NodeENISpec struct {
 	// MTU is the Maximum Transmission Unit for the ENI (default: system default)
 	// +optional
 	MTU int `json:"mtu,omitempty"`
+
+	// EnableDPDK indicates whether to bind the ENI to DPDK driver after attachment
+	// +optional
+	EnableDPDK bool `json:"enableDPDK,omitempty"`
+
+	// DPDKDriver is the driver to use for DPDK binding (default: vfio-pci)
+	// +optional
+	DPDKDriver string `json:"dpdkDriver,omitempty"`
+
+	// DPDKResourceName is the resource name to use for the DPDK interface in SRIOV device plugin
+	// If not specified, a default name will be generated based on the interface index
+	// +optional
+	DPDKResourceName string `json:"dpdkResourceName,omitempty"`
 }
 
 // NodeENIStatus is the status for a NodeENI resource
@@ -115,6 +128,18 @@ type ENIAttachment struct {
 
 	// LastUpdated is the timestamp of the last update
 	LastUpdated metav1.Time `json:"lastUpdated"`
+
+	// DPDKBound indicates whether the ENI is bound to a DPDK driver
+	// +optional
+	DPDKBound bool `json:"dpdkBound,omitempty"`
+
+	// DPDKDriver is the driver used for DPDK binding
+	// +optional
+	DPDKDriver string `json:"dpdkDriver,omitempty"`
+
+	// DPDKResourceName is the resource name used for the DPDK interface in SRIOV device plugin
+	// +optional
+	DPDKResourceName string `json:"dpdkResourceName,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

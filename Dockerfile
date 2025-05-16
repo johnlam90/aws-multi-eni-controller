@@ -54,7 +54,12 @@ RUN if [ "$SKIP_UPX" = "true" ]; then \
 FROM alpine:3.19
 
 # Install only the necessary packages
-RUN apk --no-cache add iproute2 --no-scripts
+RUN apk --no-cache add iproute2 pciutils python3 --no-scripts
+
+# Create DPDK directories and add DPDK binding script
+RUN mkdir -p /opt/dpdk /etc/pcidp
+COPY build/dpdk-devbind.py /opt/dpdk/
+RUN chmod +x /opt/dpdk/dpdk-devbind.py
 
 # Copy the compressed binaries from the compressor stage
 WORKDIR /

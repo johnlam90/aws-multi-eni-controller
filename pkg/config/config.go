@@ -51,6 +51,16 @@ type ENIManagerConfig struct {
 	DefaultMTU int
 	// Map of interface name to MTU value
 	InterfaceMTUs map[string]int
+	// Enable DPDK device binding
+	EnableDPDK bool
+	// Default DPDK driver to use for binding (default: vfio-pci)
+	DefaultDPDKDriver string
+	// Map of interface name to DPDK resource name
+	DPDKResourceNames map[string]string
+	// Path to DPDK device binding script
+	DPDKBindingScript string
+	// Path to SRIOV device plugin config file
+	SRIOVDPConfigPath string
 }
 
 // DefaultControllerConfig returns the default configuration for the controller
@@ -77,6 +87,11 @@ func DefaultENIManagerConfig() *ENIManagerConfig {
 		IgnoreInterfaces:   []string{"tunl0", "gre0", "gretap0", "erspan0", "ip_vti0", "ip6_vti0", "sit0", "ip6tnl0", "ip6gre0"},
 		DefaultMTU:         0, // 0 means use system default
 		InterfaceMTUs:      make(map[string]int),
+		EnableDPDK:         false,
+		DefaultDPDKDriver:  "vfio-pci",
+		DPDKResourceNames:  make(map[string]string),
+		DPDKBindingScript:  "/opt/dpdk/dpdk-devbind.py",
+		SRIOVDPConfigPath:  "/etc/pcidp/config.json",
 	}
 }
 
@@ -203,6 +218,45 @@ func loadMTUConfig(config *ENIManagerConfig) {
 	loadInterfaceMTUs(config)
 }
 
+// loadDPDKConfig loads DPDK configuration from environment variables
+func loadDPDKConfig(config *ENIManagerConfig) {
+	// Load DPDK enable flag from environment variable
+	if enableStr := os.Getenv("ENABLE_DPDK"); enableStr != "" {
+		if enable, err := strconv.ParseBool(enableStr); err == nil {
+			config.EnableDPDK = enable
+		}
+	}
+
+	// Load default DPDK driver from environment variable
+	if driver := os.Getenv("DEFAULT_DPDK_DRIVER"); driver != "" {
+		config.DefaultDPDKDriver = driver
+	}
+
+	// Load DPDK binding script path from environment variable
+	if scriptPath := os.Getenv("DPDK_BINDING_SCRIPT"); scriptPath != "" {
+		config.DPDKBindingScript = scriptPath
+	}
+
+	// Load SRIOV device plugin config path from environment variable
+	if configPath := os.Getenv("SRIOV_DP_CONFIG_PATH"); configPath != "" {
+		config.SRIOVDPConfigPath = configPath
+	}
+
+	// Load interface-specific DPDK resource names from environment variable
+	// Format: "eth1:intel_sriov_netdevice_1,eth2:intel_sriov_netdevice_2"
+	if resourceMapStr := os.Getenv("DPDK_RESOURCE_NAMES"); resourceMapStr != "" {
+		pairs := splitCSV(resourceMapStr)
+		for _, pair := range pairs {
+			parts := strings.Split(pair, ":")
+			if len(parts) == 2 {
+				ifaceName := parts[0]
+				resourceName := parts[1]
+				config.DPDKResourceNames[ifaceName] = resourceName
+			}
+		}
+	}
+}
+
 // loadInterfaceMTUs loads interface-specific MTUs from environment variables
 func loadInterfaceMTUs(config *ENIManagerConfig) {
 	// Format: "eth1:9000,eth2:1500"
@@ -233,6 +287,9 @@ func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *s
 
 	// Load MTU configuration
 	loadMTUConfig(config)
+
+	// Load DPDK configuration
+	loadDPDKConfig(config)
 
 	return config
 }

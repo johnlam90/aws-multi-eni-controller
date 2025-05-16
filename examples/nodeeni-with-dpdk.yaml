@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: multus-eni-with-dpdk
+spec:
+  # Select nodes with the label ng=multi-eni
+  nodeSelector:
+    ng: multi-eni
+  
+  # Subnet where the ENI should be created
+  # You can use subnetID, subnetName, subnetIDs, or subnetNames
+  subnetID: subnet-12345678
+  
+  # Security groups to attach to the ENI
+  securityGroupIDs:
+  - sg-12345678
+  
+  # Device index for the ENI (default: 1)
+  deviceIndex: 2
+  
+  # MTU for the ENI (default: system default)
+  mtu: 9000
+  
+  # Enable DPDK binding for this ENI
+  enableDPDK: true
+  
+  # DPDK driver to use (default: vfio-pci)
+  dpdkDriver: "vfio-pci"
+  
+  # Resource name to use for the DPDK interface in SRIOV device plugin
+  # If not specified, a default name will be generated based on the interface index
+  dpdkResourceName: "intel.com/intel_sriov_netdevice_2"

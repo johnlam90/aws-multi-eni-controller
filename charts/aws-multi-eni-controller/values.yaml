@@ -41,6 +41,18 @@ eniManager:
   ignoreInterfaces: "tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0"
   # Use netlink for interface monitoring
   useNetlink: true
+  # DPDK configuration
+  dpdk:
+    # Enable DPDK device binding
+    enabled: false
+    # Default DPDK driver to use
+    driver: "vfio-pci"
+    # Path to DPDK binding script
+    bindingScript: "/opt/dpdk/dpdk-devbind.py"
+    # Path to SRIOV device plugin config
+    sriovDPConfigPath: "/etc/pcidp/config.json"
+    # Resource names for DPDK interfaces (format: "eth1:intel_sriov_netdevice_1,eth2:intel_sriov_netdevice_2")
+    resourceNames: ""
 
 # Resource configuration for the controller
 resources:

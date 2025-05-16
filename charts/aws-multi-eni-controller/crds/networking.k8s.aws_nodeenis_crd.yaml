@@ -78,6 +78,15 @@ spec:
               mtu:
                 description: Maximum Transmission Unit (MTU) for the ENI (default system default)
                 type: integer
+              enableDPDK:
+                description: Whether to bind the ENI to DPDK driver after attachment
+                type: boolean
+              dpdkDriver:
+                description: 'Driver to use for DPDK binding (default: vfio-pci)'
+                type: string
+              dpdkResourceName:
+                description: Resource name to use for the DPDK interface in SRIOV device plugin
+                type: string
             required:
             - nodeSelector
             type: object
@@ -116,6 +125,15 @@ spec:
                       type: integer
                     status:
                       description: Status of the attachment
+                      type: string
+                    dpdkBound:
+                      description: Whether the ENI is bound to a DPDK driver
+                      type: boolean
+                    dpdkDriver:
+                      description: Driver used for DPDK binding
+                      type: string
+                    dpdkResourceName:
+                      description: Resource name used for the DPDK interface in SRIOV device plugin
                       type: string
                   type: object
                 type: array

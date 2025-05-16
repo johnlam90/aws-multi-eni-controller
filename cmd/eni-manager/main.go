@@ -114,13 +114,13 @@ func getNodeName() string {
 	return nodeName
 }
 
-// setupMTUUpdater sets up the MTU updater for NodeENI resources
-func setupMTUUpdater(ctx context.Context, nodeName string, cfg *config.ENIManagerConfig) {
-	log.Printf("Starting MTU updater with default MTU: %d", cfg.DefaultMTU)
+// setupNodeENIUpdater sets up the updater for NodeENI resources
+func setupNodeENIUpdater(ctx context.Context, nodeName string, cfg *config.ENIManagerConfig) {
+	log.Printf("Starting NodeENI updater with default MTU: %d, DPDK enabled: %v", cfg.DefaultMTU, cfg.EnableDPDK)
 
 	// Skip if no node name
 	if nodeName == "" {
-		log.Printf("No node name available, skipping MTU updater")
+		log.Printf("No node name available, skipping NodeENI updater")
 		return
 	}
 
@@ -140,21 +140,44 @@ func setupMTUUpdater(ctx context.Context, nodeName string, cfg *config.ENIManage
 		return
 	}
 
-	// Start a goroutine to periodically update MTU values from NodeENI resources
+	// Start a goroutine to periodically update values from NodeENI resources
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 
-		// Do an initial update
-		updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
+		// Get all NodeENI resources
+		nodeENIs, err := getNodeENIResources(ctx, clientset)
+		if err != nil {
+			log.Printf("Error getting NodeENI resources: %v", err)
+		} else {
+			// Do an initial update for MTU
+			updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
+
+			// Do an initial update for DPDK binding
+			if cfg.EnableDPDK {
+				updateDPDKBindingFromNodeENI(nodeName, cfg, nodeENIs)
+			}
+		}
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// Get all NodeENI resources
+				nodeENIs, err := getNodeENIResources(ctx, clientset)
+				if err != nil {
+					log.Printf("Error getting NodeENI resources: %v", err)
+					continue
+				}
+
 				// Update MTU values from NodeENI resources
 				updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
+
+				// Update DPDK binding from NodeENI resources
+				if cfg.EnableDPDK {
+					updateDPDKBindingFromNodeENI(nodeName, cfg, nodeENIs)
+				}
 			}
 		}
 	}()
@@ -204,8 +227,8 @@ func main() {
 	// Get node name
 	nodeName := getNodeName()
 
-	// Setup MTU updater
-	setupMTUUpdater(ctx, nodeName, cfg)
+	// Setup NodeENI updater (handles both MTU and DPDK)
+	setupNodeENIUpdater(ctx, nodeName, cfg)
 
 	// Run the ENI Manager
 	runENIManager(ctx, cfg)
@@ -464,8 +487,8 @@ func bringUpInterface(link vnetlink.Link, cfg *config.ENIManagerConfig) error {
 		}
 	}
 
-	// Check if we have any NodeENI resources with MTU settings
-	// This is a more aggressive approach to ensure the MTU is set correctly
+	// Check if we have any NodeENI resources with MTU or DPDK settings
+	// This is a more aggressive approach to ensure the settings are applied correctly
 	// even if the interface is brought up before the NodeENI resources are processed
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName != "" {
@@ -475,9 +498,19 @@ func bringUpInterface(link vnetlink.Link, cfg *config.ENIManagerConfig) error {
 			// Create the clientset
 			clientset, err := kubernetes.NewForConfig(k8sConfig)
 			if err == nil {
-				// Force an immediate update of MTU values from NodeENI resources
-				log.Printf("Forcing immediate MTU update for interface %s", ifaceName)
-				updateMTUFromNodeENI(context.Background(), clientset, nodeName, cfg)
+				// Get all NodeENI resources
+				nodeENIs, err := getNodeENIResources(context.Background(), clientset)
+				if err == nil {
+					// Force an immediate update of MTU values from NodeENI resources
+					log.Printf("Forcing immediate MTU update for interface %s", ifaceName)
+					updateMTUFromNodeENI(context.Background(), clientset, nodeName, cfg)
+
+					// Check if DPDK is enabled and apply binding if needed
+					if cfg.EnableDPDK {
+						log.Printf("Checking DPDK binding for interface %s", ifaceName)
+						updateDPDKBindingFromNodeENI(nodeName, cfg, nodeENIs)
+					}
+				}
 			}
 		}
 	}

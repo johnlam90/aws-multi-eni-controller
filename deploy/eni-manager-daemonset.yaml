@@ -36,6 +36,15 @@ spec:
               fieldPath: spec.nodeName
               # This is a placeholder - in a real deployment, you would use a configmap or
               # the downward API to get the AWS region
+        # DPDK Configuration
+        - name: ENABLE_DPDK
+          value: "false"  # Set to true to enable DPDK device binding
+        - name: DEFAULT_DPDK_DRIVER
+          value: "vfio-pci"  # Default DPDK driver to use
+        - name: DPDK_BINDING_SCRIPT
+          value: "/opt/dpdk/dpdk-devbind.py"  # Path to DPDK binding script
+        - name: SRIOV_DP_CONFIG_PATH
+          value: "/etc/pcidp/config.json"  # Path to SRIOV device plugin config
         securityContext:
           privileged: true
           capabilities:
@@ -61,6 +70,10 @@ spec:
           mountPath: /host/proc
         - name: host-run
           mountPath: /host/run
+        - name: dpdk-tools
+          mountPath: /opt/dpdk
+        - name: sriov-dp-config
+          mountPath: /etc/pcidp
       volumes:
       - name: host-sys
         hostPath:
@@ -71,3 +84,11 @@ spec:
       - name: host-run
         hostPath:
           path: /run
+      - name: dpdk-tools
+        hostPath:
+          path: /opt/dpdk
+          type: DirectoryOrCreate
+      - name: sriov-dp-config
+        hostPath:
+          path: /etc/pcidp
+          type: DirectoryOrCreate
