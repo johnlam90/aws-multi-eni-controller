@@ -8,6 +8,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -24,7 +25,12 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/remotecommand"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -194,6 +200,129 @@ func (r *NodeENIReconciler) handleDeletion(ctx context.Context, nodeENI *network
 	return ctrl.Result{}, nil
 }
 
+// unbindInterfaceFromDPDK unbinds an interface from DPDK driver
+// This is called during cleanup to ensure interfaces are properly unbound before detachment
+func (r *NodeENIReconciler) unbindInterfaceFromDPDK(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) error {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+	log.Info("Attempting to unbind interface from DPDK driver")
+
+	// Create a Kubernetes client to communicate with the ENI Manager
+	k8sConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("failed to create in-cluster config: %v", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create Kubernetes client: %v", err)
+	}
+
+	// Find the ENI Manager pod on the node
+	pods, err := clientset.CoreV1().Pods("eni-controller-system").List(ctx, metav1.ListOptions{
+		LabelSelector: "app=eni-manager",
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", attachment.NodeID),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list ENI Manager pods: %v", err)
+	}
+
+	if len(pods.Items) == 0 {
+		return fmt.Errorf("no ENI Manager pod found on node %s", attachment.NodeID)
+	}
+
+	// Get the interface name for this ENI
+	// We'll try to infer it from the device index
+	ifaceName := fmt.Sprintf("eth%d", attachment.DeviceIndex)
+	log.Info("Using interface name based on device index", "ifaceName", ifaceName, "deviceIndex", attachment.DeviceIndex)
+
+	// Create a command to unbind the interface
+	// We'll use the dpdk-devbind.py script in the ENI Manager pod
+	cmd := []string{
+		"bash", "-c",
+		fmt.Sprintf(`
+# Try to find the PCI address for this interface
+pci_address=""
+for addr in $(ls -1 /sys/bus/pci/devices/); do
+  if [ -d "/sys/bus/pci/devices/$addr/net/%s" ] || grep -q "%s" /sys/bus/pci/devices/$addr/uevent 2>/dev/null; then
+    pci_address="$addr"
+    break
+  fi
+done
+
+# If we couldn't find it by interface name, try to find it by device index pattern
+if [ -z "$pci_address" ]; then
+  # For AWS instances, the PCI addresses typically follow a pattern
+  # The primary interface is usually at 0000:00:03.0, and secondary interfaces
+  # are at 0000:00:04.0, 0000:00:05.0, etc.
+  potential_addr="0000:00:%02d.0"
+  if [ -d "/sys/bus/pci/devices/$potential_addr" ]; then
+    pci_address="$potential_addr"
+  fi
+fi
+
+if [ -z "$pci_address" ]; then
+  echo "Could not find PCI address for interface %s"
+  exit 1
+fi
+
+echo "Found PCI address $pci_address for interface %s"
+
+# Check if the device is bound to a DPDK driver
+driver=$(basename $(readlink -f /sys/bus/pci/devices/$pci_address/driver 2>/dev/null) 2>/dev/null)
+if [ "$driver" != "vfio-pci" ] && [ "$driver" != "igb_uio" ]; then
+  echo "Interface %s is not bound to a DPDK driver (current driver: $driver), skipping unbind"
+  exit 0
+fi
+
+echo "Unbinding interface %s (PCI: $pci_address) from DPDK driver $driver"
+
+# First unbind from the current driver
+echo $pci_address > /sys/bus/pci/drivers/$driver/unbind
+
+# Now bind to the original driver (ena for AWS instances)
+echo "ena" > /sys/bus/pci/devices/$pci_address/driver_override
+echo $pci_address > /sys/bus/pci/drivers/ena/bind
+echo "" > /sys/bus/pci/devices/$pci_address/driver_override
+
+echo "Successfully unbound interface %s (PCI: $pci_address) from DPDK driver and bound to ena driver"
+`, ifaceName, ifaceName, attachment.DeviceIndex+3, ifaceName, ifaceName, ifaceName, ifaceName, ifaceName),
+	}
+
+	// Execute the command in the ENI Manager pod
+	req := clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(pods.Items[0].Name).
+		Namespace("eni-controller-system").
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Command: cmd,
+			Stdin:   false,
+			Stdout:  true,
+			Stderr:  true,
+			TTY:     false,
+		}, scheme.ParameterCodec)
+
+	exec, err := remotecommand.NewSPDYExecutor(k8sConfig, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("failed to create executor: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = exec.Stream(remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+
+	log.Info("Unbind command output", "stdout", stdout.String(), "stderr", stderr.String())
+
+	if err != nil {
+		return fmt.Errorf("failed to execute unbind command: %v, stderr: %s", err, stderr.String())
+	}
+
+	log.Info("Successfully executed unbind command")
+	return nil
+}
+
 // cleanupENIAttachment detaches and deletes an ENI attachment
 // Returns true if cleanup was successful, false otherwise
 func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
@@ -202,6 +331,22 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 
 	// Track if any operation failed
 	success := true
+
+	// Check if this ENI is bound to DPDK
+	if nodeENI.Spec.EnableDPDK && attachment.DPDKBound {
+		// Try to unbind the interface from DPDK
+		// This is a best-effort operation - we'll continue with detachment even if it fails
+		if err := r.unbindInterfaceFromDPDK(ctx, nodeENI, attachment); err != nil {
+			log.Error(err, "Failed to unbind interface from DPDK driver, continuing with detachment")
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "DPDKUnbindFailed",
+				"Failed to unbind ENI %s from DPDK driver: %v", attachment.ENIID, err)
+			// Don't set success to false here, as we want to continue with detachment
+		} else {
+			log.Info("Successfully unbound interface from DPDK driver")
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "DPDKUnbound",
+				"Successfully unbound ENI %s from DPDK driver", attachment.ENIID)
+		}
+	}
 
 	// First check if the ENI still exists
 	eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
@@ -226,35 +371,84 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 
 	// Detach the ENI if it's attached
 	if attachment.AttachmentID != "" {
-		if err := r.AWS.DetachENI(ctx, attachment.AttachmentID, true); err != nil {
-			// Check if the error indicates the attachment doesn't exist
-			if strings.Contains(err.Error(), "InvalidAttachmentID.NotFound") {
-				log.V(1).Info("ENI attachment no longer exists, considering detachment successful")
-				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAttachmentAlreadyRemoved",
-					"ENI attachment for %s was already removed (possibly manually)", attachment.ENIID)
-			} else {
-				log.Error(err, "Failed to detach ENI", "attachmentID", attachment.AttachmentID)
-				r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDetachmentFailed",
-					"Failed to detach ENI %s from node %s: %v", attachment.ENIID, attachment.NodeID, err)
-				success = false
-			}
-			// Continue with deletion attempt regardless
+		// Use exponential backoff for detachment to handle rate limiting
+		backoff := wait.Backoff{
+			Steps:    5,
+			Duration: 1 * time.Second,
+			Factor:   2.0,
+			Jitter:   0.1,
 		}
+
+		detachErr := wait.ExponentialBackoff(backoff, func() (bool, error) {
+			if err := r.AWS.DetachENI(ctx, attachment.AttachmentID, true); err != nil {
+				// Check if the error indicates the attachment doesn't exist
+				if strings.Contains(err.Error(), "InvalidAttachmentID.NotFound") {
+					log.V(1).Info("ENI attachment no longer exists, considering detachment successful")
+					r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAttachmentAlreadyRemoved",
+						"ENI attachment for %s was already removed (possibly manually)", attachment.ENIID)
+					return true, nil
+				}
+
+				// Check if this is a rate limit error
+				if strings.Contains(err.Error(), "RequestLimitExceeded") ||
+					strings.Contains(err.Error(), "Throttling") ||
+					strings.Contains(err.Error(), "rate limit") {
+					log.Info("AWS API rate limit exceeded when detaching ENI, will retry", "attachmentID", attachment.AttachmentID)
+					return false, nil
+				}
+
+				// For other errors, fail immediately
+				return false, err
+			}
+			return true, nil
+		})
+
+		if detachErr != nil {
+			log.Error(detachErr, "Failed to detach ENI after retries", "attachmentID", attachment.AttachmentID)
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDetachmentFailed",
+				"Failed to detach ENI %s from node %s after retries: %v", attachment.ENIID, attachment.NodeID, detachErr)
+			success = false
+		}
+		// Continue with deletion attempt regardless
 	}
 
 	// Wait for the detachment to complete
 	if attachment.ENIID != "" {
-		// Try to wait for detachment
-		if err := r.AWS.WaitForENIDetachment(ctx, attachment.ENIID, r.Config.DetachmentTimeout); err != nil {
-			// Check if the error indicates the ENI doesn't exist
-			if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
-				log.V(1).Info("ENI no longer exists when waiting for detachment, considering detachment successful")
-				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
-					"ENI %s was already deleted (possibly manually) when waiting for detachment", attachment.ENIID)
-				// ENI is already gone, so we can consider the cleanup successful
-				return true
+		// Try to wait for detachment with exponential backoff
+		backoff := wait.Backoff{
+			Steps:    5,
+			Duration: 1 * time.Second,
+			Factor:   2.0,
+			Jitter:   0.1,
+		}
+
+		waitErr := wait.ExponentialBackoff(backoff, func() (bool, error) {
+			err := r.AWS.WaitForENIDetachment(ctx, attachment.ENIID, r.Config.DetachmentTimeout)
+			if err != nil {
+				// Check if the error indicates the ENI doesn't exist
+				if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+					log.V(1).Info("ENI no longer exists when waiting for detachment, considering detachment successful")
+					r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
+						"ENI %s was already deleted (possibly manually) when waiting for detachment", attachment.ENIID)
+					return true, nil
+				}
+
+				// Check if this is a rate limit error
+				if strings.Contains(err.Error(), "RequestLimitExceeded") ||
+					strings.Contains(err.Error(), "Throttling") ||
+					strings.Contains(err.Error(), "rate limit") {
+					log.Info("Rate limit exceeded when waiting for ENI detachment, will retry", "eniID", attachment.ENIID)
+					return false, nil
+				}
+
+				// For other errors, fail immediately
+				return false, err
 			}
-			log.Error(err, "Failed to wait for ENI detachment", "eniID", attachment.ENIID)
+			return true, nil
+		})
+
+		if waitErr != nil {
+			log.Error(waitErr, "Failed to wait for ENI detachment after retries", "eniID", attachment.ENIID)
 			success = false
 		}
 
@@ -1195,7 +1389,7 @@ func (r *NodeENIReconciler) updateNodeENIStatus(
 	nodeENI.Status.Attachments = updatedAttachments
 
 	// Update the NodeENI status
-	if err := r.Status().Update(ctx, nodeENI); err != nil {
+	if err := r.Client.Status().Update(ctx, nodeENI); err != nil {
 		log.Error(err, "Failed to update NodeENI status with verified attachments")
 	} else {
 		log.Info("Successfully updated NodeENI status with verified attachments")

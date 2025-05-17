@@ -57,6 +57,13 @@ type ENIManagerConfig struct {
 	DefaultDPDKDriver string
 	// Map of interface name to DPDK resource name
 	DPDKResourceNames map[string]string
+	// Map of interface name to DPDK bound interface information
+	DPDKBoundInterfaces map[string]struct {
+		PCIAddress  string
+		Driver      string
+		NodeENIName string
+		ENIID       string
+	}
 	// Path to DPDK device binding script
 	DPDKBindingScript string
 	// Path to SRIOV device plugin config file
@@ -90,8 +97,12 @@ func DefaultENIManagerConfig() *ENIManagerConfig {
 		EnableDPDK:         false,
 		DefaultDPDKDriver:  "vfio-pci",
 		DPDKResourceNames:  make(map[string]string),
-		DPDKBindingScript:  "/opt/dpdk/dpdk-devbind.py",
-		SRIOVDPConfigPath:  "/etc/pcidp/config.json",
+		DPDKBoundInterfaces: make(map[string]struct {
+			PCIAddress string
+			Driver     string
+		}),
+		DPDKBindingScript: "/opt/dpdk/dpdk-devbind.py",
+		SRIOVDPConfigPath: "/etc/pcidp/config.json",
 	}
 }
 

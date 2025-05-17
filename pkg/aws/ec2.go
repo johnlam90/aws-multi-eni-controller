@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 // EC2Client wraps the AWS EC2 client with additional functionality using SDK v2.
@@ -163,22 +164,49 @@ func (c *EC2Client) DetachENI(ctx context.Context, attachmentID string, force bo
 		input.DryRun = aws.Bool(true)
 	}
 
-	_, err := c.EC2.DetachNetworkInterface(ctx, input)
+	// Use exponential backoff for API rate limiting
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 1 * time.Second,
+		Factor:   2.0,
+		Jitter:   0.1,
+	}
+
+	var lastErr error
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		_, err := c.EC2.DetachNetworkInterface(ctx, input)
+		if err != nil {
+			// Check if the error indicates the attachment doesn't exist
+			// This can happen if the ENI was manually detached outside of our control
+			if strings.Contains(err.Error(), "InvalidAttachmentID.NotFound") {
+				log.Info("ENI attachment no longer exists, considering detachment successful", "error", err.Error())
+				return true, nil
+			}
+
+			// If we're in DryRun mode and get a DryRunOperation error, the attachment exists
+			if !force && strings.Contains(err.Error(), "DryRunOperation") {
+				log.V(1).Info("ENI attachment exists (dry run succeeded)")
+				lastErr = fmt.Errorf("attachment exists but not detaching due to dry run")
+				return false, lastErr
+			}
+
+			// Check if this is a rate limit error
+			if strings.Contains(err.Error(), "RequestLimitExceeded") ||
+				strings.Contains(err.Error(), "Throttling") {
+				log.Info("AWS API rate limit exceeded, retrying", "error", err.Error())
+				lastErr = err
+				return false, nil // Return nil error to continue retrying
+			}
+
+			// For other errors, fail immediately
+			lastErr = err
+			return false, err
+		}
+		return true, nil
+	})
+
 	if err != nil {
-		// Check if the error indicates the attachment doesn't exist
-		// This can happen if the ENI was manually detached outside of our control
-		if strings.Contains(err.Error(), "InvalidAttachmentID.NotFound") {
-			log.Info("ENI attachment no longer exists, considering detachment successful", "error", err.Error())
-			return nil
-		}
-
-		// If we're in DryRun mode and get a DryRunOperation error, the attachment exists
-		if !force && strings.Contains(err.Error(), "DryRunOperation") {
-			log.V(1).Info("ENI attachment exists (dry run succeeded)")
-			return fmt.Errorf("attachment exists but not detaching due to dry run")
-		}
-
-		return fmt.Errorf("failed to detach ENI: %v", err)
+		return fmt.Errorf("failed to detach ENI after retries: %v", lastErr)
 	}
 
 	log.Info("Successfully detached ENI")
@@ -194,15 +222,42 @@ func (c *EC2Client) DeleteENI(ctx context.Context, eniID string) error {
 		NetworkInterfaceId: aws.String(eniID),
 	}
 
-	_, err := c.EC2.DeleteNetworkInterface(ctx, input)
-	if err != nil {
-		// Check if the error indicates the ENI doesn't exist
-		// This can happen if the ENI was manually deleted outside of our control
-		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
-			log.Info("ENI no longer exists, considering deletion successful", "error", err.Error())
-			return nil
+	// Use exponential backoff for API rate limiting
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 1 * time.Second,
+		Factor:   2.0,
+		Jitter:   0.1,
+	}
+
+	var lastErr error
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		_, err := c.EC2.DeleteNetworkInterface(ctx, input)
+		if err != nil {
+			// Check if the error indicates the ENI doesn't exist
+			// This can happen if the ENI was manually deleted outside of our control
+			if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+				log.Info("ENI no longer exists, considering deletion successful", "error", err.Error())
+				return true, nil
+			}
+
+			// Check if this is a rate limit error
+			if strings.Contains(err.Error(), "RequestLimitExceeded") ||
+				strings.Contains(err.Error(), "Throttling") {
+				log.Info("AWS API rate limit exceeded, retrying", "error", err.Error())
+				lastErr = err
+				return false, nil // Return nil error to continue retrying
+			}
+
+			// For other errors, fail immediately
+			lastErr = err
+			return false, err
 		}
-		return fmt.Errorf("failed to delete ENI: %v", err)
+		return true, nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to delete ENI after retries: %v", lastErr)
 	}
 
 	log.Info("Successfully deleted ENI")
@@ -218,9 +273,37 @@ func (c *EC2Client) DescribeENI(ctx context.Context, eniID string) (*EC2v2Networ
 		NetworkInterfaceIds: []string{eniID},
 	}
 
-	result, err := c.EC2.DescribeNetworkInterfaces(ctx, input)
+	// Use exponential backoff for API rate limiting
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 1 * time.Second,
+		Factor:   2.0,
+		Jitter:   0.1,
+	}
+
+	var result *ec2.DescribeNetworkInterfacesOutput
+	var lastErr error
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		var err error
+		result, err = c.EC2.DescribeNetworkInterfaces(ctx, input)
+		if err != nil {
+			// Check if this is a rate limit error
+			if strings.Contains(err.Error(), "RequestLimitExceeded") ||
+				strings.Contains(err.Error(), "Throttling") {
+				log.Info("AWS API rate limit exceeded, retrying", "error", err.Error())
+				lastErr = err
+				return false, nil // Return nil error to continue retrying
+			}
+
+			// For other errors, fail immediately
+			lastErr = err
+			return false, err
+		}
+		return true, nil
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to describe ENI: %v", err)
+		return nil, fmt.Errorf("failed to describe ENI after retries: %v", lastErr)
 	}
 
 	if len(result.NetworkInterfaces) == 0 {
@@ -438,32 +521,63 @@ func (c *EC2Client) WaitForENIDetachment(ctx context.Context, eniID string, time
 	log := c.Logger.WithValues("eniID", eniID)
 	log.Info("Waiting for ENI detachment to complete", "timeout", timeout)
 
-	// Wait for the detachment to complete
-	time.Sleep(timeout)
+	// Use exponential backoff for checking detachment status
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: timeout / 5, // Divide the total timeout into steps
+		Factor:   1.5,
+		Jitter:   0.1,
+	}
 
-	// Check the ENI status
-	eniInterface, err := c.DescribeENI(ctx, eniID)
-	if err != nil {
-		// Check if the error indicates the ENI doesn't exist
-		// This can happen if the ENI was manually deleted outside of our control
-		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
-			log.Info("ENI no longer exists when checking detachment status, considering detachment successful", "error", err.Error())
-			return nil
+	var lastErr error
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		// Check the ENI status
+		eniInterface, err := c.DescribeENI(ctx, eniID)
+		if err != nil {
+			// Check if the error indicates the ENI doesn't exist
+			// This can happen if the ENI was manually deleted outside of our control
+			if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+				log.Info("ENI no longer exists when checking detachment status, considering detachment successful", "error", err.Error())
+				return true, nil
+			}
+
+			// Check if this is a rate limit error
+			if strings.Contains(err.Error(), "RequestLimitExceeded") ||
+				strings.Contains(err.Error(), "Throttling") {
+				log.Info("AWS API rate limit exceeded, retrying", "error", err.Error())
+				lastErr = err
+				return false, nil // Return nil error to continue retrying
+			}
+
+			// For other errors, fail immediately
+			lastErr = err
+			return false, err
 		}
-		return fmt.Errorf("failed to check ENI status: %v", err)
+
+		if eniInterface == nil {
+			log.Info("ENI no longer exists")
+			return true, nil
+		}
+
+		// Check if the ENI is detached
+		if eniInterface.Attachment == nil || eniInterface.Status == EC2v2NetworkInterfaceStatusAvailable {
+			log.Info("ENI is now detached")
+			return true, nil
+		}
+
+		// ENI is still attached, continue waiting
+		log.Info("ENI is still attached, continuing to wait", "status", eniInterface.Status)
+		lastErr = fmt.Errorf("ENI is still attached: %s", eniInterface.Status)
+		return false, nil
+	})
+
+	if err != nil {
+		if err == wait.ErrWaitTimeout {
+			return fmt.Errorf("timed out waiting for ENI detachment: %v", lastErr)
+		}
+		return fmt.Errorf("failed to check ENI detachment status: %v", lastErr)
 	}
 
-	if eniInterface == nil {
-		log.Info("ENI no longer exists")
-		return nil
-	}
-
-	// Use the eniInterface variable directly
-	if eniInterface.Attachment != nil && eniInterface.Status != EC2v2NetworkInterfaceStatusAvailable {
-		log.Info("ENI is still attached", "status", eniInterface.Status)
-		return fmt.Errorf("ENI is still attached after timeout: %s", eniInterface.Status)
-	}
-
-	log.Info("ENI is now detached")
+	log.Info("ENI detachment confirmed")
 	return nil
 }
