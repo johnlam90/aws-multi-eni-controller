@@ -78,6 +78,15 @@ spec:
               mtu:
                 description: Maximum Transmission Unit (MTU) for the ENI (default system default)
                 type: integer
+              enableDPDK:
+                description: Whether to bind the ENI to DPDK
+                type: boolean
+              dpdkDriver:
+                description: DPDK driver to use (e.g., vfio-pci)
+                type: string
+              dpdkResourceName:
+                description: Name of the DPDK resource to use
+                type: string
             required:
             - nodeSelector
             type: object
@@ -116,6 +125,15 @@ spec:
                       type: integer
                     status:
                       description: Status of the attachment
+                      type: string
+                    dpdkBound:
+                      description: Whether the ENI is bound to DPDK
+                      type: boolean
+                    dpdkDriver:
+                      description: DPDK driver used for this ENI
+                      type: string
+                    dpdkPCIAddress:
+                      description: PCI address of the ENI when bound to DPDK
                       type: string
                   type: object
                 type: array

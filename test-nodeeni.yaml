@@ -1,18 +1,19 @@
 apiVersion: networking.k8s.aws/v1alpha1
 kind: NodeENI
 metadata:
-  name: test-nodeeni-new2
+  name: test-nodeeni-dpdk
 spec:
   nodeSelector:
-    kubernetes.io/hostname: ip-10-0-2-94.ec2.internal
-  subnetNames:
-    - multus-test-subnet-1
-  securityGroupNames:
-    - multus-test-sg
+    kubernetes.io/hostname: ip-10-0-2-220.ec2.internal
+  subnetIDs:
+    - subnet-08c2ddc07218f1105
+  securityGroupIDs:
+    - sg-0e4680d35b5053f29
   description: "Test NodeENI with DPDK"
   deviceIndex: 2
   deleteOnTermination: true
   mtu: 9001
   enableDPDK: true
   dpdkDriver: "vfio-pci"
-  dpdkResourceName: "intel.com/intel_sriov_netdevice_2"
+  dpdkResourceName: "intel.com/sriov"
+
