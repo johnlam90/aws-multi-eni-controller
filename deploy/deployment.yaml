@@ -93,22 +93,34 @@ spec:
         app: eni-controller
     spec:
       serviceAccountName: eni-controller
+      # Use the default Kubernetes service
+      # hostAliases:
+      # - ip: "172.20.0.1"
+      #   hostnames:
+      #   - "kubernetes.default.svc"
+      #   - "kubernetes.default"
+      #   - "kubernetes"
       containers:
       - name: manager
-        image:  ghcr.io/johnlam90/aws-multi-eni-controller:v1.3.0
+        image: johnlam90/aws-multi-eni-controller:beta.sandbox-dpdk-sriov.5d1781a-fix2
         env:
         - name: COMPONENT
           value: "eni-controller"
         # Users should set this to their preferred AWS region
         # This is a placeholder that should be customized
         - name: AWS_REGION
-          value: "us-east-1"
+          value: "us-west-2"
         # Maximum number of concurrent ENI cleanup operations
         - name: MAX_CONCURRENT_ENI_CLEANUP
           value: "3"
         # Maximum number of concurrent reconciles
         - name: MAX_CONCURRENT_RECONCILES
           value: "1"
+        # Set KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT explicitly
+        - name: KUBERNETES_SERVICE_HOST
+          value: "172.20.0.1"
+        - name: KUBERNETES_SERVICE_PORT
+          value: "443"
         args:
         - --metrics-addr=:8080
         - --enable-leader-election

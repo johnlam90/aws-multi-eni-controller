@@ -1,0 +1,180 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dpdk-module-installer
+  namespace: eni-controller-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dpdk-module-installer
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dpdk-module-installer
+subjects:
+- kind: ServiceAccount
+  name: dpdk-module-installer
+  namespace: eni-controller-system
+roleRef:
+  kind: ClusterRole
+  name: dpdk-module-installer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dpdk-module-installer
+  namespace: eni-controller-system
+spec:
+  selector:
+    matchLabels:
+      app: dpdk-module-installer
+  template:
+    metadata:
+      labels:
+        app: dpdk-module-installer
+    spec:
+      serviceAccountName: dpdk-module-installer
+      nodeSelector:
+        dpdk.aws.k8s/available: "false"
+      hostPID: true
+      hostNetwork: true
+      initContainers:
+      - name: module-installer
+        image: amazonlinux:2
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          # Install required packages
+          echo "Installing required packages..."
+          yum install -y kernel-devel-$(uname -r) gcc make elfutils-libelf-devel git curl jq
+
+          # Create directory for DPDK modules
+          mkdir -p /opt/dpdk-modules
+          cd /opt/dpdk-modules
+
+          # Check if we need to build the modules
+          if [ ! -f /opt/dpdk-modules/vfio.ko ] || [ ! -f /opt/dpdk-modules/vfio-pci.ko ]; then
+            echo "Building DPDK kernel modules..."
+
+            # Clone the Linux kernel source for the modules
+            git clone --depth 1 https://github.com/torvalds/linux.git
+            cd linux
+
+            # Configure and build the modules
+            make allmodconfig
+            make prepare
+            make modules_prepare
+
+            # Build vfio modules
+            echo "Building vfio module..."
+            make M=drivers/vfio modules
+
+            # Copy the built modules
+            cp drivers/vfio/vfio.ko /opt/dpdk-modules/
+            cp drivers/vfio/pci/vfio-pci.ko /opt/dpdk-modules/
+
+            echo "DPDK modules built successfully"
+          else
+            echo "DPDK modules already built"
+          fi
+
+          # Install the modules
+          echo "Installing DPDK modules..."
+          insmod /opt/dpdk-modules/vfio.ko || echo "Failed to load vfio module"
+          insmod /opt/dpdk-modules/vfio-pci.ko || echo "Failed to load vfio-pci module"
+
+          # Enable unsafe NOIOMMU mode if the parameter exists
+          if [ -f /sys/module/vfio/parameters/enable_unsafe_noiommu_mode ]; then
+            echo "Enabling unsafe NOIOMMU mode..."
+            echo 1 > /sys/module/vfio/parameters/enable_unsafe_noiommu_mode
+          fi
+
+          # Configure for persistence
+          echo "Configuring persistence..."
+          mkdir -p /etc/modules-load.d
+          echo "vfio" > /etc/modules-load.d/dpdk.conf
+          echo "vfio-pci" >> /etc/modules-load.d/dpdk.conf
+
+          # Create modprobe configuration
+          mkdir -p /etc/modprobe.d
+          echo "options vfio enable_unsafe_noiommu_mode=1" > /etc/modprobe.d/dpdk.conf
+
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          mv kubectl /usr/local/bin/
+
+          # Label the node as ready
+          NODE_NAME=$(hostname)
+          echo "Labeling node $NODE_NAME as DPDK ready..."
+          kubectl label node $NODE_NAME dpdk.aws.k8s/ready=true --overwrite
+
+          echo "DPDK module installation completed"
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+        - name: host-modules
+          mountPath: /lib/modules
+        - name: host-opt
+          mountPath: /opt
+      containers:
+      - name: module-monitor
+        image: amazonlinux:2
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          # Monitor module status
+          while true; do
+            if lsmod | grep -q vfio_pci; then
+              echo "DPDK modules are loaded"
+            else
+              echo "DPDK modules are not loaded, reloading..."
+
+              # Try to load the modules
+              if [ -f /opt/dpdk-modules/vfio.ko ]; then
+                insmod /opt/dpdk-modules/vfio.ko || echo "Failed to load vfio module"
+              else
+                modprobe vfio || echo "Failed to load vfio module"
+              fi
+
+              if [ -f /opt/dpdk-modules/vfio-pci.ko ]; then
+                insmod /opt/dpdk-modules/vfio-pci.ko || echo "Failed to load vfio-pci module"
+              else
+                modprobe vfio-pci || echo "Failed to load vfio-pci module"
+              fi
+
+              # Enable unsafe NOIOMMU mode if the parameter exists
+              if [ -f /sys/module/vfio/parameters/enable_unsafe_noiommu_mode ]; then
+                echo 1 > /sys/module/vfio/parameters/enable_unsafe_noiommu_mode
+              fi
+            fi
+
+            # Sleep for 5 minutes
+            sleep 300
+          done
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-modules
+          mountPath: /lib/modules
+        - name: host-opt
+          mountPath: /opt
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+      - name: host-modules
+        hostPath:
+          path: /lib/modules
+      - name: host-opt
+        hostPath:
+          path: /opt

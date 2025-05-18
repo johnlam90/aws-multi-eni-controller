@@ -1,0 +1,222 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dpdk-operator
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dpdk-operator
+  namespace: dpdk-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dpdk-operator
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["daemonsets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["networking.k8s.aws"]
+  resources: ["nodeenis"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dpdk-operator
+subjects:
+- kind: ServiceAccount
+  name: dpdk-operator
+  namespace: dpdk-operator
+roleRef:
+  kind: ClusterRole
+  name: dpdk-operator
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dpdk-config
+  namespace: dpdk-operator
+data:
+  dpdk-setup.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "Setting up DPDK environment..."
+    
+    # Load kernel modules
+    modprobe vfio || echo "Failed to load vfio module"
+    modprobe vfio-pci || echo "Failed to load vfio-pci module"
+    
+    # Enable unsafe NOIOMMU mode
+    if [ -f /sys/module/vfio/parameters/enable_unsafe_noiommu_mode ]; then
+      echo 1 > /sys/module/vfio/parameters/enable_unsafe_noiommu_mode || echo "Failed to enable unsafe NOIOMMU mode"
+    fi
+    
+    # Create module load configuration for persistence across reboots
+    mkdir -p /etc/modules-load.d
+    echo "vfio" > /etc/modules-load.d/dpdk.conf
+    echo "vfio-pci" >> /etc/modules-load.d/dpdk.conf
+    chmod 644 /etc/modules-load.d/dpdk.conf
+    
+    # Create modprobe configuration for persistence across reboots
+    mkdir -p /etc/modprobe.d
+    echo "options vfio enable_unsafe_noiommu_mode=1" > /etc/modprobe.d/dpdk.conf
+    chmod 644 /etc/modprobe.d/dpdk.conf
+    
+    echo "DPDK setup completed successfully."
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dpdk-driver-loader
+  namespace: dpdk-operator
+spec:
+  selector:
+    matchLabels:
+      app: dpdk-driver-loader
+  template:
+    metadata:
+      labels:
+        app: dpdk-driver-loader
+    spec:
+      hostPID: true
+      hostNetwork: true
+      serviceAccountName: dpdk-operator
+      initContainers:
+      - name: driver-loader
+        image: alpine:3.19
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          # Install required packages
+          apk --no-cache add kmod pciutils python3
+          
+          # Copy the setup script to the host
+          cp /scripts/dpdk-setup.sh /host/tmp/
+          chmod +x /host/tmp/dpdk-setup.sh
+          
+          # Execute the script in the host's namespace
+          nsenter -t 1 -m -u -i -n -p -- /tmp/dpdk-setup.sh
+          
+          # Check if the modules are loaded
+          nsenter -t 1 -m -u -i -n -p -- lsmod | grep vfio
+          
+          # Create a node label to indicate DPDK is ready
+          NODE_NAME=$(cat /host/etc/hostname)
+          kubectl label node $NODE_NAME dpdk.aws.k8s/ready=true --overwrite
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+        - name: scripts
+          mountPath: /scripts
+      containers:
+      - name: dpdk-monitor
+        image: alpine:3.19
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          # Install required packages
+          apk --no-cache add kmod pciutils python3 curl
+          
+          # Monitor DPDK status
+          while true; do
+            # Check if vfio-pci is loaded
+            if nsenter -t 1 -m -u -i -n -p -- lsmod | grep -q vfio_pci; then
+              echo "DPDK modules are loaded"
+            else
+              echo "DPDK modules are not loaded, reloading..."
+              nsenter -t 1 -m -u -i -n -p -- /tmp/dpdk-setup.sh
+            fi
+            sleep 300
+          done
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+      - name: scripts
+        configMap:
+          name: dpdk-config
+          defaultMode: 0755
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: sriov-device-plugin
+  namespace: dpdk-operator
+spec:
+  selector:
+    matchLabels:
+      app: sriov-device-plugin
+  template:
+    metadata:
+      labels:
+        app: sriov-device-plugin
+    spec:
+      nodeSelector:
+        dpdk.aws.k8s/ready: "true"
+      hostNetwork: true
+      containers:
+      - name: sriov-device-plugin
+        image: nfvpe/sriov-device-plugin:latest
+        args:
+        - --log-level=debug
+        - --resource-prefix=intel.com
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: devicesock
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: sysfs
+          mountPath: /sys
+        - name: config
+          mountPath: /etc/pcidp
+      volumes:
+      - name: devicesock
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+      - name: sysfs
+        hostPath:
+          path: /sys
+      - name: config
+        hostPath:
+          path: /etc/pcidp
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sriov-device-plugin-config
+  namespace: dpdk-operator
+data:
+  config.json: |
+    {
+      "resourceList": [
+        {
+          "resourceName": "intel.com/intel_sriov_netdevice_2",
+          "selectors": {
+            "vendors": ["8086"],
+            "devices": ["1521"],
+            "drivers": ["vfio-pci"]
+          }
+        }
+      ]
+    }

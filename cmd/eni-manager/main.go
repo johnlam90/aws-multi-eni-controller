@@ -31,6 +31,8 @@ import (
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
 	vnetlink "github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -527,6 +529,77 @@ func processDPDKBindingForNodeENI(nodeENI networkingv1alpha1.NodeENI, nodeName s
 	}
 }
 
+// updateAttachmentDPDKStatus updates the DPDK status of an ENI attachment in the NodeENI resource
+func updateAttachmentDPDKStatus(eniID string, nodeENIName string, dpdkDriver string, dpdkBound bool) error {
+	// Create a Kubernetes client
+	k8sConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("failed to create in-cluster config: %v", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create Kubernetes client: %v", err)
+	}
+
+	// Get the NodeENI resource
+	nodeENIRaw, err := clientset.CoreV1().RESTClient().
+		Get().
+		AbsPath(fmt.Sprintf("/apis/networking.k8s.aws/v1alpha1/nodeenis/%s", nodeENIName)).
+		Do(context.Background()).
+		Raw()
+	if err != nil {
+		return fmt.Errorf("failed to get NodeENI %s: %v", nodeENIName, err)
+	}
+
+	// Parse the NodeENI resource
+	var nodeENI networkingv1alpha1.NodeENI
+	if err := json.Unmarshal(nodeENIRaw, &nodeENI); err != nil {
+		return fmt.Errorf("failed to parse NodeENI %s: %v", nodeENIName, err)
+	}
+
+	// Find the attachment in the NodeENI status
+	attachmentFound := false
+	for i, att := range nodeENI.Status.Attachments {
+		if att.ENIID == eniID {
+			// Update the attachment DPDK status
+			nodeENI.Status.Attachments[i].DPDKBound = dpdkBound
+			nodeENI.Status.Attachments[i].DPDKDriver = dpdkDriver
+			nodeENI.Status.Attachments[i].LastUpdated = metav1.Now()
+			attachmentFound = true
+			break
+		}
+	}
+
+	if !attachmentFound {
+		return fmt.Errorf("attachment for ENI %s not found in NodeENI %s", eniID, nodeENIName)
+	}
+
+	// Update the NodeENI status
+	statusPatch := struct {
+		Status networkingv1alpha1.NodeENIStatus `json:"status"`
+	}{
+		Status: nodeENI.Status,
+	}
+
+	statusPatchBytes, err := json.Marshal(statusPatch)
+	if err != nil {
+		return fmt.Errorf("failed to marshal status patch: %v", err)
+	}
+
+	_, err = clientset.CoreV1().RESTClient().
+		Patch(types.MergePatchType).
+		AbsPath(fmt.Sprintf("/apis/networking.k8s.aws/v1alpha1/nodeenis/%s/status", nodeENIName)).
+		Body(statusPatchBytes).
+		Do(context.Background()).
+		Raw()
+	if err != nil {
+		return fmt.Errorf("failed to update NodeENI status: %v", err)
+	}
+
+	return nil
+}
+
 // processDPDKBindingForAttachment processes DPDK binding for a single NodeENI attachment
 func processDPDKBindingForAttachment(attachment networkingv1alpha1.ENIAttachment, nodeENI networkingv1alpha1.NodeENI,
 	nodeName string, cfg *config.ENIManagerConfig) {
@@ -542,8 +615,8 @@ func processDPDKBindingForAttachment(attachment networkingv1alpha1.ENIAttachment
 		return
 	}
 
-	// Store the NodeENI name for status updates
-	nodeENIName := nodeENI.Name
+	// NodeENI name for reference
+	_ = nodeENI.Name
 
 	// This attachment is for our node
 	log.Printf("Processing DPDK binding for NodeENI attachment: %s, ENI: %s", nodeName, attachment.ENIID)
@@ -579,11 +652,33 @@ func processDPDKBindingForAttachment(attachment networkingv1alpha1.ENIAttachment
 		return
 	}
 
+	// Update the DPDKBoundInterfaces map with NodeENI name and ENI ID
+	// First, get the PCI address for this interface
+	pciAddress, err := getPCIAddressForInterface(ifaceName)
+	if err != nil {
+		log.Printf("Error getting PCI address for interface %s: %v", ifaceName, err)
+		return
+	}
+
+	// Update the entry using the PCI address as the key
+	if boundInterface, exists := cfg.DPDKBoundInterfaces[pciAddress]; exists {
+		boundInterface.NodeENIName = nodeENI.Name
+		boundInterface.ENIID = attachment.ENIID
+		cfg.DPDKBoundInterfaces[pciAddress] = boundInterface
+		log.Printf("Updated DPDKBoundInterfaces map for interface %s (PCI: %s) with NodeENI %s and ENI ID %s",
+			ifaceName, pciAddress, nodeENI.Name, attachment.ENIID)
+	}
+
 	log.Printf("Successfully bound interface %s to DPDK driver %s", ifaceName, dpdkDriver)
 
 	// Update the attachment status to mark it as DPDK-bound
 	// This will be used during cleanup to properly unbind the interface
-	updateAttachmentDPDKStatus(attachment, nodeENIName, true)
+	if err := updateAttachmentDPDKStatus(attachment.ENIID, nodeENI.Name, dpdkDriver, true); err != nil {
+		log.Printf("Warning: Failed to update attachment DPDK status: %v", err)
+		// Continue anyway, the interface is bound to DPDK
+	} else {
+		log.Printf("Successfully updated attachment DPDK status for ENI %s", attachment.ENIID)
+	}
 
 	// Store the resource name for this interface if specified in the NodeENI
 	if nodeENI.Spec.DPDKResourceName != "" {
@@ -620,14 +715,6 @@ type SRIOVDPConfig struct {
 	ResourceList []SRIOVDeviceConfig `json:"resourceList"`
 }
 
-// DPDKBoundInterface represents an interface that has been bound to a DPDK driver
-type DPDKBoundInterface struct {
-	PCIAddress  string
-	Driver      string
-	NodeENIName string // Name of the NodeENI resource that owns this interface
-	ENIID       string // ID of the ENI
-}
-
 // bindInterfaceToDPDK binds a network interface to a DPDK driver
 func bindInterfaceToDPDK(link vnetlink.Link, driver string, cfg *config.ENIManagerConfig) error {
 	ifaceName := link.Attrs().Name
@@ -662,20 +749,23 @@ func bindInterfaceToDPDK(link vnetlink.Link, driver string, cfg *config.ENIManag
 			Driver      string
 			NodeENIName string
 			ENIID       string
+			IfaceName   string
 		})
 	}
 
-	// Store the interface information
-	cfg.DPDKBoundInterfaces[ifaceName] = struct {
+	// Store the interface information using PCI address as the key
+	cfg.DPDKBoundInterfaces[pciAddress] = struct {
 		PCIAddress  string
 		Driver      string
 		NodeENIName string
 		ENIID       string
+		IfaceName   string
 	}{
 		PCIAddress:  pciAddress,
 		Driver:      driver,
-		NodeENIName: "", // Will be set when we know the NodeENI name
-		ENIID:       "", // Will be set when we know the ENI ID
+		NodeENIName: "", // Will be set by the caller
+		ENIID:       "", // Will be set by the caller
+		IfaceName:   ifaceName,
 	}
 
 	// Update the SRIOV device plugin configuration
@@ -691,23 +781,71 @@ func bindInterfaceToDPDK(link vnetlink.Link, driver string, cfg *config.ENIManag
 func unbindInterfaceFromDPDK(ifaceName string, cfg *config.ENIManagerConfig) error {
 	log.Printf("Unbinding interface %s from DPDK driver", ifaceName)
 
-	// Check if we have information about this interface
-	boundInterface, exists := cfg.DPDKBoundInterfaces[ifaceName]
-	if !exists {
-		// Try to find the PCI address by interface name pattern
-		// This is a fallback for cases where the interface was bound before we started tracking it
-		pciAddress, err := findPCIAddressByInterfacePattern(ifaceName)
+	// First, try to find the PCI address for this interface
+	pciAddress := ""
+
+	// Check if ifaceName is already a PCI address
+	pciRegex := regexp.MustCompile(`^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$`)
+	if pciRegex.MatchString(ifaceName) {
+		pciAddress = ifaceName
+		log.Printf("Interface name %s is already a PCI address", ifaceName)
+	} else {
+		// Try to get the PCI address for the interface
+		var err error
+		pciAddress, err = getPCIAddressForInterface(ifaceName)
 		if err != nil {
-			return fmt.Errorf("failed to find PCI address for interface %s: %v", ifaceName, err)
-		}
+			log.Printf("Could not get PCI address for interface %s: %v", ifaceName, err)
 
-		if pciAddress == "" {
-			return fmt.Errorf("no PCI address found for interface %s", ifaceName)
-		}
+			// Try to find the interface by ENI ID in the map
+			eniID := ""
+			// Check if ifaceName contains an ENI ID (eni-xxxxxxxxx)
+			eniIDRegex := regexp.MustCompile(`eni-[0-9a-f]+`)
+			matches := eniIDRegex.FindStringSubmatch(ifaceName)
+			if len(matches) > 0 {
+				eniID = matches[0]
+				log.Printf("Extracted ENI ID %s from interface name %s", eniID, ifaceName)
 
-		boundInterface = DPDKBoundInterface{
-			PCIAddress: pciAddress,
-			Driver:     "vfio-pci", // Assume vfio-pci as the default DPDK driver
+				// Look for this ENI ID in our bound interfaces map
+				for addr, info := range cfg.DPDKBoundInterfaces {
+					if info.ENIID == eniID {
+						pciAddress = addr
+						log.Printf("Found PCI address %s for ENI ID %s", pciAddress, eniID)
+						break
+					}
+				}
+			}
+
+			// If we still don't have the PCI address, try to find it by interface name pattern
+			if pciAddress == "" {
+				// This is a fallback for cases where the interface was bound before we started tracking it
+				pciAddress, err = findPCIAddressByInterfacePattern(ifaceName)
+				if err != nil {
+					return fmt.Errorf("failed to find PCI address for interface %s: %v", ifaceName, err)
+				}
+
+				if pciAddress == "" {
+					return fmt.Errorf("no PCI address found for interface %s", ifaceName)
+				}
+			}
+		}
+	}
+
+	// Now check if we have information about this PCI address
+	boundInterface, exists := cfg.DPDKBoundInterfaces[pciAddress]
+	if !exists {
+		// If we don't have information about this PCI address, create a default entry
+		boundInterface = struct {
+			PCIAddress  string
+			Driver      string
+			NodeENIName string
+			ENIID       string
+			IfaceName   string
+		}{
+			PCIAddress:  pciAddress,
+			Driver:      "vfio-pci", // Assume vfio-pci as the default DPDK driver
+			NodeENIName: "",
+			ENIID:       "",
+			IfaceName:   ifaceName,
 		}
 	}
 
@@ -736,8 +874,18 @@ func unbindInterfaceFromDPDK(ifaceName string, cfg *config.ENIManagerConfig) err
 	log.Printf("Successfully unbound interface %s (PCI: %s) from DPDK driver and bound to ena driver",
 		ifaceName, boundInterface.PCIAddress)
 
+	// Update the NodeENI status if we have the NodeENI name and ENI ID
+	if boundInterface.NodeENIName != "" && boundInterface.ENIID != "" {
+		if err := updateAttachmentDPDKStatus(boundInterface.ENIID, boundInterface.NodeENIName, "", false); err != nil {
+			log.Printf("Warning: Failed to update NodeENI status for DPDK unbinding: %v", err)
+			// Continue anyway, the interface is unbound from DPDK
+		} else {
+			log.Printf("Successfully updated NodeENI status for DPDK unbinding of ENI %s", boundInterface.ENIID)
+		}
+	}
+
 	// Remove from our tracking map
-	delete(cfg.DPDKBoundInterfaces, ifaceName)
+	delete(cfg.DPDKBoundInterfaces, pciAddress)
 
 	// Update the SRIOV device plugin configuration to remove this device
 	if err := removeSRIOVDevicePluginConfig(ifaceName, boundInterface.PCIAddress, cfg); err != nil {
@@ -1342,9 +1490,8 @@ func processNodeENIAttachment(attachment networkingv1alpha1.ENIAttachment, nodeE
 	if nodeENI.Spec.EnableDPDK {
 		log.Printf("NodeENI %s has DPDK enabled", nodeENI.Name)
 
-		// Update the attachment status to mark it as DPDK-bound
+		// TODO: Update the attachment status to mark it as DPDK-bound
 		// This will be used during cleanup to properly unbind the interface
-		updateAttachmentDPDKStatus(attachment, nodeENI.Name, true)
 	}
 
 	// Get the MTU value
@@ -1543,14 +1690,81 @@ func findEthInterfaces(links []vnetlink.Link, primaryIface, eniID string) string
 			log.Printf("Eth interface %d: %s", i, name)
 		}
 
-		// Use the first eth interface that's not already in use
+		// Try to find the device index from the ENI attachment
+		deviceIndex := findDeviceIndexForENI(eniID)
+		if deviceIndex > 0 {
+			// Look for an interface with the matching device index (e.g., eth2 for device index 2)
+			targetIfaceName := fmt.Sprintf("eth%d", deviceIndex)
+			for _, ifaceName := range ethInterfaces {
+				if ifaceName == targetIfaceName {
+					log.Printf("Selected eth interface %s for ENI %s based on device index %d",
+						ifaceName, eniID, deviceIndex)
+					usedInterfaces[ifaceName] = eniID
+					return ifaceName
+				}
+			}
+			log.Printf("Warning: Could not find interface with name %s for ENI %s with device index %d",
+				targetIfaceName, eniID, deviceIndex)
+		}
+
+		// If we couldn't find a match by device index, use the first available interface
 		ifaceName := ethInterfaces[0]
-		log.Printf("Selected eth interface %s for ENI %s", ifaceName, eniID)
+		log.Printf("Selected eth interface %s for ENI %s (fallback)", ifaceName, eniID)
 		usedInterfaces[ifaceName] = eniID
 		return ifaceName
 	}
 
 	return ""
+}
+
+// findDeviceIndexForENI tries to find the device index for an ENI ID by querying the NodeENI resources
+func findDeviceIndexForENI(eniID string) int {
+	// Create a Kubernetes client
+	k8sConfig, err := rest.InClusterConfig()
+	if err != nil {
+		log.Printf("Failed to create in-cluster config: %v", err)
+		return 0
+	}
+
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
+	if err != nil {
+		log.Printf("Failed to create Kubernetes client: %v", err)
+		return 0
+	}
+
+	// Get all NodeENI resources
+	nodeENIList, err := clientset.CoreV1().RESTClient().
+		Get().
+		AbsPath("/apis/networking.k8s.aws/v1alpha1/nodeenis").
+		Do(context.Background()).
+		Raw()
+	if err != nil {
+		log.Printf("Failed to get NodeENI resources: %v", err)
+		return 0
+	}
+
+	// Parse the NodeENI list
+	var nodeENIs struct {
+		Items []networkingv1alpha1.NodeENI `json:"items"`
+	}
+	if err := json.Unmarshal(nodeENIList, &nodeENIs); err != nil {
+		log.Printf("Failed to parse NodeENI list: %v", err)
+		return 0
+	}
+
+	// Look for the ENI ID in the NodeENI attachments
+	for _, nodeENI := range nodeENIs.Items {
+		for _, attachment := range nodeENI.Status.Attachments {
+			if attachment.ENIID == eniID {
+				log.Printf("Found device index %d for ENI %s in NodeENI %s",
+					attachment.DeviceIndex, eniID, nodeENI.Name)
+				return attachment.DeviceIndex
+			}
+		}
+	}
+
+	log.Printf("Could not find device index for ENI %s in any NodeENI resource", eniID)
+	return 0
 }
 
 // findAnyInterface finds any interface that matches common AWS ENI patterns

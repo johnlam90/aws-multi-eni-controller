@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dpdk-feature-discovery
+  namespace: eni-controller-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dpdk-feature-discovery
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dpdk-feature-discovery
+subjects:
+- kind: ServiceAccount
+  name: dpdk-feature-discovery
+  namespace: eni-controller-system
+roleRef:
+  kind: ClusterRole
+  name: dpdk-feature-discovery
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dpdk-feature-discovery
+  namespace: eni-controller-system
+spec:
+  selector:
+    matchLabels:
+      app: dpdk-feature-discovery
+  template:
+    metadata:
+      labels:
+        app: dpdk-feature-discovery
+    spec:
+      serviceAccountName: dpdk-feature-discovery
+      hostPID: true
+      hostNetwork: true
+      containers:
+      - name: feature-discovery
+        image: amazonlinux:2
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          # Install required packages
+          yum install -y kmod curl jq hostname which
+
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          mv kubectl /usr/local/bin/
+
+          # Function to check if DPDK kernel modules are available
+          check_dpdk_modules() {
+            if find /lib/modules/$(uname -r) -name "vfio*.ko*" | grep -q vfio; then
+              echo "DPDK kernel modules are available"
+              return 0
+            else
+              echo "DPDK kernel modules are not available"
+              return 1
+            fi
+          }
+
+          # Function to check if DPDK kernel modules are loaded
+          check_dpdk_loaded() {
+            if lsmod | grep -q vfio_pci; then
+              echo "DPDK kernel modules are loaded"
+              return 0
+            else
+              echo "DPDK kernel modules are not loaded"
+              return 1
+            fi
+          }
+
+          # Get node name
+          NODE_NAME=$(hostname)
+          echo "Running on node: $NODE_NAME"
+
+          # Main loop
+          while true; do
+            # Check if DPDK modules are available
+            if check_dpdk_modules; then
+              echo "Labeling node $NODE_NAME as DPDK available"
+              kubectl label node $NODE_NAME dpdk.aws.k8s/available=true --overwrite
+            else
+              echo "Labeling node $NODE_NAME as DPDK not available"
+              kubectl label node $NODE_NAME dpdk.aws.k8s/available=false --overwrite
+            fi
+
+            # Check if DPDK modules are loaded
+            if check_dpdk_loaded; then
+              echo "Labeling node $NODE_NAME as DPDK loaded"
+              kubectl label node $NODE_NAME dpdk.aws.k8s/loaded=true --overwrite
+            else
+              echo "Labeling node $NODE_NAME as DPDK not loaded"
+              kubectl label node $NODE_NAME dpdk.aws.k8s/loaded=false --overwrite
+            fi
+
+            # Sleep for 5 minutes
+            sleep 300
+          done
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-modules
+          mountPath: /lib/modules
+      volumes:
+      - name: host-modules
+        hostPath:
+          path: /lib/modules

@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sriov-device-plugin
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: sriov-device-plugin
+  namespace: kube-system
+  labels:
+    app: sriov-device-plugin
+spec:
+  selector:
+    matchLabels:
+      app: sriov-device-plugin
+  template:
+    metadata:
+      labels:
+        app: sriov-device-plugin
+    spec:
+      serviceAccountName: sriov-device-plugin
+      hostNetwork: true
+      nodeSelector:
+        dpdk.aws.k8s/loaded: "true"
+      containers:
+      - name: sriov-device-plugin
+        image: nfvpe/sriov-device-plugin:latest
+        args:
+        - --log-level=10
+        - --resource-prefix=intel.com
+        - --config-file=/etc/pcidp/config.json
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: devicesock
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: sysfs
+          mountPath: /sys
+        - name: config
+          mountPath: /etc/pcidp
+      volumes:
+      - name: devicesock
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+      - name: sysfs
+        hostPath:
+          path: /sys
+      - name: config
+        configMap:
+          name: sriov-device-plugin-config

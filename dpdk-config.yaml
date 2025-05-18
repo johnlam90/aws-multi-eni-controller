@@ -1,0 +1,14 @@
+apiVersion: networking.k8s.aws/v1alpha1
+kind: DPDKConfig
+metadata:
+  name: default-dpdk-config
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: ip-10-0-2-246.ec2.internal
+  driverOptions:
+    enableUnsafeNoIOMMU: true
+    writeCombining: true
+  resourceMapping:
+  - deviceIndex: 2
+    resourceName: intel.com/intel_sriov_netdevice_2
+    driver: vfio-pci

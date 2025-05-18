@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eni-controller
+  namespace: eni-controller-system
+spec:
+  template:
+    spec:
+      hostAliases:
+      - ip: "52.94.236.248"
+        hostnames:
+        - "ec2.us-east-1.amazonaws.com"

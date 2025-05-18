@@ -1,0 +1,170 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dpdk-operator
+  namespace: eni-controller-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dpdk-operator-controller
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "patch"]
+- apiGroups: ["networking.k8s.aws"]
+  resources: ["dpdkconfigs", "nodeenis"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["networking.k8s.aws"]
+  resources: ["dpdkconfigs/status"]
+  verbs: ["update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dpdk-operator-controller
+subjects:
+- kind: ServiceAccount
+  name: dpdk-operator
+  namespace: eni-controller-system
+roleRef:
+  kind: ClusterRole
+  name: dpdk-operator-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpdk-operator
+  namespace: eni-controller-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dpdk-operator
+  template:
+    metadata:
+      labels:
+        app: dpdk-operator
+    spec:
+      serviceAccountName: dpdk-operator
+      containers:
+      - name: operator
+        image: amazonlinux:2
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          # Install required packages
+          yum install -y curl jq hostname which
+
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          mv kubectl /usr/local/bin/
+
+          # Function to process DPDKConfig resources
+          process_dpdk_configs() {
+            echo "Processing DPDKConfig resources..."
+
+            # Get all DPDKConfig resources
+            CONFIGS=$(kubectl get dpdkconfigs -o json 2>/dev/null)
+            if [ $? -ne 0 ]; then
+              echo "No DPDKConfig resources found or CRD not installed yet"
+              return
+            fi
+
+            # Process each config
+            echo "$CONFIGS" | jq -c '.items[]' | while read -r config; do
+              name=$(echo "$config" | jq -r '.metadata.name')
+              echo "Processing DPDKConfig: $name"
+
+              # Get node selector
+              nodeSelector=$(echo "$config" | jq -r '.spec.nodeSelector')
+
+              # Get matching nodes
+              nodeSelectors=""
+              echo "$nodeSelector" | jq -r 'to_entries[] | "\(.key)=\(.value)"' | while read -r selector; do
+                if [ -z "$nodeSelectors" ]; then
+                  nodeSelectors="$selector"
+                else
+                  nodeSelectors="$nodeSelectors,$selector"
+                fi
+              done
+
+              nodes=$(kubectl get nodes -l "$nodeSelectors" -o json | jq -r '.items[].metadata.name')
+
+              # Process each node
+              for node in $nodes; do
+                echo "Processing node: $node"
+
+                # Label node for DPDK
+                kubectl label node "$node" dpdk.aws.k8s/enabled=true --overwrite
+
+                # Check if node is DPDK ready
+                ready=$(kubectl get node "$node" -o json | jq -r '.metadata.labels["dpdk.aws.k8s/ready"] // "false"')
+
+                if [ "$ready" = "true" ]; then
+                  echo "Node $node is DPDK ready"
+
+                  # Get resource mappings
+                  resourceMappings=$(echo "$config" | jq -c '.spec.resourceMapping[]')
+
+                  # Process each resource mapping
+                  echo "$resourceMappings" | while read -r mapping; do
+                    deviceIndex=$(echo "$mapping" | jq -r '.deviceIndex')
+                    resourceName=$(echo "$mapping" | jq -r '.resourceName')
+                    driver=$(echo "$mapping" | jq -r '.driver')
+
+                    echo "Configuring device index $deviceIndex with resource name $resourceName using driver $driver"
+
+                    # Find NodeENI resources that match this node and device index
+                    nodeENIs=$(kubectl get nodeenis -o json | jq -c ".items[] | select(.spec.deviceIndex == $deviceIndex)")
+
+                    # Update each matching NodeENI
+                    echo "$nodeENIs" | while read -r nodeENI; do
+                      nodeENIName=$(echo "$nodeENI" | jq -r '.metadata.name')
+
+                      # Check if this NodeENI applies to our node
+                      nodeENISelector=$(echo "$nodeENI" | jq -r '.spec.nodeSelector')
+                      matches=false
+
+                      for key in $(echo "$nodeENISelector" | jq -r 'keys[]'); do
+                        value=$(echo "$nodeENISelector" | jq -r ".[\"$key\"]")
+                        nodeLabel=$(kubectl get node "$node" -o json | jq -r ".metadata.labels[\"$key\"] // \"\"")
+
+                        if [ "$nodeLabel" = "$value" ]; then
+                          matches=true
+                          break
+                        fi
+                      done
+
+                      if [ "$matches" = "true" ]; then
+                        echo "Updating NodeENI $nodeENIName for DPDK"
+
+                        # Patch the NodeENI to enable DPDK
+                        kubectl patch nodeeni "$nodeENIName" --type=merge -p "{\"spec\":{\"enableDPDK\":true,\"dpdkDriver\":\"$driver\",\"dpdkResourceName\":\"$resourceName\"}}"
+                      fi
+                    done
+                  done
+
+                  # Update DPDKConfig status
+                  nodesReady=$(kubectl get dpdkconfig "$name" -o json | jq -r '.status.nodesReady // []')
+                  if ! echo "$nodesReady" | grep -q "$node"; then
+                    nodesReady=$(echo "$nodesReady" | jq -r '. + ["'"$node"'"]')
+                    kubectl patch dpdkconfig "$name" --type=merge -p "{\"status\":{\"nodesReady\":$nodesReady}}"
+                  fi
+                else
+                  echo "Node $node is not DPDK ready yet"
+                fi
+              done
+
+              # Update DPDKConfig status condition
+              kubectl patch dpdkconfig "$name" --type=merge -p '{"status":{"conditions":[{"type":"Ready","status":"True","lastTransitionTime":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'","reason":"ConfigApplied","message":"DPDK configuration applied to all nodes"}]}}'
+            done
+          }
+
+          # Main loop
+          while true; do
+            process_dpdk_configs
+            sleep 60
+          done
