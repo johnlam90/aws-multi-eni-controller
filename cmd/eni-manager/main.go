@@ -517,6 +517,9 @@ func checkForDPDKUnbinding(nodeName string, cfg *config.ENIManagerConfig, nodeEN
 	// Create a map of all ENI IDs that should be bound to DPDK
 	shouldBeBound := make(map[string]bool)
 
+	// Also track which PCI addresses should be bound to DPDK
+	shouldBeBoundPCI := make(map[string]bool)
+
 	// Populate the map with ENI IDs from NodeENI resources
 	for _, nodeENI := range nodeENIs {
 		// Skip if DPDK is not enabled for this NodeENI
@@ -536,9 +539,19 @@ func checkForDPDKUnbinding(nodeName string, cfg *config.ENIManagerConfig, nodeEN
 		for _, attachment := range nodeENI.Status.Attachments {
 			if attachment.NodeID == nodeName {
 				shouldBeBound[attachment.ENIID] = true
+
+				// Try to find the PCI address for this ENI ID
+				for pciAddr, boundInterface := range cfg.DPDKBoundInterfaces {
+					if boundInterface.ENIID == attachment.ENIID {
+						shouldBeBoundPCI[pciAddr] = true
+						break
+					}
+				}
 			}
 		}
 	}
+
+	log.Printf("DPDK unbinding check - Found %d ENIs that should be bound to DPDK", len(shouldBeBound))
 
 	// Check all bound interfaces
 	for pciAddr, boundInterface := range cfg.DPDKBoundInterfaces {
@@ -549,10 +562,18 @@ func checkForDPDKUnbinding(nodeName string, cfg *config.ENIManagerConfig, nodeEN
 
 		// If this ENI ID is not in the shouldBeBound map, unbind it
 		if !shouldBeBound[boundInterface.ENIID] {
-			log.Printf("ENI %s is bound to DPDK but should not be, unbinding", boundInterface.ENIID)
+			log.Printf("ENI %s (PCI: %s, Interface: %s) is bound to DPDK but should not be, unbinding",
+				boundInterface.ENIID, pciAddr, boundInterface.IfaceName)
+
+			// Use the PCI address directly to unbind
 			if err := unbindInterfaceFromDPDK(pciAddr, cfg); err != nil {
 				log.Printf("Error unbinding interface with PCI address %s from DPDK: %v", pciAddr, err)
+			} else {
+				log.Printf("Successfully unbound interface with PCI address %s from DPDK", pciAddr)
 			}
+		} else {
+			log.Printf("ENI %s (PCI: %s, Interface: %s) should remain bound to DPDK",
+				boundInterface.ENIID, pciAddr, boundInterface.IfaceName)
 		}
 	}
 }
@@ -664,11 +685,9 @@ func processDPDKBindingForAttachment(attachment networkingv1alpha1.ENIAttachment
 		return
 	}
 
-	// NodeENI name for reference
-	_ = nodeENI.Name
-
 	// This attachment is for our node
-	log.Printf("Processing DPDK binding for NodeENI attachment: %s, ENI: %s", nodeName, attachment.ENIID)
+	log.Printf("Processing DPDK binding for NodeENI attachment: %s, ENI: %s, DeviceIndex: %d",
+		nodeName, attachment.ENIID, attachment.DeviceIndex)
 
 	// Determine the DPDK driver to use
 	dpdkDriver := cfg.DefaultDPDKDriver
@@ -676,19 +695,71 @@ func processDPDKBindingForAttachment(attachment networkingv1alpha1.ENIAttachment
 		dpdkDriver = nodeENI.Spec.DPDKDriver
 	}
 
+	// First, try to find the interface using the device index from the NodeENI spec
+	// This is the most reliable way to ensure we're binding the correct interface
+	expectedIfaceName := fmt.Sprintf("eth%d", attachment.DeviceIndex)
+	log.Printf("Expected interface name based on device index: %s", expectedIfaceName)
+
+	// Check if the expected interface exists
+	if _, err := os.Stat(fmt.Sprintf("/sys/class/net/%s", expectedIfaceName)); err == nil {
+		log.Printf("Found interface %s matching device index %d", expectedIfaceName, attachment.DeviceIndex)
+		ifaceName := expectedIfaceName
+
+		// Get the link for this interface
+		link, err := vnetlink.LinkByName(ifaceName)
+		if err != nil {
+			log.Printf("Error getting link for interface %s: %v", ifaceName, err)
+			return
+		}
+
+		// Bind the interface to DPDK
+		if err := bindInterfaceToDPDK(link, dpdkDriver, cfg); err != nil {
+			log.Printf("Error binding interface %s to DPDK: %v", ifaceName, err)
+			return
+		}
+
+		// Update the DPDKBoundInterfaces map with NodeENI name and ENI ID
+		// First, get the PCI address for this interface
+		pciAddress, err := getPCIAddressForInterface(ifaceName)
+		if err != nil {
+			log.Printf("Error getting PCI address for interface %s: %v", ifaceName, err)
+			return
+		}
+
+		// Update the entry using the PCI address as the key
+		if boundInterface, exists := cfg.DPDKBoundInterfaces[pciAddress]; exists {
+			boundInterface.NodeENIName = nodeENI.Name
+			boundInterface.ENIID = attachment.ENIID
+			cfg.DPDKBoundInterfaces[pciAddress] = boundInterface
+			log.Printf("Updated DPDKBoundInterfaces map for interface %s (PCI: %s) with NodeENI %s and ENI ID %s",
+				ifaceName, pciAddress, nodeENI.Name, attachment.ENIID)
+		}
+
+		log.Printf("Successfully bound interface %s to DPDK driver %s", ifaceName, dpdkDriver)
+
+		// Update the attachment status to mark it as DPDK-bound
+		// This will be used during cleanup to properly unbind the interface
+		if err := updateNodeENIDPDKStatus(attachment.ENIID, nodeENI.Name, dpdkDriver, true); err != nil {
+			log.Printf("Warning: Failed to update attachment DPDK status: %v", err)
+			// Continue anyway, the interface is bound to DPDK
+		} else {
+			log.Printf("Successfully updated attachment DPDK status for ENI %s", attachment.ENIID)
+		}
+		return
+	}
+
+	// If the expected interface doesn't exist, fall back to the old method
+	log.Printf("Interface %s does not exist, falling back to ENI ID lookup", expectedIfaceName)
+
 	// Get the interface name for this ENI
 	ifaceName, err := getInterfaceNameForENI(attachment.ENIID)
 	if err != nil {
 		log.Printf("Error getting interface name for ENI %s: %v", attachment.ENIID, err)
-		// Try to use the device index to determine the interface name
-		ifaceName = fmt.Sprintf("eth%d", attachment.DeviceIndex)
-		log.Printf("Using interface name based on device index: %s", ifaceName)
-	}
-
-	if ifaceName == "" {
 		log.Printf("Could not determine interface name for ENI %s, skipping DPDK binding", attachment.ENIID)
 		return
 	}
+
+	log.Printf("Found interface %s for ENI %s using ENI ID lookup", ifaceName, attachment.ENIID)
 
 	// Check if the interface exists
 	if _, err := os.Stat(fmt.Sprintf("/sys/class/net/%s", ifaceName)); os.IsNotExist(err) {
@@ -836,16 +907,22 @@ func bindInterfaceToDPDK(link vnetlink.Link, driver string, cfg *config.ENIManag
 
 // unbindInterfaceFromDPDK unbinds a network interface from a DPDK driver and rebinds it to the original driver
 func unbindInterfaceFromDPDK(ifaceName string, cfg *config.ENIManagerConfig) error {
-	log.Printf("Unbinding interface %s from DPDK driver", ifaceName)
+	// If ifaceName is a PCI address, we're being called from checkForDPDKUnbinding
+	isPCIAddress := false
+	pciRegex := regexp.MustCompile(`^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$`)
+	if pciRegex.MatchString(ifaceName) {
+		isPCIAddress = true
+		log.Printf("Unbinding interface with PCI address %s from DPDK driver", ifaceName)
+	} else {
+		log.Printf("Unbinding interface %s from DPDK driver", ifaceName)
+	}
 
 	// First, try to find the PCI address for this interface
 	pciAddress := ""
 
 	// Check if ifaceName is already a PCI address
-	pciRegex := regexp.MustCompile(`^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$`)
-	if pciRegex.MatchString(ifaceName) {
+	if isPCIAddress {
 		pciAddress = ifaceName
-		log.Printf("Interface name %s is already a PCI address", ifaceName)
 	} else {
 		// Try to get the PCI address for the interface
 		var err error
@@ -890,7 +967,14 @@ func unbindInterfaceFromDPDK(ifaceName string, cfg *config.ENIManagerConfig) err
 	// Now check if we have information about this PCI address
 	boundInterface, exists := cfg.DPDKBoundInterfaces[pciAddress]
 	if !exists {
-		// If we don't have information about this PCI address, create a default entry
+		// If we don't have information about this PCI address, log a warning and return
+		// This is likely a case where the interface was never bound to DPDK
+		if isPCIAddress {
+			log.Printf("Warning: No information found for PCI address %s in DPDKBoundInterfaces map", pciAddress)
+			return nil
+		}
+
+		// If we're trying to unbind by interface name, create a default entry
 		boundInterface = struct {
 			PCIAddress  string
 			Driver      string
@@ -906,30 +990,35 @@ func unbindInterfaceFromDPDK(ifaceName string, cfg *config.ENIManagerConfig) err
 		}
 	}
 
+	// Log detailed information about what we're unbinding
+	log.Printf("Unbinding details - PCI: %s, Interface: %s, ENI ID: %s, NodeENI: %s",
+		pciAddress, boundInterface.IfaceName, boundInterface.ENIID, boundInterface.NodeENIName)
+
 	// Check if the DPDK binding script exists
 	if _, err := os.Stat(cfg.DPDKBindingScript); os.IsNotExist(err) {
 		return fmt.Errorf("DPDK binding script %s does not exist", cfg.DPDKBindingScript)
 	}
 
 	// First unbind from the current driver
-	cmd := exec.Command(cfg.DPDKBindingScript, "-u", boundInterface.PCIAddress)
+	cmd := exec.Command(cfg.DPDKBindingScript, "-u", pciAddress)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("Warning: Failed to unbind interface %s from DPDK driver: %v, output: %s",
-			ifaceName, err, string(output))
+		log.Printf("Warning: Failed to unbind PCI address %s from DPDK driver: %v, output: %s",
+			pciAddress, err, string(output))
 		// Continue anyway, we'll try to bind to the original driver
 	}
 
 	// Now bind to the original driver (ena for AWS instances)
-	cmd = exec.Command(cfg.DPDKBindingScript, "-b", "ena", boundInterface.PCIAddress)
+	cmd = exec.Command(cfg.DPDKBindingScript, "-b", "ena", pciAddress)
 	output, err = cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to bind interface %s to ena driver: %v, output: %s",
-			ifaceName, err, string(output))
+		log.Printf("Warning: Failed to bind PCI address %s to ena driver: %v, output: %s",
+			pciAddress, err, string(output))
+		// Don't return an error here, as we've already unbound from DPDK
+		// The interface might reappear on its own after a while
+	} else {
+		log.Printf("Successfully unbound PCI address %s from DPDK driver and bound to ena driver", pciAddress)
 	}
-
-	log.Printf("Successfully unbound interface %s (PCI: %s) from DPDK driver and bound to ena driver",
-		ifaceName, boundInterface.PCIAddress)
 
 	// Update the NodeENI status if we have the NodeENI name and ENI ID
 	if boundInterface.NodeENIName != "" && boundInterface.ENIID != "" {
@@ -945,10 +1034,14 @@ func unbindInterfaceFromDPDK(ifaceName string, cfg *config.ENIManagerConfig) err
 	delete(cfg.DPDKBoundInterfaces, pciAddress)
 
 	// Update the SRIOV device plugin configuration to remove this device
-	if err := removeSRIOVDevicePluginConfig(ifaceName, boundInterface.PCIAddress, cfg); err != nil {
+	if err := removeSRIOVDevicePluginConfig(boundInterface.IfaceName, pciAddress, cfg); err != nil {
 		log.Printf("Warning: Failed to update SRIOV device plugin config: %v", err)
 		// Continue anyway, the interface is unbound from DPDK
 	}
+
+	// Wait a moment for the interface to reappear
+	log.Printf("Waiting for interface to reappear after unbinding from DPDK")
+	time.Sleep(2 * time.Second)
 
 	return nil
 }
@@ -1002,16 +1095,63 @@ func findPCIAddressByInterfacePattern(ifaceName string) (string, error) {
 		return "", fmt.Errorf("unsupported interface name format: %s", ifaceName)
 	}
 
-	// For AWS instances, the PCI addresses typically follow a pattern
-	// The primary interface is usually at 0000:00:03.0, and secondary interfaces
-	// are at 0000:00:04.0, 0000:00:05.0, etc.
-	// We'll try a few common patterns based on the device index
+	log.Printf("Searching for PCI address for interface %s with device index %d", ifaceName, deviceIndex)
 
+	// For AWS instances, the PCI addresses typically follow a pattern
+	// The primary interface (eth0) is usually at 0000:00:05.0, and secondary interfaces
+	// follow a pattern based on the device index
+
+	// First, try to find the PCI address by checking all PCI devices
+	// This is more reliable than using patterns
+	pciDevices, err := listPCIDevices()
+	if err != nil {
+		log.Printf("Error listing PCI devices: %v", err)
+		// Continue with pattern-based approach as fallback
+	} else {
+		// Try to find a device that matches the expected device index
+		for _, pciAddr := range pciDevices {
+			// Check if this device has a network interface
+			netDir := fmt.Sprintf("/sys/bus/pci/devices/%s/net", pciAddr)
+			if _, err := os.Stat(netDir); err == nil {
+				// This device has a network interface, check if it matches our interface name
+				files, err := os.ReadDir(netDir)
+				if err == nil && len(files) > 0 {
+					for _, file := range files {
+						if file.Name() == ifaceName {
+							log.Printf("Found PCI address %s for interface %s by direct lookup", pciAddr, ifaceName)
+							return pciAddr, nil
+						}
+					}
+				}
+			}
+		}
+
+		// If we couldn't find a direct match, try to infer based on device index
+		// In AWS, eth0 is typically at 0000:00:05.0
+		// For secondary interfaces, we need to check the pattern
+		if deviceIndex == 0 {
+			// For eth0, check if 0000:00:05.0 exists
+			if contains(pciDevices, "0000:00:05.0") {
+				log.Printf("Using PCI address 0000:00:05.0 for eth0 (standard AWS pattern)")
+				return "0000:00:05.0", nil
+			}
+		} else {
+			// For secondary interfaces, try common patterns
+			// In AWS, secondary interfaces often follow a pattern like 0000:00:06.0, 0000:00:07.0, etc.
+			candidateAddr := fmt.Sprintf("0000:00:%02d.0", deviceIndex+5)
+			if contains(pciDevices, candidateAddr) {
+				log.Printf("Using PCI address %s for %s (standard AWS pattern)", candidateAddr, ifaceName)
+				return candidateAddr, nil
+			}
+		}
+	}
+
+	// Fallback to common patterns if direct lookup failed
 	// Common PCI address patterns for AWS instances
 	pciPatterns := []string{
-		fmt.Sprintf("0000:00:%02d.0", deviceIndex+3), // Most common pattern
-		fmt.Sprintf("0000:00:%02d.0", deviceIndex+4), // Alternative pattern
-		fmt.Sprintf("0000:00:%02d.0", deviceIndex+5), // Another alternative
+		fmt.Sprintf("0000:00:%02d.0", deviceIndex+5), // Most common pattern for AWS (eth0 -> 00:05.0, eth1 -> 00:06.0)
+		fmt.Sprintf("0000:00:%02d.0", deviceIndex+3), // Alternative pattern
+		fmt.Sprintf("0000:00:%02d.0", deviceIndex+4), // Another alternative
 	}
 
 	// Try each pattern
@@ -1039,12 +1179,12 @@ func findPCIAddressByInterfacePattern(ifaceName string) (string, error) {
 
 	// If we couldn't find a matching device, try a more exhaustive search
 	// List all PCI devices and check if any are bound to DPDK drivers
-	pciDevices, err := filepath.Glob("/sys/bus/pci/devices/*")
+	allPciDevices, err := filepath.Glob("/sys/bus/pci/devices/*")
 	if err != nil {
 		return "", fmt.Errorf("failed to list PCI devices: %v", err)
 	}
 
-	for _, devPath := range pciDevices {
+	for _, devPath := range allPciDevices {
 		// Extract the PCI address from the path
 		pciAddress := filepath.Base(devPath)
 
@@ -1977,4 +2117,31 @@ func getDefaultMTUFromNodeENI(cfg *config.ENIManagerConfig) int {
 
 	// If no interface MTUs are configured, return 0 (use system default)
 	return 0
+}
+
+// listPCIDevices returns a list of all PCI device addresses
+func listPCIDevices() ([]string, error) {
+	// List all PCI devices
+	pciPaths, err := filepath.Glob("/sys/bus/pci/devices/*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list PCI devices: %v", err)
+	}
+
+	// Extract the PCI addresses from the paths
+	var pciAddresses []string
+	for _, path := range pciPaths {
+		pciAddresses = append(pciAddresses, filepath.Base(path))
+	}
+
+	return pciAddresses, nil
+}
+
+// contains checks if a string slice contains a specific string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
