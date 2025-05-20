@@ -102,7 +102,7 @@ spec:
       #   - "kubernetes"
       containers:
       - name: manager
-        image: johnlam90/aws-multi-eni-controller:beta.sandbox-dpdk-sriov.fix-dpdk-unbinding
+        image: johnlam90/aws-multi-eni-controller:beta.sandbox-dpdk-sriov.fix-interface-mapping-flexible
         env:
         - name: COMPONENT
           value: "eni-controller"
@@ -116,11 +116,11 @@ spec:
         # Maximum number of concurrent reconciles
         - name: MAX_CONCURRENT_RECONCILES
           value: "1"
-        # Set KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT explicitly
-        - name: KUBERNETES_SERVICE_HOST
-          value: "172.20.0.1"
-        - name: KUBERNETES_SERVICE_PORT
-          value: "443"
+        # Let Kubernetes handle service discovery automatically
+        # - name: KUBERNETES_SERVICE_HOST
+        #   value: "172.20.0.1"
+        # - name: KUBERNETES_SERVICE_PORT
+        #   value: "443"
         args:
         - --metrics-addr=:8080
         - --enable-leader-election

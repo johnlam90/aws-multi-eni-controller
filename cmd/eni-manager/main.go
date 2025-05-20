@@ -1801,6 +1801,14 @@ func extractENIIDSuffix(eniID string) string {
 func checkExistingMapping(eniID string) string {
 	for ifaceName, mappedENIID := range usedInterfaces {
 		if mappedENIID == eniID {
+			// Found a mapping, but let's verify if the interface still exists
+			if _, err := os.Stat(fmt.Sprintf("/sys/class/net/%s", ifaceName)); os.IsNotExist(err) {
+				log.Printf("Previously mapped interface %s for ENI %s no longer exists, removing mapping",
+					ifaceName, eniID)
+				delete(usedInterfaces, ifaceName)
+				return ""
+			}
+
 			log.Printf("Using previously mapped interface %s for ENI %s", ifaceName, eniID)
 			return ifaceName
 		}
@@ -1855,13 +1863,14 @@ func findInterfaceByPattern(eniID string) (string, error) {
 		primaryIface = "eth0"
 	}
 
-	// First try to find eth interfaces
+	// Try to find interfaces that match the eth pattern
 	ifaceName := findEthInterfaces(links, primaryIface, eniID)
 	if ifaceName != "" {
 		return ifaceName, nil
 	}
 
 	// If we couldn't find a suitable eth interface, try any interface
+	log.Printf("No eth interfaces found for ENI %s, trying any interface", eniID)
 	return findAnyInterface(links, primaryIface, eniID)
 }
 
@@ -1871,6 +1880,18 @@ func findEthInterfaces(links []vnetlink.Link, primaryIface, eniID string) string
 	deviceIndexPattern := regexp.MustCompile(`^eth[1-9][0-9]*$`)
 	var ethInterfaces []string
 
+	// First, try to find the device index from the ENI attachment
+	deviceIndex := findDeviceIndexForENI(eniID)
+	if deviceIndex <= 0 {
+		log.Printf("Error: Could not determine device index for ENI %s, cannot proceed with interface mapping", eniID)
+		return ""
+	}
+
+	log.Printf("Found device index %d for ENI %s", deviceIndex, eniID)
+
+	// Map to store interfaces by their device index
+	interfacesByIndex := make(map[int]string)
+
 	for _, link := range links {
 		ifaceName := link.Attrs().Name
 		if ifaceName != "lo" && ifaceName != primaryIface && deviceIndexPattern.MatchString(ifaceName) {
@@ -1878,44 +1899,58 @@ func findEthInterfaces(links []vnetlink.Link, primaryIface, eniID string) string
 			if _, ok := usedInterfaces[ifaceName]; !ok {
 				ethInterfaces = append(ethInterfaces, ifaceName)
 				log.Printf("Found potential eth interface: %s", ifaceName)
+
+				// Extract the device index from the interface name
+				var index int
+				if _, err := fmt.Sscanf(ifaceName, "eth%d", &index); err == nil {
+					interfacesByIndex[index] = ifaceName
+					log.Printf("Mapped interface %s to device index %d", ifaceName, index)
+				}
 			}
 		}
 	}
 
-	// If we found eth interfaces, use them in order
+	// If we found eth interfaces, look for the one matching our device index
 	if len(ethInterfaces) > 0 {
-		// Sort the interfaces by name to ensure consistent ordering
-		sort.Strings(ethInterfaces)
-
 		// Log all found eth interfaces
 		for i, name := range ethInterfaces {
 			log.Printf("Eth interface %d: %s", i, name)
 		}
 
-		// Try to find the device index from the ENI attachment
-		deviceIndex := findDeviceIndexForENI(eniID)
-		if deviceIndex > 0 {
-			// Look for an interface with the matching device index (e.g., eth2 for device index 2)
-			targetIfaceName := fmt.Sprintf("eth%d", deviceIndex)
-			for _, ifaceName := range ethInterfaces {
-				if ifaceName == targetIfaceName {
-					log.Printf("Selected eth interface %s for ENI %s based on device index %d",
-						ifaceName, eniID, deviceIndex)
-					usedInterfaces[ifaceName] = eniID
-					return ifaceName
-				}
-			}
-			log.Printf("Warning: Could not find interface with name %s for ENI %s with device index %d",
-				targetIfaceName, eniID, deviceIndex)
+		// First, check if we have an interface with the exact device index
+		if ifaceName, ok := interfacesByIndex[deviceIndex]; ok {
+			log.Printf("Selected eth interface %s for ENI %s based on exact device index %d",
+				ifaceName, eniID, deviceIndex)
+			usedInterfaces[ifaceName] = eniID
+			return ifaceName
 		}
 
-		// If we couldn't find a match by device index, use the first available interface
+		// If not, look for an interface with the matching name pattern
+		targetIfaceName := fmt.Sprintf("eth%d", deviceIndex)
+		for _, ifaceName := range ethInterfaces {
+			if ifaceName == targetIfaceName {
+				log.Printf("Selected eth interface %s for ENI %s based on device index %d",
+					ifaceName, eniID, deviceIndex)
+				usedInterfaces[ifaceName] = eniID
+				return ifaceName
+			}
+		}
+
+		// If we couldn't find a match by device index, use any available interface
+		// This is necessary because AWS doesn't always create interfaces with names that match the device index
+		log.Printf("WARNING: Could not find interface with name %s for ENI %s with device index %d. Available interfaces: %v",
+			targetIfaceName, eniID, deviceIndex, ethInterfaces)
+		log.Printf("Using first available interface to ensure DPDK functionality")
+
+		// Sort the interfaces by name to ensure consistent ordering
+		sort.Strings(ethInterfaces)
 		ifaceName := ethInterfaces[0]
-		log.Printf("Selected eth interface %s for ENI %s (fallback)", ifaceName, eniID)
+		log.Printf("Selected eth interface %s for ENI %s (fallback for DPDK)", ifaceName, eniID)
 		usedInterfaces[ifaceName] = eniID
 		return ifaceName
 	}
 
+	log.Printf("ERROR: No suitable eth interfaces found for ENI %s with device index %d", eniID, deviceIndex)
 	return ""
 }
 
@@ -1971,6 +2006,8 @@ func findDeviceIndexForENI(eniID string) int {
 
 // findAnyInterface finds any interface that matches common AWS ENI patterns
 func findAnyInterface(links []vnetlink.Link, primaryIface, eniID string) (string, error) {
+	log.Printf("Falling back to any interface for ENI %s for DPDK functionality", eniID)
+
 	for _, link := range links {
 		ifaceName := link.Attrs().Name
 		if ifaceName != "lo" && ifaceName != primaryIface {

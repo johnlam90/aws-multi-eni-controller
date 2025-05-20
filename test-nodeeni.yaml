@@ -4,13 +4,13 @@ metadata:
   name: test-nodeeni-dpdk
 spec:
   nodeSelector:
-    kubernetes.io/hostname: ip-10-0-2-195.ec2.internal
+    kubernetes.io/hostname: ip-10-0-2-239.ec2.internal
   subnetIDs:
     - subnet-08c2ddc07218f1105
   securityGroupIDs:
     - sg-0e4680d35b5053f29
   description: "Test NodeENI with DPDK"
-  deviceIndex: 3
+  deviceIndex: 2
   deleteOnTermination: true
   mtu: 9001
   enableDPDK: true
