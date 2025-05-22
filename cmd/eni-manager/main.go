@@ -158,8 +158,16 @@ func setupNodeENIUpdater(ctx context.Context, nodeName string, cfg *config.ENIMa
 
 	// Start a goroutine to periodically update values from NodeENI resources
 	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
+		// Initial ticker with a short interval for faster startup
+		initialTicker := time.NewTicker(5 * time.Second)
+		defer initialTicker.Stop()
+
+		// Regular ticker for ongoing updates
+		regularTicker := time.NewTicker(1 * time.Minute)
+		defer regularTicker.Stop()
+
+		// Flag to track if we've done the initial update
+		initialUpdateDone := false
 
 		// Get all NodeENI resources
 		nodeENIs, err := getNodeENIResources(ctx, clientset)
@@ -171,15 +179,44 @@ func setupNodeENIUpdater(ctx context.Context, nodeName string, cfg *config.ENIMa
 
 			// Do an initial update for DPDK binding
 			if cfg.EnableDPDK {
+				log.Printf("Performing initial DPDK binding check after startup (important for node reboots)")
 				updateDPDKBindingFromNodeENI(nodeName, cfg, nodeENIs)
 			}
+
+			// Mark initial update as done
+			initialUpdateDone = true
 		}
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-initialTicker.C:
+				// Only process this if we haven't done the initial update yet
+				if !initialUpdateDone {
+					// Get all NodeENI resources
+					nodeENIs, err := getNodeENIResources(ctx, clientset)
+					if err != nil {
+						log.Printf("Error getting NodeENI resources during initial update: %v", err)
+						continue
+					}
+
+					// Update MTU values from NodeENI resources
+					updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
+
+					// Update DPDK binding from NodeENI resources
+					if cfg.EnableDPDK {
+						log.Printf("Performing initial DPDK binding check after startup (important for node reboots)")
+						updateDPDKBindingFromNodeENI(nodeName, cfg, nodeENIs)
+					}
+
+					// Mark initial update as done
+					initialUpdateDone = true
+
+					// Stop the initial ticker once we've done the initial update
+					initialTicker.Stop()
+				}
+			case <-regularTicker.C:
 				// Get all NodeENI resources
 				nodeENIs, err := getNodeENIResources(ctx, clientset)
 				if err != nil {
@@ -714,10 +751,29 @@ func processDPDKBindingForAttachment(attachment networkingv1alpha1.ENIAttachment
 		return
 	}
 
-	// Skip if this attachment is already bound to DPDK
+	// Check if this attachment is already marked as DPDK-bound in the NodeENI status
 	if attachment.DPDKBound {
-		log.Printf("ENI %s is already bound to DPDK driver %s", attachment.ENIID, attachment.DPDKDriver)
-		return
+		// Even if it's marked as bound, we need to verify the actual binding
+		// This handles the case where the node was rebooted and the binding was lost
+		log.Printf("ENI %s is marked as bound to DPDK driver %s, verifying actual binding", attachment.ENIID, attachment.DPDKDriver)
+
+		// If we have a PCI address, verify the binding directly
+		if attachment.DPDKPCIAddress != "" {
+			isActuallyBound, err := isPCIDeviceBoundToDPDK(attachment.DPDKPCIAddress, attachment.DPDKDriver, cfg)
+			if err != nil {
+				log.Printf("Error checking DPDK binding for PCI address %s: %v", attachment.DPDKPCIAddress, err)
+				// Continue with binding attempt
+			} else if !isActuallyBound {
+				log.Printf("PCI device %s is marked as DPDK-bound but is actually using a different driver, rebinding", attachment.DPDKPCIAddress)
+				// Continue with binding attempt
+			} else {
+				log.Printf("PCI device %s is correctly bound to DPDK driver %s", attachment.DPDKPCIAddress, attachment.DPDKDriver)
+				return // It's actually bound, so we can skip
+			}
+		} else {
+			// No PCI address, we'll need to find the interface and check
+			log.Printf("No PCI address in NodeENI status for ENI %s, will attempt to find and verify", attachment.ENIID)
+		}
 	}
 
 	// This attachment is for our node
@@ -941,6 +997,45 @@ type SRIOVDeviceConfig struct {
 // SRIOVDPConfig represents the configuration for the SRIOV device plugin
 type SRIOVDPConfig struct {
 	ResourceList []SRIOVDeviceConfig `json:"resourceList"`
+}
+
+// isPCIDeviceBoundToDPDK checks if a PCI device is bound to the specified DPDK driver
+func isPCIDeviceBoundToDPDK(pciAddress string, driver string, cfg *config.ENIManagerConfig) (bool, error) {
+	log.Printf("Checking if PCI device %s is bound to DPDK driver %s", pciAddress, driver)
+
+	// Check if the DPDK binding script exists
+	if _, err := os.Stat(cfg.DPDKBindingScript); os.IsNotExist(err) {
+		return false, fmt.Errorf("DPDK binding script %s does not exist", cfg.DPDKBindingScript)
+	}
+
+	// Execute the DPDK binding script with --status flag to check current binding
+	cmd := exec.Command(cfg.DPDKBindingScript, "--status")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("failed to check DPDK binding status: %v, output: %s", err, string(output))
+	}
+
+	// Parse the output to check if the device is bound to the specified driver
+	outputStr := string(output)
+
+	// Look for the PCI address in the output
+	// The output format is like:
+	// Network devices using DPDK-compatible driver
+	// ============================================
+	// 0000:00:08.0 'Elastic Network Adapter (ENA) ec20' drv=vfio-pci unused=ena
+	//
+	// Network devices using kernel driver
+	// ===================================
+	// 0000:00:05.0 'Elastic Network Adapter (ENA) ec20' if=eth0 drv=ena unused=vfio-pci *Active*
+
+	// Check if the PCI address is listed under the DPDK-compatible driver section
+	dpdkSectionRegex := regexp.MustCompile(`(?s)Network devices using DPDK-compatible driver.*?===`)
+	dpdkSection := dpdkSectionRegex.FindString(outputStr)
+
+	// Check if the PCI address is in the DPDK section and using the specified driver
+	pciRegex := regexp.MustCompile(fmt.Sprintf(`%s.*?drv=%s`, regexp.QuoteMeta(pciAddress), regexp.QuoteMeta(driver)))
+
+	return pciRegex.MatchString(dpdkSection), nil
 }
 
 // bindPCIDeviceToDPDK binds a PCI device directly to a DPDK driver

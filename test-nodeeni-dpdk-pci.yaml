@@ -14,12 +14,12 @@ spec:
   deviceIndex: 2
   deleteOnTermination: true
   mtu: 9001
-  enableDPDK: true
+  enableDPDK: false
   # DPDK is explicitly disabled
-  dpdkDriver: "vfio-pci"
-  dpdkResourceName: "intel.com/sriov"
-  # Specify the PCI address of the device to bind to DPDK
-  dpdkPCIAddress: "0000:00:07.0"
+  # dpdkDriver: "vfio-pci"
+  # dpdkResourceName: "intel.com/sriov"
+  # # Specify the PCI address of the device to bind to DPDK
+  # dpdkPCIAddress: "0000:00:07.0"
 ---
 apiVersion: networking.k8s.aws/v1alpha1
 kind: NodeENI
@@ -38,8 +38,8 @@ spec:
   deleteOnTermination: true
   mtu: 9001
   enableDPDK: false
-  # DPDK is explicitly disabled
-  dpdkDriver: "vfio-pci"
-  dpdkResourceName: "intel.com/sriov"
-  # Specify the PCI address of the device to bind to DPDK
-  dpdkPCIAddress: "0000:00:08.0"
+  # DPDK is now enabled with all our robustness improvements including graceful handling of missing PCI devices
+  # dpdkDriver: "vfio-pci"
+  # dpdkResourceName: "intel.com/sriov"
+  # # Specify the PCI address of the device to bind to DPDK
+  # dpdkPCIAddress: "0000:00:08.0"
