@@ -4,9 +4,9 @@
 
 # Image configuration
 image:
-  repository: aws-multi-eni-controller
-  tag: dpdk
-  pullPolicy: Never
+  repository: johnlam90/aws-multi-eni-controller
+  tag: sandbox-dpdk-sriov-pci-fix
+  pullPolicy: IfNotPresent
 
 # Namespace to deploy the controller
 namespace: eni-controller-system
