@@ -87,6 +87,9 @@ spec:
               dpdkResourceName:
                 description: Resource name to use for the DPDK interface in SRIOV device plugin
                 type: string
+              dpdkPCIAddress:
+                description: PCI address of the device to bind to DPDK (e.g., 0000:00:06.0)
+                type: string
             required:
             - nodeSelector
             type: object
@@ -134,6 +137,9 @@ spec:
                       type: string
                     dpdkResourceName:
                       description: Resource name used for the DPDK interface in SRIOV device plugin
+                      type: string
+                    dpdkPCIAddress:
+                      description: PCI address of the device bound to DPDK
                       type: string
                   type: object
                 type: array

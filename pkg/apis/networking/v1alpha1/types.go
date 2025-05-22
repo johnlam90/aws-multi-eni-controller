@@ -84,6 +84,12 @@ type NodeENISpec struct {
 	// If not specified, a default name will be generated based on the interface index
 	// +optional
 	DPDKResourceName string `json:"dpdkResourceName,omitempty"`
+
+	// DPDKPCIAddress is the PCI address of the device to bind to DPDK
+	// If specified, this will be used instead of relying on device index mapping
+	// Example: "0000:00:06.0"
+	// +optional
+	DPDKPCIAddress string `json:"dpdkPCIAddress,omitempty"`
 }
 
 // NodeENIStatus is the status for a NodeENI resource
@@ -140,6 +146,10 @@ type ENIAttachment struct {
 	// DPDKResourceName is the resource name used for the DPDK interface in SRIOV device plugin
 	// +optional
 	DPDKResourceName string `json:"dpdkResourceName,omitempty"`
+
+	// DPDKPCIAddress is the PCI address of the device bound to DPDK
+	// +optional
+	DPDKPCIAddress string `json:"dpdkPCIAddress,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

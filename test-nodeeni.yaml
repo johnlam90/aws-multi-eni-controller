@@ -4,7 +4,7 @@ metadata:
   name: test-nodeeni-dpdk
 spec:
   nodeSelector:
-    kubernetes.io/hostname: ip-10-0-2-239.ec2.internal
+    kubernetes.io/hostname: ip-10-0-2-54.ec2.internal
   subnetIDs:
     - subnet-08c2ddc07218f1105
   securityGroupIDs:

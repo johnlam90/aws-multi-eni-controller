@@ -6,27 +6,32 @@ spec:
   # Select nodes with the label ng=multi-eni
   nodeSelector:
     ng: multi-eni
-  
+
   # Subnet where the ENI should be created
   # You can use subnetID, subnetName, subnetIDs, or subnetNames
   subnetID: subnet-12345678
-  
+
   # Security groups to attach to the ENI
   securityGroupIDs:
   - sg-12345678
-  
+
   # Device index for the ENI (default: 1)
   deviceIndex: 2
-  
+
   # MTU for the ENI (default: system default)
   mtu: 9000
-  
+
   # Enable DPDK binding for this ENI
   enableDPDK: true
-  
+
   # DPDK driver to use (default: vfio-pci)
   dpdkDriver: "vfio-pci"
-  
+
   # Resource name to use for the DPDK interface in SRIOV device plugin
   # If not specified, a default name will be generated based on the interface index
   dpdkResourceName: "intel.com/intel_sriov_netdevice_2"
+
+  # PCI address of the device to bind to DPDK
+  # If specified, this will be used instead of relying on device index mapping
+  # Example: "0000:00:06.0"
+  # dpdkPCIAddress: "0000:00:06.0"
