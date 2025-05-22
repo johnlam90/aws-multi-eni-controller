@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/mapping"
 )
 
 // ControllerConfig holds configuration for the ENI controller
@@ -69,6 +71,10 @@ type ENIManagerConfig struct {
 	DPDKBindingScript string
 	// Path to SRIOV device plugin config file
 	SRIOVDPConfigPath string
+	// Interface mapping store for persistent mapping between ENI IDs, interface names, and PCI addresses
+	InterfaceMappingStore *mapping.InterfaceMappingStore
+	// Path to interface mapping store file
+	InterfaceMappingStorePath string
 }
 
 // DefaultControllerConfig returns the default configuration for the controller
@@ -105,8 +111,10 @@ func DefaultENIManagerConfig() *ENIManagerConfig {
 			ENIID       string
 			IfaceName   string
 		}),
-		DPDKBindingScript: "/opt/dpdk/dpdk-devbind.py",
-		SRIOVDPConfigPath: "/etc/pcidp/config.json",
+		DPDKBindingScript:         "/opt/dpdk/dpdk-devbind.py",
+		SRIOVDPConfigPath:         "/etc/pcidp/config.json",
+		InterfaceMappingStore:     nil, // Will be initialized later
+		InterfaceMappingStorePath: "/var/lib/aws-multi-eni-controller/interface-mappings.json",
 	}
 }
 
@@ -272,6 +280,23 @@ func loadDPDKConfig(config *ENIManagerConfig) {
 	}
 }
 
+// loadInterfaceMappingConfig loads interface mapping configuration from environment variables
+func loadInterfaceMappingConfig(config *ENIManagerConfig) {
+	// Load interface mapping store path from environment variable
+	if storePath := os.Getenv("INTERFACE_MAPPING_STORE_PATH"); storePath != "" {
+		config.InterfaceMappingStorePath = storePath
+	}
+
+	// Initialize the interface mapping store
+	store, err := mapping.NewInterfaceMappingStore(config.InterfaceMappingStorePath)
+	if err != nil {
+		fmt.Printf("Warning: Failed to initialize interface mapping store: %v\n", err)
+		// Continue without the store, it will be initialized later
+	} else {
+		config.InterfaceMappingStore = store
+	}
+}
+
 // loadInterfaceMTUs loads interface-specific MTUs from environment variables
 func loadInterfaceMTUs(config *ENIManagerConfig) {
 	// Format: "eth1:9000,eth2:1500"
@@ -305,6 +330,9 @@ func LoadENIManagerConfigFromFlags(checkInterval *time.Duration, primaryIface *s
 
 	// Load DPDK configuration
 	loadDPDKConfig(config)
+
+	// Load interface mapping configuration
+	loadInterfaceMappingConfig(config)
 
 	return config
 }
