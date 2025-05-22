@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"os/exec"
@@ -54,6 +55,14 @@ var (
 
 	// Global configuration
 	globalConfig *config.ENIManagerConfig
+
+	// Mutex for DPDK operations to prevent race conditions
+	dpdkMutex sync.Mutex
+
+	// Map to track ongoing DPDK operations by PCI address
+	// This helps prevent concurrent operations on the same device
+	dpdkOperations = make(map[string]bool)
+	dpdkOpsMutex   sync.Mutex
 )
 
 // setupConfig initializes and returns the configuration for the ENI Manager
@@ -943,12 +952,72 @@ func bindPCIDeviceToDPDK(pciAddress string, driver string, cfg *config.ENIManage
 		return fmt.Errorf("DPDK binding script %s does not exist", cfg.DPDKBindingScript)
 	}
 
+	// Acquire a lock for this PCI address to prevent concurrent operations
+	dpdkOpsMutex.Lock()
+	if inProgress, exists := dpdkOperations[pciAddress]; exists && inProgress {
+		dpdkOpsMutex.Unlock()
+		return fmt.Errorf("another DPDK operation is already in progress for PCI device %s", pciAddress)
+	}
+	dpdkOperations[pciAddress] = true
+	dpdkOpsMutex.Unlock()
+
+	// Ensure we release the lock when we're done
+	defer func() {
+		dpdkOpsMutex.Lock()
+		delete(dpdkOperations, pciAddress)
+		dpdkOpsMutex.Unlock()
+	}()
+
+	// Acquire the global DPDK mutex to ensure only one DPDK operation happens at a time
+	// This prevents race conditions when multiple goroutines try to bind/unbind interfaces
+	dpdkMutex.Lock()
+	defer dpdkMutex.Unlock()
+
 	// Execute the DPDK binding script to bind the device to the DPDK driver
 	cmd := exec.Command(cfg.DPDKBindingScript, "-b", driver, pciAddress)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		outputStr := string(output)
+
+		// Check for specific error conditions and provide more helpful error messages
+		if strings.Contains(outputStr, "Cannot open /sys/bus/pci/drivers") {
+			return fmt.Errorf("failed to bind PCI device %s to DPDK driver %s: driver directory not found, kernel module may not be loaded: %v",
+				pciAddress, driver, err)
+		} else if strings.Contains(outputStr, "Cannot bind to driver") {
+			return fmt.Errorf("failed to bind PCI device %s to DPDK driver %s: device cannot be bound to this driver, check compatibility: %v",
+				pciAddress, driver, err)
+		} else if strings.Contains(outputStr, "Unknown device") {
+			return fmt.Errorf("failed to bind PCI device %s to DPDK driver %s: device not found, check PCI address: %v",
+				pciAddress, driver, err)
+		} else if strings.Contains(outputStr, "routing table indicates") {
+			return fmt.Errorf("failed to bind PCI device %s to DPDK driver %s: interface is in use by the system, use --force flag if needed: %v",
+				pciAddress, driver, err)
+		} else if strings.Contains(outputStr, "Permission denied") {
+			return fmt.Errorf("failed to bind PCI device %s to DPDK driver %s: permission denied, check if running as root: %v",
+				pciAddress, driver, err)
+		}
+
+		// Generic error message for other cases
 		return fmt.Errorf("failed to bind PCI device %s to DPDK driver %s: %v, output: %s",
-			pciAddress, driver, err, string(output))
+			pciAddress, driver, err, outputStr)
+	}
+
+	// Verify the binding was successful by checking the current driver
+	// This helps catch cases where the command appeared to succeed but the binding didn't actually happen
+	time.Sleep(500 * time.Millisecond) // Give the system a moment to apply the binding
+
+	// Check if the device is now bound to the expected driver
+	driverPath := fmt.Sprintf("/sys/bus/pci/devices/%s/driver", pciAddress)
+	if _, err := os.Stat(driverPath); err == nil {
+		// Read the driver symlink to verify it points to the expected driver
+		driverLink, err := os.Readlink(driverPath)
+		if err == nil {
+			driverName := filepath.Base(driverLink)
+			if driverName != driver {
+				return fmt.Errorf("binding verification failed: device %s is bound to %s instead of %s",
+					pciAddress, driverName, driver)
+			}
+		}
 	}
 
 	log.Printf("Successfully bound PCI device %s to DPDK driver %s", pciAddress, driver)
@@ -1181,6 +1250,27 @@ func unbindInterfaceFromDPDK(ifaceName string, cfg *config.ENIManagerConfig) err
 		return fmt.Errorf("DPDK binding script %s does not exist", cfg.DPDKBindingScript)
 	}
 
+	// Acquire a lock for this PCI address to prevent concurrent operations
+	dpdkOpsMutex.Lock()
+	if inProgress, exists := dpdkOperations[pciAddress]; exists && inProgress {
+		dpdkOpsMutex.Unlock()
+		return fmt.Errorf("another DPDK operation is already in progress for PCI device %s", pciAddress)
+	}
+	dpdkOperations[pciAddress] = true
+	dpdkOpsMutex.Unlock()
+
+	// Ensure we release the lock when we're done
+	defer func() {
+		dpdkOpsMutex.Lock()
+		delete(dpdkOperations, pciAddress)
+		dpdkOpsMutex.Unlock()
+	}()
+
+	// Acquire the global DPDK mutex to ensure only one DPDK operation happens at a time
+	// This prevents race conditions when multiple goroutines try to bind/unbind interfaces
+	dpdkMutex.Lock()
+	defer dpdkMutex.Unlock()
+
 	// Implement retry logic with exponential backoff
 	maxRetries := 3
 	var lastErr error
@@ -1196,19 +1286,54 @@ func unbindInterfaceFromDPDK(ifaceName string, cfg *config.ENIManagerConfig) err
 		cmd := exec.Command(cfg.DPDKBindingScript, "-u", pciAddress)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			log.Printf("Warning: Failed to unbind PCI address %s from DPDK driver: %v, output: %s",
-				pciAddress, err, string(output))
-			lastErr = fmt.Errorf("failed to unbind PCI address %s from DPDK driver: %v", pciAddress, err)
-			continue // Retry
+			outputStr := string(output)
+
+			// Check for specific error conditions and provide more helpful error messages
+			if strings.Contains(outputStr, "Unknown device") {
+				log.Printf("Warning: Failed to unbind PCI address %s from DPDK driver: device not found, check PCI address: %v, output: %s",
+					pciAddress, err, outputStr)
+				lastErr = fmt.Errorf("failed to unbind PCI address %s from DPDK driver: device not found: %v", pciAddress, err)
+			} else if strings.Contains(outputStr, "not currently managed by any driver") {
+				log.Printf("Notice: PCI address %s is not currently managed by any driver, continuing with binding to ena", pciAddress)
+				// This is not a fatal error, the device is already unbound
+				lastErr = nil
+			} else if strings.Contains(outputStr, "Cannot open") {
+				log.Printf("Warning: Failed to unbind PCI address %s from DPDK driver: cannot open unbind file, driver may not be loaded: %v, output: %s",
+					pciAddress, err, outputStr)
+				lastErr = fmt.Errorf("failed to unbind PCI address %s from DPDK driver: driver not loaded: %v", pciAddress, err)
+				continue // Retry
+			} else {
+				log.Printf("Warning: Failed to unbind PCI address %s from DPDK driver: %v, output: %s",
+					pciAddress, err, outputStr)
+				lastErr = fmt.Errorf("failed to unbind PCI address %s from DPDK driver: %v", pciAddress, err)
+				continue // Retry
+			}
 		}
 
 		// Now bind to the original driver (ena for AWS instances)
 		cmd = exec.Command(cfg.DPDKBindingScript, "-b", "ena", pciAddress)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
-			log.Printf("Warning: Failed to bind PCI address %s to ena driver: %v, output: %s",
-				pciAddress, err, string(output))
-			lastErr = fmt.Errorf("failed to bind PCI address %s to ena driver: %v", pciAddress, err)
+			outputStr := string(output)
+
+			// Check for specific error conditions and provide more helpful error messages
+			if strings.Contains(outputStr, "Cannot open /sys/bus/pci/drivers") {
+				log.Printf("Warning: Failed to bind PCI address %s to ena driver: driver directory not found, kernel module may not be loaded: %v, output: %s",
+					pciAddress, err, outputStr)
+				lastErr = fmt.Errorf("failed to bind PCI address %s to ena driver: ena module not loaded: %v", pciAddress, err)
+			} else if strings.Contains(outputStr, "Cannot bind to driver") {
+				log.Printf("Warning: Failed to bind PCI address %s to ena driver: device cannot be bound to this driver, check compatibility: %v, output: %s",
+					pciAddress, err, outputStr)
+				lastErr = fmt.Errorf("failed to bind PCI address %s to ena driver: incompatible device: %v", pciAddress, err)
+			} else if strings.Contains(outputStr, "Unknown device") {
+				log.Printf("Warning: Failed to bind PCI address %s to ena driver: device not found, check PCI address: %v, output: %s",
+					pciAddress, err, outputStr)
+				lastErr = fmt.Errorf("failed to bind PCI address %s to ena driver: device not found: %v", pciAddress, err)
+			} else {
+				log.Printf("Warning: Failed to bind PCI address %s to ena driver: %v, output: %s",
+					pciAddress, err, outputStr)
+				lastErr = fmt.Errorf("failed to bind PCI address %s to ena driver: %v", pciAddress, err)
+			}
 			continue // Retry
 		}
 
@@ -1510,20 +1635,64 @@ func removeSRIOVDevicePluginConfig(ifaceName, pciAddress string, cfg *config.ENI
 	return nil
 }
 
+// getNodeENI retrieves a NodeENI resource by name
+func getNodeENI(name string) (*networkingv1alpha1.NodeENI, error) {
+	// Create a Kubernetes client
+	k8sConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create in-cluster config: %v", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kubernetes client: %v", err)
+	}
+
+	// Get the NodeENI resource
+	result := &networkingv1alpha1.NodeENI{}
+	err = clientset.CoreV1().RESTClient().
+		Get().
+		AbsPath(fmt.Sprintf("/apis/networking.k8s.aws/v1alpha1/nodeenis/%s", name)).
+		Do(context.Background()).
+		Into(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get NodeENI %s: %v", name, err)
+	}
+
+	return result, nil
+}
+
 // updateSRIOVDevicePluginConfig updates the SRIOV device plugin configuration
 func updateSRIOVDevicePluginConfig(ifaceName, pciAddress, driver string, cfg *config.ENIManagerConfig) error {
 	// Get the resource name for this interface
 	resourceName, ok := cfg.DPDKResourceNames[ifaceName]
 	if !ok {
-		// Generate a default resource name based on the interface index
-		// Extract the index from the interface name (e.g., eth2 -> 2)
-		indexRegex := regexp.MustCompile(`[0-9]+$`)
-		indexMatch := indexRegex.FindString(ifaceName)
-		if indexMatch == "" {
-			// If we can't extract an index, use a default
-			resourceName = "intel.com/intel_sriov_netdevice_default"
-		} else {
-			resourceName = fmt.Sprintf("intel.com/intel_sriov_netdevice_%s", indexMatch)
+		// Check if we have a resource name for this PCI address
+		for _, boundInterface := range cfg.DPDKBoundInterfaces {
+			if boundInterface.PCIAddress == pciAddress {
+				if boundInterface.NodeENIName != "" {
+					// Try to get the resource name from the NodeENI
+					nodeENI, err := getNodeENI(boundInterface.NodeENIName)
+					if err == nil && nodeENI.Spec.DPDKResourceName != "" {
+						resourceName = nodeENI.Spec.DPDKResourceName
+						log.Printf("Using resource name %s from NodeENI %s for PCI address %s",
+							resourceName, boundInterface.NodeENIName, pciAddress)
+						break
+					}
+				}
+			}
+		}
+
+		// If we still don't have a resource name, generate one based on the PCI address
+		if resourceName == "" {
+			// Use a hash of the PCI address to generate a unique, stable resource name
+			// This ensures the same PCI address always gets the same resource name
+			// regardless of the interface name
+			h := fnv.New32a()
+			h.Write([]byte(pciAddress))
+			hash := h.Sum32()
+			resourceName = fmt.Sprintf("intel.com/intel_sriov_netdevice_pci_%x", hash)
+			log.Printf("Generated resource name %s for PCI address %s", resourceName, pciAddress)
 		}
 		// Store the generated resource name for future use
 		cfg.DPDKResourceNames[ifaceName] = resourceName
