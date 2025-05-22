@@ -4,7 +4,7 @@ metadata:
   name: test-nodeeni-dpdk-pci-1
 spec:
   nodeSelector:
-    kubernetes.io/hostname: ip-10-0-2-54.ec2.internal
+    ng: multi-eni
   subnetIDs:
     - subnet-08c2ddc07218f1105
   securityGroupIDs:
@@ -14,12 +14,12 @@ spec:
   deviceIndex: 2
   deleteOnTermination: true
   mtu: 9001
-  enableDPDK: false
+  enableDPDK: true
   # DPDK is explicitly disabled
-  # dpdkDriver: "vfio-pci"
-  # dpdkResourceName: "intel.com/sriov"
-  # # Specify the PCI address of the device to bind to DPDK
-  # dpdkPCIAddress: "0000:00:07.0"
+  dpdkDriver: "vfio-pci"
+  dpdkResourceName: "intel.com/sriov"
+  # Specify the PCI address of the device to bind to DPDK
+  dpdkPCIAddress: "0000:00:07.0"
 ---
 apiVersion: networking.k8s.aws/v1alpha1
 kind: NodeENI
@@ -27,7 +27,7 @@ metadata:
   name: test-nodeeni-dpdk-pci-2
 spec:
   nodeSelector:
-    kubernetes.io/hostname: ip-10-0-2-54.ec2.internal
+    ng: multi-eni
   subnetNames:
     - multus-test-subnet-2
   securityGroupNames:
@@ -37,9 +37,9 @@ spec:
   deviceIndex: 3
   deleteOnTermination: true
   mtu: 9001
-  enableDPDK: false
+  enableDPDK: true
   # DPDK is now enabled with all our robustness improvements including graceful handling of missing PCI devices
-  # dpdkDriver: "vfio-pci"
-  # dpdkResourceName: "intel.com/sriov"
-  # # Specify the PCI address of the device to bind to DPDK
-  # dpdkPCIAddress: "0000:00:08.0"
+  dpdkDriver: "vfio-pci"
+  dpdkResourceName: "intel.com/sriov"
+  # Specify the PCI address of the device to bind to DPDK
+  dpdkPCIAddress: "0000:00:08.0"
