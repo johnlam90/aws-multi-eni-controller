@@ -7,7 +7,7 @@ on:
       - 'beta-*'
       - 'feature-*'
       - 'dev-*'
-      - 'fix*'
+      - 'fix/*'
   # Allow manual triggering with branch input
   workflow_dispatch:
     inputs:
