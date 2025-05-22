@@ -1250,6 +1250,55 @@ func unbindInterfaceFromDPDK(ifaceName string, cfg *config.ENIManagerConfig) err
 		return fmt.Errorf("DPDK binding script %s does not exist", cfg.DPDKBindingScript)
 	}
 
+	// Check if the PCI device exists before attempting to unbind it
+	pciDevicePath := fmt.Sprintf("/sys/bus/pci/devices/%s", pciAddress)
+	if _, err := os.Stat(pciDevicePath); os.IsNotExist(err) {
+		log.Printf("PCI device %s no longer exists, skipping DPDK unbinding", pciAddress)
+
+		// Update the interface mapping store to mark the device as unbound
+		if cfg.InterfaceMappingStore != nil {
+			mapping, exists := cfg.InterfaceMappingStore.GetMappingByPCIAddress(pciAddress)
+			if exists {
+				mapping.DPDKBound = false
+				mapping.DPDKDriver = ""
+				if err := cfg.InterfaceMappingStore.UpdateMapping(mapping); err != nil {
+					log.Printf("Warning: Failed to update interface mapping in persistent store: %v", err)
+				} else {
+					log.Printf("Updated interface mapping in persistent store: PCI %s is no longer bound to DPDK (device no longer exists)",
+						pciAddress)
+				}
+			} else if boundInterface.ENIID != "" {
+				// Try to find the mapping by ENI ID
+				mapping, exists := cfg.InterfaceMappingStore.GetMappingByENIID(boundInterface.ENIID)
+				if exists {
+					mapping.DPDKBound = false
+					mapping.DPDKDriver = ""
+					if err := cfg.InterfaceMappingStore.UpdateMapping(mapping); err != nil {
+						log.Printf("Warning: Failed to update interface mapping in persistent store: %v", err)
+					} else {
+						log.Printf("Updated interface mapping in persistent store: ENI %s is no longer bound to DPDK (device no longer exists)",
+							boundInterface.ENIID)
+					}
+				}
+			}
+		}
+
+		// Remove from our tracking map
+		delete(cfg.DPDKBoundInterfaces, pciAddress)
+
+		// Update the NodeENI status if we have the NodeENI name and ENI ID
+		if boundInterface.NodeENIName != "" && boundInterface.ENIID != "" {
+			// When unbinding, we clear the PCI address from the status
+			if err := updateNodeENIDPDKStatusWithPCI(boundInterface.ENIID, boundInterface.NodeENIName, "", false, ""); err != nil {
+				log.Printf("Warning: Failed to update NodeENI status for DPDK unbinding: %v", err)
+			} else {
+				log.Printf("Successfully updated NodeENI status for DPDK unbinding of ENI %s (device no longer exists)", boundInterface.ENIID)
+			}
+		}
+
+		return nil
+	}
+
 	// Acquire a lock for this PCI address to prevent concurrent operations
 	dpdkOpsMutex.Lock()
 	if inProgress, exists := dpdkOperations[pciAddress]; exists && inProgress {
@@ -1349,6 +1398,7 @@ func unbindInterfaceFromDPDK(ifaceName string, cfg *config.ENIManagerConfig) err
 	}
 
 	// Update the NodeENI status if we have the NodeENI name and ENI ID
+	// and we haven't already updated it in the early return path
 	if boundInterface.NodeENIName != "" && boundInterface.ENIID != "" {
 		// When unbinding, we clear the PCI address from the status
 		if err := updateNodeENIDPDKStatusWithPCI(boundInterface.ENIID, boundInterface.NodeENIName, "", false, ""); err != nil {
@@ -1362,7 +1412,7 @@ func unbindInterfaceFromDPDK(ifaceName string, cfg *config.ENIManagerConfig) err
 	// Remove from our tracking map
 	delete(cfg.DPDKBoundInterfaces, pciAddress)
 
-	// Update the persistent store
+	// Update the persistent store if we haven't already updated it in the early return path
 	if cfg.InterfaceMappingStore != nil {
 		// Try to find the mapping by PCI address
 		mapping, exists := cfg.InterfaceMappingStore.GetMappingByPCIAddress(pciAddress)
