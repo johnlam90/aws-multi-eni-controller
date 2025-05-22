@@ -88,7 +88,7 @@ spec:
           mountPath: /opt/dpdk
       containers:
       - name: eni-manager
-        image: johnlam90/aws-multi-eni-controller:beta.sandbox-dpdk-sriov.fix-interface-mapping-flexible
+        image: johnlam90/aws-multi-eni-controller:sandbox-dpdk-sriov-pci-fix
         env:
         - name: COMPONENT
           value: "eni-manager"

@@ -687,6 +687,12 @@ func updateNodeENIDPDKStatusWithPCI(eniID string, nodeENIName string, dpdkDriver
 func processDPDKBindingForAttachment(attachment networkingv1alpha1.ENIAttachment, nodeENI networkingv1alpha1.NodeENI,
 	nodeName string, cfg *config.ENIManagerConfig) {
 
+	// Skip if DPDK is not enabled for this NodeENI
+	if !nodeENI.Spec.EnableDPDK {
+		log.Printf("DPDK is not enabled for NodeENI %s, skipping DPDK binding for ENI %s", nodeENI.Name, attachment.ENIID)
+		return
+	}
+
 	// Skip if this attachment is not for our node
 	if attachment.NodeID != nodeName {
 		return

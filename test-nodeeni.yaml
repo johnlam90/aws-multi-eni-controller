@@ -16,4 +16,7 @@ spec:
   enableDPDK: true
   dpdkDriver: "vfio-pci"
   dpdkResourceName: "intel.com/sriov"
+  # Uncomment and set the PCI address of the device to bind to DPDK
+  # This will be used instead of relying on device index mapping
+  # dpdkPCIAddress: "0000:00:07.0"
 
