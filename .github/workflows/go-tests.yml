@@ -11,6 +11,7 @@ on:
       - 'beta-*'
       - 'feature-*'
       - 'dev-*'
+      - 'fix/*'
   pull_request:
     branches: [ main ]
   # Allow manual triggering
