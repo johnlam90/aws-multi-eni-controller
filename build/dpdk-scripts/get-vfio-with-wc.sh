@@ -190,7 +190,7 @@ function replace_module {
 	if [ "${installed}" -eq 1 ]; then
 		green "Module installed at: ${MOD_PATH}"
 	else
-		err "Failure during vfio-pci module installation. Prehaps it's not provided as a kernel module!"
+		err "Failure during vfio-pci module installation. Perhaps it's not provided as a kernel module!"
 		exit 1
 	fi
 }
