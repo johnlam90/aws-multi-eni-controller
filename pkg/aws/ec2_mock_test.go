@@ -56,7 +56,7 @@ func TestMockEC2Client_ENILifecycle(t *testing.T) {
 	}
 
 	// Verify ENI attachment
-	verifyENIAttachment(t, mockClient, ctx, eniID, attachmentID)
+	verifyENIAttachment(ctx, t, mockClient, eniID, attachmentID)
 
 	// Test DetachENI
 	err = mockClient.DetachENI(ctx, attachmentID, false)
@@ -65,7 +65,7 @@ func TestMockEC2Client_ENILifecycle(t *testing.T) {
 	}
 
 	// Verify ENI is detached
-	verifyENIDetached(t, mockClient, ctx, eniID)
+	verifyENIDetached(ctx, t, mockClient, eniID)
 
 	// Test DeleteENI
 	err = mockClient.DeleteENI(ctx, eniID)
@@ -74,11 +74,11 @@ func TestMockEC2Client_ENILifecycle(t *testing.T) {
 	}
 
 	// Verify ENI is deleted
-	verifyENIDeleted(t, mockClient, ctx, eniID)
+	verifyENIDeleted(ctx, t, mockClient, eniID)
 }
 
 // verifyENIAttachment verifies that an ENI is properly attached
-func verifyENIAttachment(t *testing.T, mockClient *MockEC2Client, ctx context.Context, eniID, attachmentID string) {
+func verifyENIAttachment(ctx context.Context, t *testing.T, mockClient *MockEC2Client, eniID, attachmentID string) {
 	eni, err := mockClient.DescribeENI(ctx, eniID)
 	if err != nil {
 		t.Fatalf("Failed to describe ENI: %v", err)
@@ -104,7 +104,7 @@ func verifyENIAttachment(t *testing.T, mockClient *MockEC2Client, ctx context.Co
 }
 
 // verifyENIDetached verifies that an ENI is properly detached
-func verifyENIDetached(t *testing.T, mockClient *MockEC2Client, ctx context.Context, eniID string) {
+func verifyENIDetached(ctx context.Context, t *testing.T, mockClient *MockEC2Client, eniID string) {
 	eni, err := mockClient.DescribeENI(ctx, eniID)
 	if err != nil {
 		t.Fatalf("Failed to describe ENI: %v", err)
@@ -118,7 +118,7 @@ func verifyENIDetached(t *testing.T, mockClient *MockEC2Client, ctx context.Cont
 }
 
 // verifyENIDeleted verifies that an ENI is properly deleted
-func verifyENIDeleted(t *testing.T, mockClient *MockEC2Client, ctx context.Context, eniID string) {
+func verifyENIDeleted(ctx context.Context, t *testing.T, mockClient *MockEC2Client, eniID string) {
 	eni, err := mockClient.DescribeENI(ctx, eniID)
 	if err != nil {
 		t.Fatalf("Failed to describe ENI: %v", err)
