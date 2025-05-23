@@ -2,10 +2,11 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Go Report Card](https://img.shields.io/badge/Go%20Report-A%2B-brightgreen?logo=go)](https://github.com/johnlam90/aws-multi-eni-controller/actions/workflows/go-report.yml)
-[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8.svg)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.23+-00ADD8.svg)](https://go.dev/)
 [![Helm](https://img.shields.io/badge/Helm-v3-0F1689.svg)](https://helm.sh)
-[![Version](https://img.shields.io/badge/Version-v1.3.0-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
+[![Version](https://img.shields.io/badge/Version-v1.3.2-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-Active-brightgreen)](https://johnlam90.github.io/aws-multi-eni-controller/)
+[![OpenSSF Best Practices](https://img.shields.io/badge/OpenSSF-Best%20Practices-brightgreen)](https://www.bestpractices.dev/)
 
 ## Overview
 
@@ -137,11 +138,11 @@ The controller requires the following IAM permissions:
 
 ```bash
 # Install the latest version
-helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 \
+helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.2 \
   --namespace eni-controller-system --create-namespace
 
 # With custom values
-helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 \
+helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.2 \
   --namespace eni-controller-system --create-namespace \
   --set awsRegion=us-east-1 \
   --set nodeSelector.ng=multi-eni

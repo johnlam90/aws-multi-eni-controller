@@ -5,6 +5,30 @@ All notable changes to the AWS Multi-ENI Controller will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.3.2] - 2025-05-23
+
+### Added
+- **OpenSSF Best Practices Badge Compliance**: Added comprehensive security policy (SECURITY.md) with vulnerability reporting process
+- **Enhanced Contribution Guidelines**: Detailed coding standards, testing requirements, and security considerations
+- **DPDK Support**: Full Data Plane Development Kit (DPDK) integration for high-performance networking
+  - DPDK device binding and unbinding capabilities
+  - PCI address targeting for direct device management
+  - SRIOV device plugin integration
+  - Configurable DPDK drivers (vfio-pci, uio_pci_generic, etc.)
+- **Automated Dependency Management**: Dependabot configuration for security updates
+- **Test Policy Documentation**: Formal testing requirements and coverage guidelines
+
+### Changed
+- Updated Go version requirement from 1.19 to 1.23 in contribution guidelines
+- Enhanced security documentation with vulnerability remediation timelines
+- Improved test documentation with detailed instructions for unit and integration tests
+
+### Security
+- Established formal vulnerability reporting process with 14-day response time
+- Added security design principles and common vulnerability mitigations
+- Documented secure coding practices for contributors
+- Implemented principle of least privilege for AWS IAM permissions
+
 ## [v1.3.0] - 2025-05-13
 
 ### Added
