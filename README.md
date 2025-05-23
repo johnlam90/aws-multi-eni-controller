@@ -331,14 +331,20 @@ flowchart TB
     NodeENI -->|"Defines"| Controller
     NAD -->|"References"| Interfaces
 
-    %% Styling
-    classDef aws fill:#FF9900,stroke:#232F3E,color:white;
-    classDef k8s fill:#326CE5,stroke:#254AA5,color:white;
-    classDef controller fill:#00C7B7,stroke:#00A896,color:white;
+    %% Styling with improved contrast
+    classDef aws fill:#FF9900,stroke:#232F3E,color:#000000,stroke-width:2px;
+    classDef k8s fill:#326CE5,stroke:#0B2161,color:#FFFFFF,stroke-width:2px;
+    classDef controller fill:#00A896,stroke:#004D40,color:#FFFFFF,stroke-width:2px;
+    classDef node fill:#F8F8F8,stroke:#2E2E2E,color:#000000,stroke-width:2px;
+    classDef interface fill:#E1F5FE,stroke:#0277BD,color:#000000,stroke-width:2px;
+    classDef resource fill:#E8F5E9,stroke:#2E7D32,color:#000000,stroke-width:2px;
 
-    class AWS,VPC,Subnets,ENIs aws;
-    class K8S,Node,Control,DaemonSet,kubelet,CNI,Multus,Pods,Interfaces,API,NAD k8s;
-    class Controller,NodeENI,Manager controller;
+    class AWS,VPC,Subnets aws;
+    class K8S,Control,DaemonSet k8s;
+    class Controller,Manager controller;
+    class Node,kubelet,CNI,Multus,Pods node;
+    class Interfaces,ENIs interface;
+    class NodeENI,NAD,API resource;
 ```
 
 1. **AWS Multi-ENI Controller** watches for NodeENI resources and creates/attaches ENIs to nodes
@@ -387,9 +393,9 @@ metadata:
 spec:
   config: '{
     "cniVersion": "0.3.1",
-    "type": "macvlan",
+    "type": "ipvlan",
     "master": "eth2",
-    "mode": "bridge",
+    "mode": "l2",
     "ipam": {
       "type": "host-local",
       "subnet": "192.168.1.0/24",
@@ -461,9 +467,9 @@ metadata:
 spec:
   config: '{
     "cniVersion": "0.3.1",
-    "type": "macvlan",
+    "type": "ipvlan",
     "master": "eth2",
-    "mode": "bridge",
+    "mode": "l2",
     "ipam": {
       "type": "host-local",
       "subnet": "10.1.0.0/24",
@@ -479,9 +485,9 @@ metadata:
 spec:
   config: '{
     "cniVersion": "0.3.1",
-    "type": "macvlan",
+    "type": "ipvlan",
     "master": "eth3",
-    "mode": "bridge",
+    "mode": "l2",
     "ipam": {
       "type": "host-local",
       "subnet": "10.2.0.0/24",
@@ -538,7 +544,8 @@ metadata:
 spec:
   config: '{
     "cniVersion": "0.3.1",
-    "type": "sriov",
+    "type": "host-device",
+    "device": "0000:00:06.0",
     "vlan": 1000,
     "ipam": {
       "type": "host-local",
@@ -609,9 +616,9 @@ metadata:
 spec:
   config: '{
     "cniVersion": "0.3.1",
-    "type": "macvlan",
+    "type": "ipvlan",
     "master": "eth2",
-    "mode": "bridge",
+    "mode": "l2",
     "ipam": {
       "type": "host-local",
       "subnet": "10.10.0.0/24"
@@ -626,9 +633,9 @@ metadata:
 spec:
   config: '{
     "cniVersion": "0.3.1",
-    "type": "macvlan",
+    "type": "ipvlan",
     "master": "eth3",
-    "mode": "bridge",
+    "mode": "l2",
     "ipam": {
       "type": "host-local",
       "subnet": "10.20.0.0/24"
@@ -790,7 +797,7 @@ kubectl exec -it <pod-name> -- dpdk-devbind.py --status
 
 | Error Message | Possible Cause | Solution |
 |---------------|----------------|----------|
-| `failed to find plugin "macvlan" in path` | Multus CNI plugin not installed correctly | Verify Multus CNI installation and CNI plugins |
+| `failed to find plugin "ipvlan" in path` | Multus CNI plugin not installed correctly | Verify Multus CNI installation and CNI plugins |
 | `error getting interface "eth2": no such network interface` | ENI not attached or interface not up | Check ENI Manager logs and node interface status |
 | `failed to allocate for range 0: no IP addresses available in range set` | IPAM exhausted or misconfigured | Adjust IPAM range or check for leaked IPs |
 | `cannot allocate resource intel.com/intel_sriov_netdevice` | SRIOV device plugin issue or resource exhausted | Check SRIOV device plugin status and resource allocation |
