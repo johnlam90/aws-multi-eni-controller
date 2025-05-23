@@ -87,7 +87,7 @@ spec:
           mountPath: /host/proc
         - name: host-run
           mountPath: /host/run
-        {{- if .Values.eniManager.dpdk }}
+        {{- if .Values.eniManager.dpdk.enabled }}
         - name: dpdk-tools
           mountPath: /opt/dpdk
         - name: sriov-dp-config
@@ -103,11 +103,11 @@ spec:
       - name: host-run
         hostPath:
           path: /run
-      {{- if .Values.eniManager.dpdk }}
+      {{- if .Values.eniManager.dpdk.enabled }}
       - name: dpdk-tools
-        hostPath:
-          path: /opt/dpdk
-          type: DirectoryOrCreate
+        configMap:
+          name: dpdk-tools
+          defaultMode: 0755
       - name: sriov-dp-config
         hostPath:
           path: /etc/pcidp

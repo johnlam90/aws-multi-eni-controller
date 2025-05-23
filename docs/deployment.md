@@ -139,6 +139,10 @@ If you prefer to deploy manually:
 
    ```bash
    kubectl apply -f deploy/crds/networking.k8s.aws_nodeenis_crd.yaml
+
+   # Apply the DPDK tools ConfigMap (required for DPDK functionality)
+   kubectl apply -f deploy/dpdk-tools-configmap.yaml
+
    kubectl apply -f deploy/deployment.yaml
    kubectl apply -f deploy/eni-manager-daemonset.yaml
    ```
@@ -180,6 +184,26 @@ The script will:
 - Either use the pre-built GitHub Container Registry image or build your own
 - Apply the CRDs to the cluster
 - Deploy the controller and ENI Manager to the cluster
+
+## ConfigMap Components
+
+### DPDK Tools ConfigMap
+
+The AWS Multi-ENI Controller includes a ConfigMap (`dpdk-tools-configmap.yaml`) that provides essential DPDK functionality:
+
+**Purpose**: Contains the DPDK device binding script (`dpdk-devbind.py`) required for DPDK device management.
+
+**Contents**:
+
+- **dpdk-devbind.py**: Complete DPDK device binding script (751 lines) that handles:
+  - Device discovery and status reporting
+  - Binding/unbinding devices to/from DPDK drivers
+  - Support for various DPDK drivers (vfio-pci, uio_pci_generic, igb_uio)
+  - PCI device management and driver override functionality
+
+**Deployment**: The ConfigMap is automatically mounted at `/opt/dpdk` in the ENI Manager DaemonSet containers with executable permissions (0755).
+
+**Requirements**: This ConfigMap is required for any DPDK functionality. Without it, DPDK device binding operations will fail.
 
 ## AWS Permissions
 
