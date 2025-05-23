@@ -10,6 +10,7 @@ import (
 )
 
 // MockEC2Client implements the EC2Interface for testing purposes
+// It also implements all the specialized interfaces (ENIManager, ENIDescriber, etc.)
 type MockEC2Client struct {
 	// Mocked resources
 	ENIs                 map[string]*EC2v2NetworkInterface
