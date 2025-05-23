@@ -30,3 +30,4 @@ temp/
 # Environment files
 .env
 .envrc
+.augment-guidelines
