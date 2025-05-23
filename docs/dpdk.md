@@ -56,27 +56,37 @@ metadata:
   name: multus-eni-with-dpdk
 spec:
   # ... other fields ...
-  
+
   # Enable DPDK binding for this ENI
   enableDPDK: true
-  
+
   # DPDK driver to use (default: vfio-pci)
   dpdkDriver: "vfio-pci"
-  
+
   # Resource name to use for the DPDK interface in SRIOV device plugin
   dpdkResourceName: "intel.com/intel_sriov_netdevice_1"
+
+  # PCI address of the device to bind to DPDK (recommended method)
+  # If specified, this will be used instead of device index mapping
+  dpdkPCIAddress: "0000:00:06.0"
 ```
+
+**Note**: The `dpdkPCIAddress` field is the recommended method for DPDK binding as it provides direct control over which PCI device gets bound to DPDK, avoiding potential issues with device index mapping.
 
 ## How It Works
 
 When DPDK is enabled, the ENI Manager will:
 
-1. Attach ENIs to the node as usual
-2. Bring up the network interfaces
-3. Bind the interfaces to the specified DPDK driver using the DPDK binding script
-4. Update the SRIOV Device Plugin configuration to expose the DPDK devices to pods
+1. **Setup DPDK Environment**: Load required kernel modules (vfio, vfio-pci) and configure NOIOMMU mode
+2. **Attach ENIs**: Attach ENIs to the node as usual using AWS APIs
+3. **Interface Configuration**: Bring up the network interfaces and configure MTU
+4. **DPDK Binding**: Bind the interfaces to the specified DPDK driver using either:
+   - **PCI Address Method**: Direct binding using the `dpdkPCIAddress` field (recommended)
+   - **Device Index Method**: Fallback method using device index to determine interface name
+5. **SRIOV Integration**: Update the SRIOV Device Plugin configuration to expose DPDK devices to pods
+6. **Status Tracking**: Update the NodeENI status with DPDK binding information
 
-The DPDK binding process happens after the interface is brought up, ensuring that the interface is properly configured before binding.
+The DPDK binding process includes robust error handling and concurrent operation protection to ensure reliable binding across multiple interfaces.
 
 ## SRIOV Device Plugin Integration
 
@@ -125,21 +135,88 @@ The SRIOV Device Plugin will expose the DPDK device to the pod, allowing your ap
 
 If you encounter issues with DPDK device binding, check the following:
 
-1. Verify that the DPDK drivers are installed on the node
-2. Check that the DPDK binding script exists and is executable
-3. Ensure that the SRIOV Device Plugin is running and configured correctly
-4. Check the ENI Manager logs for any errors related to DPDK binding
+### Basic Checks
 
-Common issues include:
+1. **Verify DPDK drivers are loaded**:
+   ```bash
+   # Check if vfio-pci module is loaded
+   lsmod | grep vfio
 
-- Missing DPDK drivers on the node
-- Incorrect path to the DPDK binding script
-- Insufficient permissions to bind devices
-- Incompatible hardware or driver versions
+   # Check DPDK binding script status
+   kubectl exec -n eni-controller-system daemonset/eni-manager -- dpdk-devbind.py --status
+   ```
+
+2. **Check ENI Manager logs**:
+   ```bash
+   kubectl logs -n eni-controller-system daemonset/eni-manager -c eni-manager
+   ```
+
+3. **Verify SRIOV Device Plugin**:
+   ```bash
+   kubectl get pods -n kube-system | grep sriov
+   kubectl logs -n kube-system <sriov-device-plugin-pod>
+   ```
+
+### Common Issues and Solutions
+
+- **Missing DPDK drivers**: Ensure vfio-pci module is loaded on the host
+- **PCI address not found**: Use `lspci` to verify the correct PCI address
+- **Binding script not found**: Check that `/opt/dpdk/dpdk-devbind.py` exists and is executable
+- **Insufficient permissions**: Ensure the ENI Manager runs with privileged security context
+- **Concurrent binding operations**: The controller includes mutex protection to prevent race conditions
+- **Device already bound**: Check if the device is already bound to another driver
+
+## Best Practices
+
+### PCI Address Method (Recommended)
+
+Always use the `dpdkPCIAddress` field when possible for more reliable DPDK binding:
+
+```yaml
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: dpdk-eni-example
+spec:
+  nodeSelector:
+    ng: multi-eni
+  subnetID: subnet-12345678
+  securityGroupIDs:
+    - sg-12345678
+  enableDPDK: true
+  dpdkDriver: "vfio-pci"
+  dpdkResourceName: "intel.com/sriov_dpdk"
+  dpdkPCIAddress: "0000:00:06.0"  # Direct PCI targeting
+```
+
+### Resource Naming Convention
+
+Use consistent resource naming for SRIOV device plugin integration:
+
+- `intel.com/sriov_dpdk_1`, `intel.com/sriov_dpdk_2` for Intel devices
+- `amazon.com/ena_dpdk_1`, `amazon.com/ena_dpdk_2` for AWS ENA devices
+
+### Monitoring DPDK Status
+
+Check the NodeENI status to verify DPDK binding:
+
+```bash
+kubectl get nodeeni -o yaml | grep -A 10 -B 5 dpdk
+```
+
+## Current Features
+
+- **Concurrent Operation Protection**: Mutex-based locking prevents race conditions during binding
+- **PCI Address Targeting**: Direct PCI device binding for reliable operation
+- **Automatic Module Loading**: Init container handles vfio-pci module setup
+- **SRIOV Integration**: Automatic device plugin configuration updates
+- **Status Tracking**: Real-time DPDK binding status in NodeENI resources
+- **Error Recovery**: Robust error handling and retry mechanisms
 
 ## Limitations
 
 - DPDK device binding requires privileged access to the node
-- Not all network cards support DPDK
+- Not all network cards support DPDK (AWS ENA adapters are supported)
 - DPDK applications must be specifically designed to use DPDK libraries
 - Once an interface is bound to DPDK, it cannot be used by the kernel network stack
+- NOIOMMU mode is used for compatibility, which has security implications

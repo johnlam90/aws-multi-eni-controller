@@ -231,7 +231,7 @@ The Helm chart provides a number of configuration options. Here are the most imp
 # Image configuration
 image:
   repository: ghcr.io/johnlam90/aws-multi-eni-controller
-  tag: v1.2.7
+  tag: v1.3.2
   pullPolicy: IfNotPresent
 
 # Namespace to deploy the controller

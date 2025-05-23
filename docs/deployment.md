@@ -113,7 +113,7 @@ If you prefer to deploy manually:
    IMAGE=ghcr.io/johnlam90/aws-multi-eni-controller:latest
 
    # Or use a specific version
-   # IMAGE=ghcr.io/johnlam90/aws-multi-eni-controller:v1.2.7
+   # IMAGE=ghcr.io/johnlam90/aws-multi-eni-controller:v1.3.2
    ```
 
    Alternatively, build and push your own Docker image:
@@ -233,7 +233,7 @@ Pre-built container images are available on GitHub Container Registry:
 docker pull ghcr.io/johnlam90/aws-multi-eni-controller:latest
 
 # Or use a specific version
-docker pull ghcr.io/johnlam90/aws-multi-eni-controller:v1.2.7
+docker pull ghcr.io/johnlam90/aws-multi-eni-controller:v1.3.2
 ```
 
 You can find all available tags at [GitHub Container Registry](https://github.com/johnlam90/aws-multi-eni-controller/pkgs/container/aws-multi-eni-controller).

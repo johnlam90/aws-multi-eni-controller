@@ -4,8 +4,8 @@
 
 # Image configuration
 image:
-  repository: johnlam90/aws-multi-eni-controller
-  tag: v1.2.10-dpdk-reboot-fix
+  repository: ghcr.io/johnlam90/aws-multi-eni-controller
+  tag: v1.3.2
   pullPolicy: IfNotPresent
 
 # Namespace to deploy the controller

@@ -102,7 +102,7 @@ spec:
       #   - "kubernetes"
       containers:
       - name: manager
-        image: johnlam90/aws-multi-eni-controller:v1.2.10-dpdk-reboot-fix
+        image: ghcr.io/johnlam90/aws-multi-eni-controller:v1.3.2
         env:
         - name: COMPONENT
           value: "eni-controller"
