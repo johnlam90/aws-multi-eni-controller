@@ -323,6 +323,161 @@ echo "Successfully unbound interface %s (PCI: $pci_address) from DPDK driver and
 	return nil
 }
 
+// handleDPDKUnbinding attempts to unbind an interface from DPDK if needed
+func (r *NodeENIReconciler) handleDPDKUnbinding(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+
+	// Check if this ENI is bound to DPDK
+	if !nodeENI.Spec.EnableDPDK || !attachment.DPDKBound {
+		return
+	}
+
+	// Try to unbind the interface from DPDK
+	// This is a best-effort operation - we'll continue with detachment even if it fails
+	if err := r.unbindInterfaceFromDPDK(ctx, nodeENI, attachment); err != nil {
+		log.Error(err, "Failed to unbind interface from DPDK driver, continuing with detachment")
+		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "DPDKUnbindFailed",
+			"Failed to unbind ENI %s from DPDK driver: %v", attachment.ENIID, err)
+	} else {
+		log.Info("Successfully unbound interface from DPDK driver")
+		r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "DPDKUnbound",
+			"Successfully unbound ENI %s from DPDK driver", attachment.ENIID)
+	}
+}
+
+// checkENIExists checks if an ENI still exists in AWS
+// Returns true if the ENI exists, false if it doesn't, and an error for other issues
+func (r *NodeENIReconciler) checkENIExists(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) (bool, error) {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+
+	// Check if the ENI still exists
+	eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
+	if err != nil {
+		// Check if the error indicates the ENI doesn't exist
+		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+			log.V(1).Info("ENI no longer exists (not found in AWS), considering cleanup successful")
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
+				"ENI %s was already deleted (possibly manually)", attachment.ENIID)
+			return false, nil
+		}
+
+		// For other errors, log but continue with cleanup attempt
+		log.Error(err, "Failed to describe ENI, will still attempt cleanup")
+		return true, err
+	}
+
+	// If ENI doesn't exist, cleanup is already done
+	if eni == nil {
+		log.V(1).Info("ENI no longer exists, considering cleanup successful")
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// detachENIWithRetry attempts to detach an ENI with retry logic
+// Returns true if detachment was successful or not needed, false otherwise
+func (r *NodeENIReconciler) detachENIWithRetry(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+
+	// If there's no attachment ID, nothing to detach
+	if attachment.AttachmentID == "" {
+		return true
+	}
+
+	// Use exponential backoff for detachment to handle rate limiting
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 1 * time.Second,
+		Factor:   2.0,
+		Jitter:   0.1,
+	}
+
+	detachErr := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		if err := r.AWS.DetachENI(ctx, attachment.AttachmentID, true); err != nil {
+			// Check if the error indicates the attachment doesn't exist
+			if strings.Contains(err.Error(), "InvalidAttachmentID.NotFound") {
+				log.V(1).Info("ENI attachment no longer exists, considering detachment successful")
+				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAttachmentAlreadyRemoved",
+					"ENI attachment for %s was already removed (possibly manually)", attachment.ENIID)
+				return true, nil
+			}
+
+			// Check if this is a rate limit error
+			if strings.Contains(err.Error(), "RequestLimitExceeded") ||
+				strings.Contains(err.Error(), "Throttling") ||
+				strings.Contains(err.Error(), "rate limit") {
+				log.Info("AWS API rate limit exceeded when detaching ENI, will retry", "attachmentID", attachment.AttachmentID)
+				return false, nil
+			}
+
+			// For other errors, fail immediately
+			return false, err
+		}
+		return true, nil
+	})
+
+	if detachErr != nil {
+		log.Error(detachErr, "Failed to detach ENI after retries", "attachmentID", attachment.AttachmentID)
+		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDetachmentFailed",
+			"Failed to detach ENI %s from node %s after retries: %v", attachment.ENIID, attachment.NodeID, detachErr)
+		return false
+	}
+
+	return true
+}
+
+// waitForENIDetachmentWithRetry waits for an ENI to be fully detached with retry logic
+// Returns true if waiting was successful or not needed, false otherwise
+func (r *NodeENIReconciler) waitForENIDetachmentWithRetry(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+
+	// If there's no ENI ID, nothing to wait for
+	if attachment.ENIID == "" {
+		return true
+	}
+
+	// Try to wait for detachment with exponential backoff
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 1 * time.Second,
+		Factor:   2.0,
+		Jitter:   0.1,
+	}
+
+	waitErr := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		err := r.AWS.WaitForENIDetachment(ctx, attachment.ENIID, r.Config.DetachmentTimeout)
+		if err != nil {
+			// Check if the error indicates the ENI doesn't exist
+			if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+				log.V(1).Info("ENI no longer exists when waiting for detachment, considering detachment successful")
+				r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
+					"ENI %s was already deleted (possibly manually) when waiting for detachment", attachment.ENIID)
+				return true, nil
+			}
+
+			// Check if this is a rate limit error
+			if strings.Contains(err.Error(), "RequestLimitExceeded") ||
+				strings.Contains(err.Error(), "Throttling") ||
+				strings.Contains(err.Error(), "rate limit") {
+				log.Info("Rate limit exceeded when waiting for ENI detachment, will retry", "eniID", attachment.ENIID)
+				return false, nil
+			}
+
+			// For other errors, fail immediately
+			return false, err
+		}
+		return true, nil
+	})
+
+	if waitErr != nil {
+		log.Error(waitErr, "Failed to wait for ENI detachment after retries", "eniID", attachment.ENIID)
+		return false
+	}
+
+	return true
+}
+
 // cleanupENIAttachment detaches and deletes an ENI attachment
 // Returns true if cleanup was successful, false otherwise
 func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
@@ -332,130 +487,29 @@ func (r *NodeENIReconciler) cleanupENIAttachment(ctx context.Context, nodeENI *n
 	// Track if any operation failed
 	success := true
 
-	// Check if this ENI is bound to DPDK
-	if nodeENI.Spec.EnableDPDK && attachment.DPDKBound {
-		// Try to unbind the interface from DPDK
-		// This is a best-effort operation - we'll continue with detachment even if it fails
-		if err := r.unbindInterfaceFromDPDK(ctx, nodeENI, attachment); err != nil {
-			log.Error(err, "Failed to unbind interface from DPDK driver, continuing with detachment")
-			r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "DPDKUnbindFailed",
-				"Failed to unbind ENI %s from DPDK driver: %v", attachment.ENIID, err)
-			// Don't set success to false here, as we want to continue with detachment
-		} else {
-			log.Info("Successfully unbound interface from DPDK driver")
-			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "DPDKUnbound",
-				"Successfully unbound ENI %s from DPDK driver", attachment.ENIID)
-		}
+	// Step 1: Handle DPDK unbinding if needed
+	r.handleDPDKUnbinding(ctx, nodeENI, attachment)
+
+	// Step 2: Check if the ENI still exists
+	eniExists, _ := r.checkENIExists(ctx, nodeENI, attachment)
+	if !eniExists {
+		return true // ENI doesn't exist, nothing more to do
 	}
 
-	// First check if the ENI still exists
-	eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
-	if err != nil {
-		// Check if the error indicates the ENI doesn't exist
-		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
-			log.V(1).Info("ENI no longer exists (not found in AWS), considering cleanup successful")
-			r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
-				"ENI %s was already deleted (possibly manually)", attachment.ENIID)
-			return true
-		}
-
-		// For other errors, log but continue with cleanup attempt
-		log.Error(err, "Failed to describe ENI, will still attempt cleanup")
-	}
-
-	// If ENI doesn't exist, cleanup is already done
-	if eni == nil && err == nil {
-		log.V(1).Info("ENI no longer exists, considering cleanup successful")
-		return true
-	}
-
-	// Detach the ENI if it's attached
-	if attachment.AttachmentID != "" {
-		// Use exponential backoff for detachment to handle rate limiting
-		backoff := wait.Backoff{
-			Steps:    5,
-			Duration: 1 * time.Second,
-			Factor:   2.0,
-			Jitter:   0.1,
-		}
-
-		detachErr := wait.ExponentialBackoff(backoff, func() (bool, error) {
-			if err := r.AWS.DetachENI(ctx, attachment.AttachmentID, true); err != nil {
-				// Check if the error indicates the attachment doesn't exist
-				if strings.Contains(err.Error(), "InvalidAttachmentID.NotFound") {
-					log.V(1).Info("ENI attachment no longer exists, considering detachment successful")
-					r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAttachmentAlreadyRemoved",
-						"ENI attachment for %s was already removed (possibly manually)", attachment.ENIID)
-					return true, nil
-				}
-
-				// Check if this is a rate limit error
-				if strings.Contains(err.Error(), "RequestLimitExceeded") ||
-					strings.Contains(err.Error(), "Throttling") ||
-					strings.Contains(err.Error(), "rate limit") {
-					log.Info("AWS API rate limit exceeded when detaching ENI, will retry", "attachmentID", attachment.AttachmentID)
-					return false, nil
-				}
-
-				// For other errors, fail immediately
-				return false, err
-			}
-			return true, nil
-		})
-
-		if detachErr != nil {
-			log.Error(detachErr, "Failed to detach ENI after retries", "attachmentID", attachment.AttachmentID)
-			r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIDetachmentFailed",
-				"Failed to detach ENI %s from node %s after retries: %v", attachment.ENIID, attachment.NodeID, detachErr)
-			success = false
-		}
+	// Step 3: Detach the ENI if it's attached
+	if !r.detachENIWithRetry(ctx, nodeENI, attachment) {
+		success = false
 		// Continue with deletion attempt regardless
 	}
 
-	// Wait for the detachment to complete
-	if attachment.ENIID != "" {
-		// Try to wait for detachment with exponential backoff
-		backoff := wait.Backoff{
-			Steps:    5,
-			Duration: 1 * time.Second,
-			Factor:   2.0,
-			Jitter:   0.1,
-		}
+	// Step 4: Wait for the detachment to complete
+	if !r.waitForENIDetachmentWithRetry(ctx, nodeENI, attachment) {
+		success = false
+	}
 
-		waitErr := wait.ExponentialBackoff(backoff, func() (bool, error) {
-			err := r.AWS.WaitForENIDetachment(ctx, attachment.ENIID, r.Config.DetachmentTimeout)
-			if err != nil {
-				// Check if the error indicates the ENI doesn't exist
-				if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
-					log.V(1).Info("ENI no longer exists when waiting for detachment, considering detachment successful")
-					r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAlreadyDeleted",
-						"ENI %s was already deleted (possibly manually) when waiting for detachment", attachment.ENIID)
-					return true, nil
-				}
-
-				// Check if this is a rate limit error
-				if strings.Contains(err.Error(), "RequestLimitExceeded") ||
-					strings.Contains(err.Error(), "Throttling") ||
-					strings.Contains(err.Error(), "rate limit") {
-					log.Info("Rate limit exceeded when waiting for ENI detachment, will retry", "eniID", attachment.ENIID)
-					return false, nil
-				}
-
-				// For other errors, fail immediately
-				return false, err
-			}
-			return true, nil
-		})
-
-		if waitErr != nil {
-			log.Error(waitErr, "Failed to wait for ENI detachment after retries", "eniID", attachment.ENIID)
-			success = false
-		}
-
-		// Delete the ENI
-		if !r.deleteENIIfExists(ctx, nodeENI, attachment) {
-			success = false
-		}
+	// Step 5: Delete the ENI
+	if !r.deleteENIIfExists(ctx, nodeENI, attachment) {
+		success = false
 	}
 
 	return success
