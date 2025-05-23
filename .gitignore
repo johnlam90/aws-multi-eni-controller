@@ -31,3 +31,7 @@ temp/
 .env
 .envrc
 .augment-guidelines
+CODE_ORGANIZATION_IMPROVEMENTS.md
+CODE_REVIEW_OPTIMIZATIONS.md
+.gitignore
+README_IMPROVEMENTS.md
