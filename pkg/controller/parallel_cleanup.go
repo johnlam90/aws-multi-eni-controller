@@ -39,23 +39,50 @@ func (r *NodeENIReconciler) parallelCleanupENIs(ctx context.Context, nodeENI *ne
 	// Create a wait group to wait for all workers to finish
 	var wg sync.WaitGroup
 
-	// Start workers
-	workerCount := min(maxConcurrent, len(attachments))
+	// Dynamic worker scaling based on workload
+	workerCount := min(maxConcurrent, max(1, len(attachments)/2))
+	if workerCount > len(attachments) {
+		workerCount = len(attachments)
+	}
+
+	// Start workers with context cancellation support
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for att := range workChan {
-				// Clean up the attachment
-				success := r.cleanupENIAttachment(ctx, nodeENI, att)
-				resultChan <- success
+			for {
+				select {
+				case att, ok := <-workChan:
+					if !ok {
+						// Channel closed, exit worker
+						return
+					}
+					// Clean up the attachment with context timeout
+					success := r.cleanupENIAttachment(ctx, nodeENI, att)
+					select {
+					case resultChan <- success:
+					case <-ctx.Done():
+						// Context cancelled, exit worker
+						return
+					}
+				case <-ctx.Done():
+					// Context cancelled, exit worker
+					return
+				}
 			}
 		}()
 	}
 
 	// Send work to workers
 	for _, att := range attachments {
-		workChan <- att
+		select {
+		case workChan <- att:
+		case <-ctx.Done():
+			// Context cancelled, stop sending work
+			close(workChan)
+			wg.Wait()
+			return false
+		}
 	}
 	close(workChan)
 
@@ -83,6 +110,14 @@ func (r *NodeENIReconciler) parallelCleanupENIs(ctx context.Context, nodeENI *ne
 // min returns the minimum of two integers
 func min(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+// max returns the maximum of two integers
+func max(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

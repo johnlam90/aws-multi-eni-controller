@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -2274,7 +2275,7 @@ func fallbackBringUpInterface(ifaceName string, timeout time.Duration) error {
 	}
 
 	// Check if the interface is UP
-	if !strings.Contains(string(output), "state UP") {
+	if !bytes.Contains(output, []byte("state UP")) {
 		return fmt.Errorf("interface %s is still not UP after configuration", ifaceName)
 	}
 

@@ -99,23 +99,54 @@ func DefaultENIManagerConfig() *ENIManagerConfig {
 		InterfaceUpTimeout: 2 * time.Second,
 		ENIPattern:         "^(eth|ens|eni|en)[0-9]+",
 		IgnoreInterfaces:   []string{"tunl0", "gre0", "gretap0", "erspan0", "ip_vti0", "ip6_vti0", "sit0", "ip6tnl0", "ip6gre0"},
-		DefaultMTU:         0, // 0 means use system default
-		InterfaceMTUs:      make(map[string]int),
+		DefaultMTU:         0,                        // 0 means use system default
+		InterfaceMTUs:      make(map[string]int, 16), // Typical node has 2-8 ENIs
 		EnableDPDK:         false,
 		DefaultDPDKDriver:  "vfio-pci",
-		DPDKResourceNames:  make(map[string]string),
+		DPDKResourceNames:  make(map[string]string, 8), // Typical node has few DPDK interfaces
 		DPDKBoundInterfaces: make(map[string]struct {
 			PCIAddress  string
 			Driver      string
 			NodeENIName string
 			ENIID       string
 			IfaceName   string
-		}),
+		}, 8), // Typical node has few DPDK-bound interfaces
 		DPDKBindingScript:         "/opt/dpdk/dpdk-devbind.py",
 		SRIOVDPConfigPath:         "/etc/pcidp/config.json",
 		InterfaceMappingStore:     nil, // Will be initialized later
 		InterfaceMappingStorePath: "/var/lib/aws-multi-eni-controller/interface-mappings.json",
 	}
+}
+
+// Validate validates the controller configuration
+func (c *ControllerConfig) Validate() error {
+	if c.MaxConcurrentReconciles <= 0 {
+		return fmt.Errorf("MaxConcurrentReconciles must be positive, got %d", c.MaxConcurrentReconciles)
+	}
+	if c.DetachmentTimeout <= 0 {
+		return fmt.Errorf("DetachmentTimeout must be positive, got %v", c.DetachmentTimeout)
+	}
+	if c.MaxConcurrentENICleanup <= 0 {
+		return fmt.Errorf("MaxConcurrentENICleanup must be positive, got %d", c.MaxConcurrentENICleanup)
+	}
+	if c.ReconcilePeriod <= 0 {
+		return fmt.Errorf("ReconcilePeriod must be positive, got %v", c.ReconcilePeriod)
+	}
+	return nil
+}
+
+// Validate validates the ENI manager configuration
+func (c *ENIManagerConfig) Validate() error {
+	if c.CheckInterval <= 0 {
+		return fmt.Errorf("CheckInterval must be positive, got %v", c.CheckInterval)
+	}
+	if c.InterfaceUpTimeout <= 0 {
+		return fmt.Errorf("InterfaceUpTimeout must be positive, got %v", c.InterfaceUpTimeout)
+	}
+	if c.ENIPattern == "" {
+		return fmt.Errorf("ENIPattern cannot be empty")
+	}
+	return nil
 }
 
 // LoadControllerConfig loads controller configuration from environment variables
@@ -131,7 +162,7 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	if periodStr := os.Getenv("RECONCILE_PERIOD"); periodStr != "" {
 		period, err := time.ParseDuration(periodStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid RECONCILE_PERIOD: %v", err)
+			return nil, fmt.Errorf("invalid RECONCILE_PERIOD: %w", err)
 		}
 		config.ReconcilePeriod = period
 	}
@@ -140,7 +171,7 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	if timeoutStr := os.Getenv("DETACHMENT_TIMEOUT"); timeoutStr != "" {
 		timeout, err := time.ParseDuration(timeoutStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid DETACHMENT_TIMEOUT: %v", err)
+			return nil, fmt.Errorf("invalid DETACHMENT_TIMEOUT: %w", err)
 		}
 		config.DetachmentTimeout = timeout
 	}
@@ -149,7 +180,7 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	if maxStr := os.Getenv("MAX_CONCURRENT_RECONCILES"); maxStr != "" {
 		max, err := strconv.Atoi(maxStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid MAX_CONCURRENT_RECONCILES: %v", err)
+			return nil, fmt.Errorf("invalid MAX_CONCURRENT_RECONCILES: %w", err)
 		}
 		config.MaxConcurrentReconciles = max
 	}
@@ -158,7 +189,7 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	if indexStr := os.Getenv("DEFAULT_DEVICE_INDEX"); indexStr != "" {
 		index, err := strconv.Atoi(indexStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid DEFAULT_DEVICE_INDEX: %v", err)
+			return nil, fmt.Errorf("invalid DEFAULT_DEVICE_INDEX: %w", err)
 		}
 		config.DefaultDeviceIndex = index
 	}
@@ -167,7 +198,7 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	if dotStr := os.Getenv("DEFAULT_DELETE_ON_TERMINATION"); dotStr != "" {
 		dot, err := strconv.ParseBool(dotStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid DEFAULT_DELETE_ON_TERMINATION: %v", err)
+			return nil, fmt.Errorf("invalid DEFAULT_DELETE_ON_TERMINATION: %w", err)
 		}
 		config.DefaultDeleteOnTermination = dot
 	}
@@ -176,12 +207,15 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	if maxStr := os.Getenv("MAX_CONCURRENT_ENI_CLEANUP"); maxStr != "" {
 		max, err := strconv.Atoi(maxStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid MAX_CONCURRENT_ENI_CLEANUP: %v", err)
+			return nil, fmt.Errorf("invalid MAX_CONCURRENT_ENI_CLEANUP: %w", err)
 		}
 		config.MaxConcurrentENICleanup = max
 	}
 
-	// AWS SDK version is now always v2
+	// Validate the configuration
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("configuration validation failed: %w", err)
+	}
 
 	return config, nil
 }
