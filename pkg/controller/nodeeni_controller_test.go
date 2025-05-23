@@ -283,67 +283,27 @@ func TestNodeENIReconciler_Reconcile_WithMultipleSubnets(t *testing.T) {
 	}
 }
 
+// verifyDPDKSpec verifies the DPDK specification in a NodeENI resource
+func verifyDPDKSpec(t *testing.T, nodeENI *networkingv1alpha1.NodeENI) {
+	// Check DPDK-specific fields in the spec
+	if !nodeENI.Spec.EnableDPDK {
+		t.Error("Expected EnableDPDK to be true")
+	}
+	if nodeENI.Spec.DPDKDriver != "vfio-pci" {
+		t.Errorf("Expected DPDKDriver vfio-pci, got %s", nodeENI.Spec.DPDKDriver)
+	}
+	if nodeENI.Spec.DPDKResourceName != "intel.com/sriov_dpdk" {
+		t.Errorf("Expected DPDKResourceName intel.com/sriov_dpdk, got %s", nodeENI.Spec.DPDKResourceName)
+	}
+	if nodeENI.Spec.DPDKPCIAddress != "0000:00:06.0" {
+		t.Errorf("Expected DPDKPCIAddress 0000:00:06.0, got %s", nodeENI.Spec.DPDKPCIAddress)
+	}
+}
+
 // TestNodeENIReconciler_Reconcile_WithDPDK tests reconciliation with DPDK enabled
 func TestNodeENIReconciler_Reconcile_WithDPDK(t *testing.T) {
-	// Set up the test reconciler
-	controller, mockClient, mockEC2Client, _ := setupTestReconciler(t)
-
-	// Create a NodeENI resource with DPDK enabled
-	nodeENI := testutil.CreateTestNodeENIWithDPDK(
-		"test-nodeeni-dpdk",
-		map[string]string{"ng": "multi-eni"},
-		"subnet-123",
-		[]string{"sg-123"},
-		1,
-		true,
-		"vfio-pci",
-		"intel.com/sriov_dpdk",
-		"0000:00:06.0",
-	)
-
-	// Add test data to the mock EC2 client
-	mockEC2Client.AddSubnet("subnet-123", "10.0.0.0/24")
-	mockEC2Client.AddSecurityGroup("sg-123", "sg-123")
-
-	// Create the NodeENI in the mock client
-	err := mockClient.Create(context.Background(), nodeENI)
-	if err != nil {
-		t.Fatalf("Failed to create NodeENI: %v", err)
-	}
-
-	// Create a node that matches the selector
-	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-node",
-			Labels: map[string]string{
-				"ng": "multi-eni",
-			},
-		},
-		Spec: corev1.NodeSpec{
-			ProviderID: "aws:///us-east-1a/i-123456789abcdef0",
-		},
-		Status: corev1.NodeStatus{
-			Addresses: []corev1.NodeAddress{
-				{
-					Type:    corev1.NodeInternalIP,
-					Address: "10.0.0.1",
-				},
-			},
-		},
-	}
-
-	// Create the node in the mock client
-	err = mockClient.Create(context.Background(), node)
-	if err != nil {
-		t.Fatalf("Failed to create Node: %v", err)
-	}
-
-	// Create a request to reconcile the NodeENI
-	req := reconcile.Request{
-		NamespacedName: types.NamespacedName{
-			Name: "test-nodeeni-dpdk",
-		},
-	}
+	// Set up the test environment
+	controller, mockClient, _, req := setupDPDKTest(t, "test-nodeeni-dpdk")
 
 	// Reconcile the NodeENI
 	result, err := controller.Reconcile(context.Background(), req)
@@ -363,54 +323,21 @@ func TestNodeENIReconciler_Reconcile_WithDPDK(t *testing.T) {
 		t.Fatalf("Failed to get updated NodeENI: %v", err)
 	}
 
-	// Check that an ENI was created and attached
-	if len(updatedNodeENI.Status.Attachments) != 1 {
-		t.Errorf("Expected 1 attachment, got %d", len(updatedNodeENI.Status.Attachments))
-	}
+	// Verify the initial attachment
+	verifyInitialDPDKAttachment(t, mockClient, "test-nodeeni-dpdk")
 
-	// Check the attachment details
-	if len(updatedNodeENI.Status.Attachments) > 0 {
-		attachment := updatedNodeENI.Status.Attachments[0]
-		if attachment.NodeID != "test-node" {
-			t.Errorf("Expected node ID test-node, got %s", attachment.NodeID)
-		}
-		if attachment.InstanceID != "i-123456789abcdef0" {
-			t.Errorf("Expected instance ID i-123456789abcdef0, got %s", attachment.InstanceID)
-		}
-		if attachment.SubnetID != "subnet-123" {
-			t.Errorf("Expected subnet ID subnet-123, got %s", attachment.SubnetID)
-		}
-		if attachment.SubnetCIDR != "10.0.0.0/24" {
-			t.Errorf("Expected subnet CIDR 10.0.0.0/24, got %s", attachment.SubnetCIDR)
-		}
-		if attachment.DeviceIndex != 1 {
-			t.Errorf("Expected device index 1, got %d", attachment.DeviceIndex)
-		}
-
-		// Check DPDK-specific fields
-		if !updatedNodeENI.Spec.EnableDPDK {
-			t.Error("Expected EnableDPDK to be true")
-		}
-		if updatedNodeENI.Spec.DPDKDriver != "vfio-pci" {
-			t.Errorf("Expected DPDKDriver vfio-pci, got %s", updatedNodeENI.Spec.DPDKDriver)
-		}
-		if updatedNodeENI.Spec.DPDKResourceName != "intel.com/sriov_dpdk" {
-			t.Errorf("Expected DPDKResourceName intel.com/sriov_dpdk, got %s", updatedNodeENI.Spec.DPDKResourceName)
-		}
-		if updatedNodeENI.Spec.DPDKPCIAddress != "0000:00:06.0" {
-			t.Errorf("Expected DPDKPCIAddress 0000:00:06.0, got %s", updatedNodeENI.Spec.DPDKPCIAddress)
-		}
-	}
+	// Verify the DPDK specification
+	verifyDPDKSpec(t, updatedNodeENI)
 }
 
-// TestNodeENIReconciler_Reconcile_WithDPDKStatusUpdate tests reconciliation with DPDK enabled and status updates
-func TestNodeENIReconciler_Reconcile_WithDPDKStatusUpdate(t *testing.T) {
+// setupDPDKTest sets up a test environment for DPDK testing
+func setupDPDKTest(t *testing.T, nodeENIName string) (*testutil.MockNodeENIController, *testutil.MockClient, *networkingv1alpha1.NodeENI, reconcile.Request) {
 	// Set up the test reconciler
 	controller, mockClient, mockEC2Client, _ := setupTestReconciler(t)
 
 	// Create a NodeENI resource with DPDK enabled
 	nodeENI := testutil.CreateTestNodeENIWithDPDK(
-		"test-nodeeni-dpdk-status",
+		nodeENIName,
 		map[string]string{"ng": "dpdk-node"},
 		"subnet-123",
 		[]string{"sg-123"},
@@ -461,24 +388,18 @@ func TestNodeENIReconciler_Reconcile_WithDPDKStatusUpdate(t *testing.T) {
 	// Create a request to reconcile the NodeENI
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
-			Name: "test-nodeeni-dpdk-status",
+			Name: nodeENIName,
 		},
 	}
 
-	// Reconcile the NodeENI
-	result, err := controller.Reconcile(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Reconcile failed: %v", err)
-	}
+	return controller, mockClient, nodeENI, req
+}
 
-	// Check the result
-	if result.RequeueAfter != controller.Config.ReconcilePeriod {
-		t.Errorf("Expected requeue after %v, got %v", controller.Config.ReconcilePeriod, result.RequeueAfter)
-	}
-
+// verifyInitialDPDKAttachment verifies the initial attachment of a DPDK-enabled ENI
+func verifyInitialDPDKAttachment(t *testing.T, mockClient *testutil.MockClient, nodeENIName string) *networkingv1alpha1.NodeENI {
 	// Get the updated NodeENI
 	updatedNodeENI := &networkingv1alpha1.NodeENI{}
-	err = mockClient.Get(context.Background(), client.ObjectKey{Name: "test-nodeeni-dpdk-status"}, updatedNodeENI)
+	err := mockClient.Get(context.Background(), client.ObjectKey{Name: nodeENIName}, updatedNodeENI)
 	if err != nil {
 		t.Fatalf("Failed to get updated NodeENI: %v", err)
 	}
@@ -518,32 +439,32 @@ func TestNodeENIReconciler_Reconcile_WithDPDKStatusUpdate(t *testing.T) {
 		}
 	}
 
-	// Now simulate a DPDK binding update by updating the NodeENI status directly
-	// This would normally be done by the ENI Manager DaemonSet
-	if len(updatedNodeENI.Status.Attachments) > 0 {
+	return updatedNodeENI
+}
+
+// simulateDPDKBinding simulates a DPDK binding update by the ENI Manager DaemonSet
+func simulateDPDKBinding(t *testing.T, mockClient *testutil.MockClient, nodeENI *networkingv1alpha1.NodeENI) {
+	if len(nodeENI.Status.Attachments) > 0 {
 		// Update DPDK fields
-		updatedNodeENI.Status.Attachments[0].DPDKBound = true
-		updatedNodeENI.Status.Attachments[0].DPDKDriver = "vfio-pci"
-		updatedNodeENI.Status.Attachments[0].DPDKPCIAddress = "0000:00:06.0"
-		updatedNodeENI.Status.Attachments[0].DPDKResourceName = "intel.com/sriov_dpdk"
-		updatedNodeENI.Status.Attachments[0].LastUpdated = metav1.Now()
+		nodeENI.Status.Attachments[0].DPDKBound = true
+		nodeENI.Status.Attachments[0].DPDKDriver = "vfio-pci"
+		nodeENI.Status.Attachments[0].DPDKPCIAddress = "0000:00:06.0"
+		nodeENI.Status.Attachments[0].DPDKResourceName = "intel.com/sriov_dpdk"
+		nodeENI.Status.Attachments[0].LastUpdated = metav1.Now()
 
 		// Update the NodeENI status
-		err = mockClient.Status().Update(context.Background(), updatedNodeENI)
+		err := mockClient.Status().Update(context.Background(), nodeENI)
 		if err != nil {
 			t.Fatalf("Failed to update NodeENI status: %v", err)
 		}
 	}
+}
 
-	// Reconcile the NodeENI again to process the DPDK status update
-	result, err = controller.Reconcile(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Reconcile failed: %v", err)
-	}
-
+// verifyFinalDPDKStatus verifies the final DPDK status after reconciliation
+func verifyFinalDPDKStatus(t *testing.T, mockClient *testutil.MockClient, nodeENIName string) {
 	// Get the updated NodeENI again
 	finalNodeENI := &networkingv1alpha1.NodeENI{}
-	err = mockClient.Get(context.Background(), client.ObjectKey{Name: "test-nodeeni-dpdk-status"}, finalNodeENI)
+	err := mockClient.Get(context.Background(), client.ObjectKey{Name: nodeENIName}, finalNodeENI)
 	if err != nil {
 		t.Fatalf("Failed to get updated NodeENI: %v", err)
 	}
@@ -566,4 +487,36 @@ func TestNodeENIReconciler_Reconcile_WithDPDKStatusUpdate(t *testing.T) {
 			t.Errorf("Expected DPDKResourceName intel.com/sriov_dpdk, got %s", attachment.DPDKResourceName)
 		}
 	}
+}
+
+// TestNodeENIReconciler_Reconcile_WithDPDKStatusUpdate tests reconciliation with DPDK enabled and status updates
+func TestNodeENIReconciler_Reconcile_WithDPDKStatusUpdate(t *testing.T) {
+	// Set up the test environment
+	controller, mockClient, _, req := setupDPDKTest(t, "test-nodeeni-dpdk-status")
+
+	// Reconcile the NodeENI
+	result, err := controller.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Reconcile failed: %v", err)
+	}
+
+	// Check the result
+	if result.RequeueAfter != controller.Config.ReconcilePeriod {
+		t.Errorf("Expected requeue after %v, got %v", controller.Config.ReconcilePeriod, result.RequeueAfter)
+	}
+
+	// Verify the initial attachment
+	updatedNodeENI := verifyInitialDPDKAttachment(t, mockClient, "test-nodeeni-dpdk-status")
+
+	// Simulate a DPDK binding update
+	simulateDPDKBinding(t, mockClient, updatedNodeENI)
+
+	// Reconcile the NodeENI again to process the DPDK status update
+	result, err = controller.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Reconcile failed: %v", err)
+	}
+
+	// Verify the final DPDK status
+	verifyFinalDPDKStatus(t, mockClient, "test-nodeeni-dpdk-status")
 }

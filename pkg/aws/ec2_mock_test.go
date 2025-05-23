@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// TestMockEC2Client tests the mock EC2 client implementation
-func TestMockEC2Client(t *testing.T) {
+// setupMockEC2Client creates and initializes a mock EC2 client for testing
+func setupMockEC2Client(t *testing.T) (*MockEC2Client, context.Context) {
 	// Create a mock EC2 client
 	mockClient := NewMockEC2Client()
 
@@ -15,8 +15,14 @@ func TestMockEC2Client(t *testing.T) {
 	mockClient.AddSubnetName("test-subnet", "subnet-123")
 	mockClient.AddSecurityGroup("test-sg", "sg-123")
 
+	return mockClient, context.Background()
+}
+
+// TestMockEC2Client_ENILifecycle tests the ENI lifecycle operations (create, attach, detach, delete)
+func TestMockEC2Client_ENILifecycle(t *testing.T) {
+	mockClient, ctx := setupMockEC2Client(t)
+
 	// Test CreateENI
-	ctx := context.Background()
 	eniID, err := mockClient.CreateENI(ctx, "subnet-123", []string{"sg-123"}, "Test ENI", map[string]string{"Name": "test-eni"})
 	if err != nil {
 		t.Fatalf("Failed to create ENI: %v", err)
@@ -25,7 +31,7 @@ func TestMockEC2Client(t *testing.T) {
 		t.Fatal("Expected non-empty ENI ID")
 	}
 
-	// Test DescribeENI
+	// Test DescribeENI after creation
 	eni, err := mockClient.DescribeENI(ctx, eniID)
 	if err != nil {
 		t.Fatalf("Failed to describe ENI: %v", err)
@@ -49,8 +55,31 @@ func TestMockEC2Client(t *testing.T) {
 		t.Fatal("Expected non-empty attachment ID")
 	}
 
-	// Verify ENI is attached
-	eni, err = mockClient.DescribeENI(ctx, eniID)
+	// Verify ENI attachment
+	verifyENIAttachment(t, mockClient, ctx, eniID, attachmentID)
+
+	// Test DetachENI
+	err = mockClient.DetachENI(ctx, attachmentID, false)
+	if err != nil {
+		t.Fatalf("Failed to detach ENI: %v", err)
+	}
+
+	// Verify ENI is detached
+	verifyENIDetached(t, mockClient, ctx, eniID)
+
+	// Test DeleteENI
+	err = mockClient.DeleteENI(ctx, eniID)
+	if err != nil {
+		t.Fatalf("Failed to delete ENI: %v", err)
+	}
+
+	// Verify ENI is deleted
+	verifyENIDeleted(t, mockClient, ctx, eniID)
+}
+
+// verifyENIAttachment verifies that an ENI is properly attached
+func verifyENIAttachment(t *testing.T, mockClient *MockEC2Client, ctx context.Context, eniID, attachmentID string) {
+	eni, err := mockClient.DescribeENI(ctx, eniID)
 	if err != nil {
 		t.Fatalf("Failed to describe ENI: %v", err)
 	}
@@ -72,15 +101,11 @@ func TestMockEC2Client(t *testing.T) {
 	if !eni.Attachment.DeleteOnTermination {
 		t.Error("Expected DeleteOnTermination to be true")
 	}
+}
 
-	// Test DetachENI
-	err = mockClient.DetachENI(ctx, attachmentID, false)
-	if err != nil {
-		t.Fatalf("Failed to detach ENI: %v", err)
-	}
-
-	// Verify ENI is detached
-	eni, err = mockClient.DescribeENI(ctx, eniID)
+// verifyENIDetached verifies that an ENI is properly detached
+func verifyENIDetached(t *testing.T, mockClient *MockEC2Client, ctx context.Context, eniID string) {
+	eni, err := mockClient.DescribeENI(ctx, eniID)
 	if err != nil {
 		t.Fatalf("Failed to describe ENI: %v", err)
 	}
@@ -90,21 +115,22 @@ func TestMockEC2Client(t *testing.T) {
 	if eni.Attachment != nil {
 		t.Error("Expected nil attachment")
 	}
+}
 
-	// Test DeleteENI
-	err = mockClient.DeleteENI(ctx, eniID)
-	if err != nil {
-		t.Fatalf("Failed to delete ENI: %v", err)
-	}
-
-	// Verify ENI is deleted
-	eni, err = mockClient.DescribeENI(ctx, eniID)
+// verifyENIDeleted verifies that an ENI is properly deleted
+func verifyENIDeleted(t *testing.T, mockClient *MockEC2Client, ctx context.Context, eniID string) {
+	eni, err := mockClient.DescribeENI(ctx, eniID)
 	if err != nil {
 		t.Fatalf("Failed to describe ENI: %v", err)
 	}
 	if eni != nil {
 		t.Error("Expected nil ENI (deleted)")
 	}
+}
+
+// TestMockEC2Client_SubnetAndSG tests subnet and security group operations
+func TestMockEC2Client_SubnetAndSG(t *testing.T) {
+	mockClient, ctx := setupMockEC2Client(t)
 
 	// Test GetSubnetIDByName
 	subnetID, err := mockClient.GetSubnetIDByName(ctx, "test-subnet")
@@ -132,10 +158,15 @@ func TestMockEC2Client(t *testing.T) {
 	if sgID != "sg-123" {
 		t.Errorf("Expected security group ID sg-123, got %s", sgID)
 	}
+}
+
+// TestMockEC2Client_ErrorScenarios tests error scenarios
+func TestMockEC2Client_ErrorScenarios(t *testing.T) {
+	mockClient, ctx := setupMockEC2Client(t)
 
 	// Test failure scenarios
 	mockClient.SetFailureScenario("CreateENI", true)
-	_, err = mockClient.CreateENI(ctx, "subnet-123", []string{"sg-123"}, "Test ENI", nil)
+	_, err := mockClient.CreateENI(ctx, "subnet-123", []string{"sg-123"}, "Test ENI", nil)
 	if err == nil {
 		t.Error("Expected error for CreateENI failure scenario")
 	}

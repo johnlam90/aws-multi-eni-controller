@@ -20,8 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// TestE2E_NodeENIController tests the NodeENI controller end-to-end
-func TestE2E_NodeENIController(t *testing.T) {
+// setupE2ETest sets up the test environment for E2E testing
+func setupE2ETest(t *testing.T) (string, string, kubernetes.Interface, client.Client, *corev1.Node, string, string) {
 	// Skip if no AWS credentials or Kubernetes cluster
 	test.SkipIfNoAWSCredentials(t)
 	test.SkipIfNoKubernetesCluster(t)
@@ -38,6 +38,25 @@ func TestE2E_NodeENIController(t *testing.T) {
 		t.Skip("Skipping test that requires TEST_SECURITY_GROUP_ID environment variable")
 	}
 
+	// Create Kubernetes clients
+	clientset, runtimeClient := createK8sClients(t)
+
+	// Find a worker node to test with
+	testNode, nodeName := findWorkerNode(t, clientset)
+
+	// Add a test label to the node
+	testLabel := "e2e-test-nodeeni"
+	testNode.Labels[testLabel] = "true"
+	_, err := clientset.CoreV1().Nodes().Update(context.Background(), testNode, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("Failed to update node labels: %v", err)
+	}
+
+	return subnetID, securityGroupID, clientset, runtimeClient, testNode, nodeName, testLabel
+}
+
+// createK8sClients creates Kubernetes clients for testing
+func createK8sClients(t *testing.T) (kubernetes.Interface, client.Client) {
 	// Create Kubernetes client
 	config, err := clientcmd.BuildConfigFromFlags("", os.Getenv("KUBECONFIG"))
 	if err != nil {
@@ -59,7 +78,11 @@ func TestE2E_NodeENIController(t *testing.T) {
 		t.Fatalf("Failed to create controller-runtime client: %v", err)
 	}
 
-	// Find a worker node to test with
+	return clientset, runtimeClient
+}
+
+// findWorkerNode finds a worker node in the cluster
+func findWorkerNode(t *testing.T, clientset kubernetes.Interface) (*corev1.Node, string) {
 	nodes, err := clientset.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("Failed to list nodes: %v", err)
@@ -82,33 +105,15 @@ func TestE2E_NodeENIController(t *testing.T) {
 		t.Skip("No worker nodes found in the cluster")
 	}
 
-	// Get the node name and add a test label
+	// Get the node name
 	nodeName := testNode.Name
 	t.Logf("Using node %s for testing", nodeName)
 
-	// Add a test label to the node
-	testLabel := "e2e-test-nodeeni"
-	testNode.Labels[testLabel] = "true"
-	_, err = clientset.CoreV1().Nodes().Update(context.Background(), testNode, metav1.UpdateOptions{})
-	if err != nil {
-		t.Fatalf("Failed to update node labels: %v", err)
-	}
+	return testNode, nodeName
+}
 
-	// Clean up the test label after the test
-	defer func() {
-		node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
-		if err != nil {
-			t.Logf("Failed to get node for cleanup: %v", err)
-			return
-		}
-		delete(node.Labels, testLabel)
-		_, err = clientset.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
-		if err != nil {
-			t.Logf("Failed to remove test label from node: %v", err)
-		}
-	}()
-
-	// Create a NodeENI resource
+// createNodeENI creates a NodeENI resource for testing
+func createNodeENI(t *testing.T, runtimeClient client.Client, subnetID, securityGroupID, testLabel string) *networkingv1alpha1.NodeENI {
 	nodeENI := &networkingv1alpha1.NodeENI{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "networking.k8s.aws/v1alpha1",
@@ -130,21 +135,19 @@ func TestE2E_NodeENIController(t *testing.T) {
 	}
 
 	// Create the NodeENI
-	err = runtimeClient.Create(context.Background(), nodeENI)
+	err := runtimeClient.Create(context.Background(), nodeENI)
 	if err != nil {
 		t.Fatalf("Failed to create NodeENI: %v", err)
 	}
 
-	// Clean up the NodeENI after the test
-	defer func() {
-		err := runtimeClient.Delete(context.Background(), nodeENI)
-		if err != nil {
-			t.Logf("Failed to delete NodeENI: %v", err)
-		}
-	}()
+	return nodeENI
+}
 
-	// Wait for the NodeENI to be reconciled
-	err = wait.PollImmediate(5*time.Second, 2*time.Minute, func() (bool, error) {
+// waitForNodeENIAttachment waits for the NodeENI to be attached to the node
+func waitForNodeENIAttachment(t *testing.T, runtimeClient client.Client, nodeName string) *networkingv1alpha1.NodeENI {
+	nodeENI := &networkingv1alpha1.NodeENI{}
+
+	err := wait.PollImmediate(5*time.Second, 2*time.Minute, func() (bool, error) {
 		err := runtimeClient.Get(context.Background(), client.ObjectKey{Name: "e2e-test-nodeeni"}, nodeENI)
 		if err != nil {
 			return false, err
@@ -165,7 +168,35 @@ func TestE2E_NodeENIController(t *testing.T) {
 		t.Fatalf("Failed to wait for NodeENI to be reconciled: %v", err)
 	}
 
-	// Verify the attachment details
+	return nodeENI
+}
+
+// waitForNodeENIDetachment waits for the NodeENI to be detached from the node
+func waitForNodeENIDetachment(t *testing.T, runtimeClient client.Client, nodeName string) {
+	err := wait.PollImmediate(5*time.Second, 2*time.Minute, func() (bool, error) {
+		nodeENI := &networkingv1alpha1.NodeENI{}
+		err := runtimeClient.Get(context.Background(), client.ObjectKey{Name: "e2e-test-nodeeni"}, nodeENI)
+		if err != nil {
+			return false, err
+		}
+
+		// Check if the attachment for our node is gone
+		for _, att := range nodeENI.Status.Attachments {
+			if att.NodeID == nodeName {
+				return false, nil
+			}
+		}
+
+		return true, nil
+	})
+
+	if err != nil {
+		t.Fatalf("Failed to wait for NodeENI attachment to be removed: %v", err)
+	}
+}
+
+// verifyAttachmentDetails verifies the details of the NodeENI attachment
+func verifyAttachmentDetails(t *testing.T, nodeENI *networkingv1alpha1.NodeENI, nodeName, subnetID string) {
 	var attachment *networkingv1alpha1.ENIAttachment
 	for i := range nodeENI.Status.Attachments {
 		if nodeENI.Status.Attachments[i].NodeID == nodeName {
@@ -189,34 +220,53 @@ func TestE2E_NodeENIController(t *testing.T) {
 	if attachment.SubnetCIDR == "" {
 		t.Error("Expected non-empty subnet CIDR")
 	}
+}
+
+// TestE2E_NodeENIController tests the NodeENI controller end-to-end
+func TestE2E_NodeENIController(t *testing.T) {
+	// Set up the test environment
+	subnetID, securityGroupID, clientset, runtimeClient, testNode, nodeName, testLabel := setupE2ETest(t)
+
+	// Clean up the test label after the test
+	defer func() {
+		node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+		if err != nil {
+			t.Logf("Failed to get node for cleanup: %v", err)
+			return
+		}
+		delete(node.Labels, testLabel)
+		_, err = clientset.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
+		if err != nil {
+			t.Logf("Failed to remove test label from node: %v", err)
+		}
+	}()
+
+	// Create a NodeENI resource
+	nodeENI := createNodeENI(t, runtimeClient, subnetID, securityGroupID, testLabel)
+
+	// Clean up the NodeENI after the test
+	defer func() {
+		err := runtimeClient.Delete(context.Background(), nodeENI)
+		if err != nil {
+			t.Logf("Failed to delete NodeENI: %v", err)
+		}
+	}()
+
+	// Wait for the NodeENI to be reconciled
+	nodeENI = waitForNodeENIAttachment(t, runtimeClient, nodeName)
+
+	// Verify the attachment details
+	verifyAttachmentDetails(t, nodeENI, nodeName, subnetID)
 
 	// Test cleanup by removing the node label
 	delete(testNode.Labels, testLabel)
-	_, err = clientset.CoreV1().Nodes().Update(context.Background(), testNode, metav1.UpdateOptions{})
+	_, err := clientset.CoreV1().Nodes().Update(context.Background(), testNode, metav1.UpdateOptions{})
 	if err != nil {
 		t.Fatalf("Failed to remove test label from node: %v", err)
 	}
 
 	// Wait for the attachment to be removed
-	err = wait.PollImmediate(5*time.Second, 2*time.Minute, func() (bool, error) {
-		err := runtimeClient.Get(context.Background(), client.ObjectKey{Name: "e2e-test-nodeeni"}, nodeENI)
-		if err != nil {
-			return false, err
-		}
-
-		// Check if the attachment for our node is gone
-		for _, att := range nodeENI.Status.Attachments {
-			if att.NodeID == nodeName {
-				return false, nil
-			}
-		}
-
-		return true, nil
-	})
-
-	if err != nil {
-		t.Fatalf("Failed to wait for NodeENI attachment to be removed: %v", err)
-	}
+	waitForNodeENIDetachment(t, runtimeClient, nodeName)
 
 	t.Log("Successfully verified NodeENI controller end-to-end")
 }

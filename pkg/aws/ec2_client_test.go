@@ -75,8 +75,8 @@ func TestCreateEC2ClientWithFacade(t *testing.T) {
 	}
 }
 
-// TestCreateMockEC2Client tests the factory function for creating a mock EC2 client
-func TestCreateMockEC2Client(t *testing.T) {
+// setupMockEC2ClientTest initializes a mock EC2 client for testing
+func setupMockEC2ClientTest(t *testing.T) (EC2Interface, *MockEC2Client, context.Context) {
 	// Test creating a new mock EC2 client using the factory function
 	client := CreateMockEC2Client()
 	if client == nil {
@@ -94,8 +94,22 @@ func TestCreateMockEC2Client(t *testing.T) {
 	mockClient.AddSubnetName("test-subnet", "subnet-123")
 	mockClient.AddSecurityGroup("test-sg", "sg-123")
 
+	return client, mockClient, context.Background()
+}
+
+// TestCreateMockEC2Client_Factory tests the factory function for creating a mock EC2 client
+func TestCreateMockEC2Client_Factory(t *testing.T) {
+	client, _, _ := setupMockEC2ClientTest(t)
+	if client == nil {
+		t.Fatal("Expected non-nil mock EC2 client")
+	}
+}
+
+// TestCreateMockEC2Client_ENIOperations tests ENI operations with the mock EC2 client
+func TestCreateMockEC2Client_ENIOperations(t *testing.T) {
+	client, _, ctx := setupMockEC2ClientTest(t)
+
 	// Test CreateENI
-	ctx := context.Background()
 	eniID, err := client.CreateENI(ctx, "subnet-123", []string{"sg-123"}, "Test ENI", map[string]string{"Name": "test-eni"})
 	if err != nil {
 		t.Fatalf("Failed to create ENI: %v", err)
@@ -114,33 +128,6 @@ func TestCreateMockEC2Client(t *testing.T) {
 	}
 	if eni.NetworkInterfaceID != eniID {
 		t.Fatalf("Expected ENI ID %s, got %s", eniID, eni.NetworkInterfaceID)
-	}
-
-	// Test GetSubnetCIDRByID
-	cidr, err := client.GetSubnetCIDRByID(ctx, "subnet-123")
-	if err != nil {
-		t.Fatalf("Failed to get subnet CIDR: %v", err)
-	}
-	if cidr != "10.0.0.0/24" {
-		t.Fatalf("Expected CIDR 10.0.0.0/24, got %s", cidr)
-	}
-
-	// Test GetSubnetIDByName
-	subnetID, err := client.GetSubnetIDByName(ctx, "test-subnet")
-	if err != nil {
-		t.Fatalf("Failed to get subnet ID: %v", err)
-	}
-	if subnetID != "subnet-123" {
-		t.Fatalf("Expected subnet ID subnet-123, got %s", subnetID)
-	}
-
-	// Test GetSecurityGroupIDByName
-	sgID, err := client.GetSecurityGroupIDByName(ctx, "test-sg")
-	if err != nil {
-		t.Fatalf("Failed to get security group ID: %v", err)
-	}
-	if sgID != "sg-123" {
-		t.Fatalf("Expected security group ID sg-123, got %s", sgID)
 	}
 
 	// Test AttachENI
@@ -168,5 +155,37 @@ func TestCreateMockEC2Client(t *testing.T) {
 	err = client.DeleteENI(ctx, eniID)
 	if err != nil {
 		t.Fatalf("Failed to delete ENI: %v", err)
+	}
+}
+
+// TestCreateMockEC2Client_SubnetAndSG tests subnet and security group operations
+func TestCreateMockEC2Client_SubnetAndSG(t *testing.T) {
+	client, _, ctx := setupMockEC2ClientTest(t)
+
+	// Test GetSubnetCIDRByID
+	cidr, err := client.GetSubnetCIDRByID(ctx, "subnet-123")
+	if err != nil {
+		t.Fatalf("Failed to get subnet CIDR: %v", err)
+	}
+	if cidr != "10.0.0.0/24" {
+		t.Fatalf("Expected CIDR 10.0.0.0/24, got %s", cidr)
+	}
+
+	// Test GetSubnetIDByName
+	subnetID, err := client.GetSubnetIDByName(ctx, "test-subnet")
+	if err != nil {
+		t.Fatalf("Failed to get subnet ID: %v", err)
+	}
+	if subnetID != "subnet-123" {
+		t.Fatalf("Expected subnet ID subnet-123, got %s", subnetID)
+	}
+
+	// Test GetSecurityGroupIDByName
+	sgID, err := client.GetSecurityGroupIDByName(ctx, "test-sg")
+	if err != nil {
+		t.Fatalf("Failed to get security group ID: %v", err)
+	}
+	if sgID != "sg-123" {
+		t.Fatalf("Expected security group ID sg-123, got %s", sgID)
 	}
 }

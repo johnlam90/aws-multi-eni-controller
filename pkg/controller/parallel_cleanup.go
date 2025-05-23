@@ -7,12 +7,8 @@ import (
 	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
 )
 
-// parallelCleanupENIs is a helper function that cleans up ENI attachments in parallel
-// Returns true if all cleanup operations succeeded, false otherwise
-func (r *NodeENIReconciler) parallelCleanupENIs(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachments []networkingv1alpha1.ENIAttachment, logPrefix string) bool {
-	log := r.Log.WithValues("nodeeni", nodeENI.Name)
-	log.Info(logPrefix+" ENI attachments in parallel", "count", len(attachments))
-
+// handleSingleAttachment handles the case of a single attachment
+func (r *NodeENIReconciler) handleSingleAttachment(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachments []networkingv1alpha1.ENIAttachment) bool {
 	// If there are no attachments, return success
 	if len(attachments) == 0 {
 		return true
@@ -23,56 +19,80 @@ func (r *NodeENIReconciler) parallelCleanupENIs(ctx context.Context, nodeENI *ne
 		return r.cleanupENIAttachment(ctx, nodeENI, attachments[0])
 	}
 
+	return false
+}
+
+// calculateWorkerCount determines the optimal number of workers
+func (r *NodeENIReconciler) calculateWorkerCount(attachmentCount int) int {
 	// Determine the maximum number of concurrent cleanup operations
 	maxConcurrent := r.Config.MaxConcurrentENICleanup
 	if maxConcurrent <= 0 {
 		maxConcurrent = 3 // Default to 3 if not configured
 	}
 
-	// Use a worker pool pattern for better resource management
-	// Create a channel for work items
-	workChan := make(chan networkingv1alpha1.ENIAttachment, len(attachments))
-
-	// Create a channel to collect results
-	resultChan := make(chan bool, len(attachments))
-
-	// Create a wait group to wait for all workers to finish
-	var wg sync.WaitGroup
-
 	// Dynamic worker scaling based on workload
-	workerCount := min(maxConcurrent, max(1, len(attachments)/2))
-	if workerCount > len(attachments) {
-		workerCount = len(attachments)
+	workerCount := min(maxConcurrent, max(1, attachmentCount/2))
+	if workerCount > attachmentCount {
+		workerCount = attachmentCount
 	}
 
-	// Start workers with context cancellation support
+	return workerCount
+}
+
+// startWorkers starts the worker goroutines for parallel processing
+func (r *NodeENIReconciler) startWorkers(
+	ctx context.Context,
+	nodeENI *networkingv1alpha1.NodeENI,
+	workChan <-chan networkingv1alpha1.ENIAttachment,
+	resultChan chan<- bool,
+	workerCount int,
+	wg *sync.WaitGroup,
+) {
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for {
-				select {
-				case att, ok := <-workChan:
-					if !ok {
-						// Channel closed, exit worker
-						return
-					}
-					// Clean up the attachment with context timeout
-					success := r.cleanupENIAttachment(ctx, nodeENI, att)
-					select {
-					case resultChan <- success:
-					case <-ctx.Done():
-						// Context cancelled, exit worker
-						return
-					}
-				case <-ctx.Done():
-					// Context cancelled, exit worker
-					return
-				}
-			}
+			r.workerFunc(ctx, nodeENI, workChan, resultChan)
 		}()
 	}
+}
 
+// workerFunc is the function executed by each worker goroutine
+func (r *NodeENIReconciler) workerFunc(
+	ctx context.Context,
+	nodeENI *networkingv1alpha1.NodeENI,
+	workChan <-chan networkingv1alpha1.ENIAttachment,
+	resultChan chan<- bool,
+) {
+	for {
+		select {
+		case att, ok := <-workChan:
+			if !ok {
+				// Channel closed, exit worker
+				return
+			}
+			// Clean up the attachment with context timeout
+			success := r.cleanupENIAttachment(ctx, nodeENI, att)
+			select {
+			case resultChan <- success:
+			case <-ctx.Done():
+				// Context cancelled, exit worker
+				return
+			}
+		case <-ctx.Done():
+			// Context cancelled, exit worker
+			return
+		}
+	}
+}
+
+// sendWorkToWorkers distributes work to the worker goroutines
+func (r *NodeENIReconciler) sendWorkToWorkers(
+	ctx context.Context,
+	attachments []networkingv1alpha1.ENIAttachment,
+	workChan chan<- networkingv1alpha1.ENIAttachment,
+	wg *sync.WaitGroup,
+) bool {
 	// Send work to workers
 	for _, att := range attachments {
 		select {
@@ -85,10 +105,16 @@ func (r *NodeENIReconciler) parallelCleanupENIs(ctx context.Context, nodeENI *ne
 		}
 	}
 	close(workChan)
+	return true
+}
 
-	// Wait for all workers to complete
-	wg.Wait()
-	close(resultChan)
+// collectResults collects and processes the results from worker goroutines
+func (r *NodeENIReconciler) collectResults(
+	resultChan <-chan bool,
+	nodeENI *networkingv1alpha1.NodeENI,
+	logPrefix string,
+) bool {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name)
 
 	// Check if any cleanup operations failed
 	allSucceeded := true
@@ -105,6 +131,42 @@ func (r *NodeENIReconciler) parallelCleanupENIs(ctx context.Context, nodeENI *ne
 	}
 
 	return allSucceeded
+}
+
+// parallelCleanupENIs is a helper function that cleans up ENI attachments in parallel
+// Returns true if all cleanup operations succeeded, false otherwise
+func (r *NodeENIReconciler) parallelCleanupENIs(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachments []networkingv1alpha1.ENIAttachment, logPrefix string) bool {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name)
+	log.Info(logPrefix+" ENI attachments in parallel", "count", len(attachments))
+
+	// Handle the case of no attachments or a single attachment
+	singleResult := r.handleSingleAttachment(ctx, nodeENI, attachments)
+	if len(attachments) <= 1 {
+		return singleResult
+	}
+
+	// Calculate the optimal number of workers
+	workerCount := r.calculateWorkerCount(len(attachments))
+
+	// Create channels for work distribution and result collection
+	workChan := make(chan networkingv1alpha1.ENIAttachment, len(attachments))
+	resultChan := make(chan bool, len(attachments))
+	var wg sync.WaitGroup
+
+	// Start the worker goroutines
+	r.startWorkers(ctx, nodeENI, workChan, resultChan, workerCount, &wg)
+
+	// Send work to the workers
+	if !r.sendWorkToWorkers(ctx, attachments, workChan, &wg) {
+		return false
+	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+	close(resultChan)
+
+	// Collect and process the results
+	return r.collectResults(resultChan, nodeENI, logPrefix)
 }
 
 // min returns the minimum of two integers
