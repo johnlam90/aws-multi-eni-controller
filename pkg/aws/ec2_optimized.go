@@ -21,7 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
-// Custom error types for better error handling
+// ENINotFoundError is returned when an ENI with the specified ID cannot be found in AWS.
 type ENINotFoundError struct {
 	ENIID string
 }
@@ -30,6 +30,7 @@ func (e ENINotFoundError) Error() string {
 	return fmt.Sprintf("ENI %s not found", e.ENIID)
 }
 
+// AttachmentNotFoundError is returned when an ENI attachment with the specified ID cannot be found in AWS.
 type AttachmentNotFoundError struct {
 	AttachmentID string
 }
@@ -38,6 +39,7 @@ func (e AttachmentNotFoundError) Error() string {
 	return fmt.Sprintf("attachment %s not found", e.AttachmentID)
 }
 
+// SubnetNotFoundError is returned when a subnet with the specified name cannot be found in AWS.
 type SubnetNotFoundError struct {
 	SubnetName string
 }
