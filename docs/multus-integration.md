@@ -76,9 +76,9 @@ metadata:
 spec:
   config: '{
     "cniVersion": "0.3.1",
-    "type": "macvlan",
+    "type": "ipvlan",
     "master": "eth2",
-    "mode": "bridge",
+    "mode": "l2",
     "ipam": {
       "type": "host-local",
       "subnet": "192.168.1.0/24",
@@ -161,6 +161,46 @@ spec:
   dpdkResourceName: "intel.com/intel_sriov_netdevice"
 ```
 
+Create a NetworkAttachmentDefinition for DPDK:
+
+```yaml
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: dpdk-network
+spec:
+  config: '{
+    "cniVersion": "0.3.1",
+    "type": "host-device",
+    "device": "0000:00:06.0",
+    "vlan": 1000,
+    "ipam": {
+      "type": "host-local",
+      "subnet": "192.168.1.0/24",
+      "rangeStart": "192.168.1.200",
+      "rangeEnd": "192.168.1.250"
+    }
+  }'
+```
+
+Deploy a pod that uses DPDK:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dpdk-pod
+  annotations:
+    k8s.v1.cni.cncf.io/networks: dpdk-network
+spec:
+  containers:
+  - name: dpdk-container
+    image: dpdk-app:latest
+    resources:
+      limits:
+        intel.com/intel_sriov_netdevice: 1
+```
+
 ## Common Use Cases
 
 ### Network Isolation
@@ -176,9 +216,9 @@ metadata:
 spec:
   config: '{
     "cniVersion": "0.3.1",
-    "type": "macvlan",
+    "type": "ipvlan",
     "master": "eth2",
-    "mode": "bridge",
+    "mode": "l2",
     "ipam": {
       "type": "host-local",
       "subnet": "10.10.0.0/24"

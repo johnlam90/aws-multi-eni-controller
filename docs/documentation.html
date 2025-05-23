@@ -4,21 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Documentation | AWS Multi-ENI Controller for Kubernetes</title>
-    
+
     <!-- SEO Meta Tags -->
     <meta name="description" content="Comprehensive documentation for AWS Multi-ENI Controller: installation, configuration, usage examples, and integration with Multus CNI.">
     <meta name="keywords" content="AWS ENI Documentation, Kubernetes Controller Guide, Multus CNI Integration, Network Interfaces Setup, EKS Configuration, Helm Chart Installation">
     <meta name="author" content="John Lam">
-    
+
     <!-- Open Graph / Social Media Meta Tags -->
     <meta property="og:title" content="Documentation | AWS Multi-ENI Controller for Kubernetes">
     <meta property="og:description" content="Comprehensive documentation for AWS Multi-ENI Controller: installation, configuration, usage examples, and integration with Multus CNI.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://johnlam90.github.io/aws-multi-eni-controller/documentation.html">
-    
+
     <!-- Favicon -->
     <link rel="icon" href="favicon.ico" type="image/x-icon">
-    
+
     <!-- CSS -->
     <style>
         :root {
@@ -28,13 +28,13 @@
             --light-text: #6c757d;
             --border-color: #dee2e6;
         }
-        
+
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
         }
-        
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
             line-height: 1.6;
@@ -43,83 +43,83 @@
             margin: 0 auto;
             padding: 20px;
         }
-        
+
         header {
             text-align: center;
             margin-bottom: 40px;
             padding: 20px 0;
             border-bottom: 1px solid var(--border-color);
         }
-        
+
         nav {
             display: flex;
             justify-content: center;
             margin-bottom: 30px;
         }
-        
+
         nav a {
             margin: 0 15px;
             text-decoration: none;
             color: var(--primary-color);
             font-weight: bold;
         }
-        
+
         h1 {
             font-size: 2.5rem;
             margin-bottom: 10px;
             color: var(--primary-color);
         }
-        
+
         h2 {
             font-size: 1.8rem;
             margin: 30px 0 15px;
             color: var(--primary-color);
         }
-        
+
         h3 {
             font-size: 1.4rem;
             margin: 25px 0 10px;
         }
-        
+
         p {
             margin-bottom: 15px;
         }
-        
+
         .doc-section {
             margin-bottom: 40px;
         }
-        
+
         .doc-nav {
             background-color: var(--secondary-color);
             padding: 20px;
             border-radius: 5px;
             margin-bottom: 30px;
         }
-        
+
         .doc-nav h3 {
             margin-top: 0;
         }
-        
+
         .doc-nav ul {
             list-style-type: none;
         }
-        
+
         .doc-nav li {
             margin-bottom: 10px;
         }
-        
+
         .doc-nav a {
             text-decoration: none;
             color: var(--primary-color);
         }
-        
+
         code {
             background-color: #f1f1f1;
             padding: 2px 5px;
             border-radius: 3px;
             font-family: 'Courier New', Courier, monospace;
         }
-        
+
         pre {
             background-color: #f1f1f1;
             padding: 15px;
@@ -128,7 +128,7 @@
             margin: 15px 0;
             font-family: 'Courier New', Courier, monospace;
         }
-        
+
         footer {
             text-align: center;
             margin-top: 50px;
@@ -143,14 +143,14 @@
         <h1>AWS Multi-ENI Controller for Kubernetes</h1>
         <p>Comprehensive Documentation</p>
     </header>
-    
+
     <nav>
         <a href="index.html">Home</a>
         <a href="features.html">Features</a>
         <a href="documentation.html">Documentation</a>
         <a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub</a>
     </nav>
-    
+
     <main>
         <section class="doc-nav">
             <h3>Documentation Contents</h3>
@@ -163,7 +163,7 @@
                 <li><a href="#library">Using as a Library</a></li>
             </ul>
         </section>
-        
+
         <section id="installation" class="doc-section">
             <h2>Installation</h2>
             <h3>Prerequisites</h3>
@@ -173,7 +173,7 @@
                 <li>Helm 3.0+ (for Helm installation)</li>
                 <li>IAM permissions for EC2 ENI operations</li>
             </ul>
-            
+
             <h3>Install with Helm (Recommended)</h3>
             <pre>
 # Install the latest version
@@ -186,7 +186,7 @@ helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controll
   --set awsRegion=us-east-1 \
   --set nodeSelector.ng=multi-eni</pre>
         </section>
-        
+
         <section id="configuration" class="doc-section">
             <h2>Configuration</h2>
             <h3>Basic NodeENI Resource</h3>
@@ -205,7 +205,7 @@ spec:
   mtu: 9001  # Optional: Set MTU for jumbo frames
   deleteOnTermination: true
   description: "Multus ENI for secondary network interfaces"</pre>
-            
+
             <h3>Using Subnet Names Instead of IDs</h3>
             <pre>
 apiVersion: networking.k8s.aws/v1alpha1
@@ -219,7 +219,7 @@ spec:
   securityGroupIDs:
   - sg-05da196f3314d4af8
   deviceIndex: 2</pre>
-            
+
             <h3>Controller Concurrency Configuration</h3>
             <pre>
 # In Helm values.yaml
@@ -227,26 +227,26 @@ controller:
   maxConcurrentReconciles: 10  # Default: 5
   maxConcurrentENICleanup: 5   # Default: 3</pre>
         </section>
-        
+
         <section id="usage" class="doc-section">
             <h2>Usage Examples</h2>
             <h3>Label Your Nodes</h3>
             <pre>kubectl label node your-node-name ng=multi-eni</pre>
-            
+
             <h3>Verify ENI Creation</h3>
             <pre>kubectl get nodeeni multus-eni-config -o yaml</pre>
-            
+
             <h3>Check Controller Logs</h3>
             <pre>kubectl logs -n eni-controller-system deployment/eni-controller</pre>
-            
+
             <h3>Check ENI Manager Logs</h3>
             <pre>kubectl logs -n eni-controller-system daemonset/eni-manager</pre>
         </section>
-        
+
         <section id="multus" class="doc-section">
             <h2>Integration with Multus CNI</h2>
             <p>The AWS Multi-ENI Controller was primarily built to simplify the use of Multus CNI with AWS EC2 instances. Multus CNI enables attaching multiple network interfaces to Kubernetes pods, but it requires those interfaces to exist on the node first.</p>
-            
+
             <h3>Example NetworkAttachmentDefinition for Multus</h3>
             <pre>
 apiVersion: k8s.cni.cncf.io/v1
@@ -256,9 +256,29 @@ metadata:
 spec:
   config: '{
     "cniVersion": "0.3.1",
-    "type": "macvlan",
+    "type": "ipvlan",
     "master": "eth2",
-    "mode": "bridge",
+    "mode": "l2",
+    "ipam": {
+      "type": "host-local",
+      "subnet": "192.168.1.0/24",
+      "rangeStart": "192.168.1.200",
+      "rangeEnd": "192.168.1.250"
+    }
+  }'</pre>
+
+            <h3>Example DPDK NetworkAttachmentDefinition</h3>
+            <pre>
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: dpdk-network
+spec:
+  config: '{
+    "cniVersion": "0.3.1",
+    "type": "host-device",
+    "device": "0000:00:06.0",
+    "vlan": 1000,
     "ipam": {
       "type": "host-local",
       "subnet": "192.168.1.0/24",
@@ -267,7 +287,7 @@ spec:
     }
   }'</pre>
         </section>
-        
+
         <section id="troubleshooting" class="doc-section">
             <h2>Troubleshooting</h2>
             <h3>Common Issues</h3>
@@ -299,12 +319,12 @@ spec:
                 </li>
             </ul>
         </section>
-        
+
         <section id="library" class="doc-section">
             <h2>Using as a Library</h2>
             <p>The AWS Multi-ENI Controller can also be used as a Go library for programmatic ENI management:</p>
             <pre>go get github.com/johnlam90/aws-multi-eni-controller</pre>
-            
+
             <h3>Basic Example</h3>
             <pre>
 package main
@@ -353,7 +373,7 @@ func main() {
 }</pre>
         </section>
     </main>
-    
+
     <footer>
         <p>&copy; 2023-2025 John Lam. Licensed under the Apache License 2.0.</p>
         <p><a href="https://github.com/johnlam90/aws-multi-eni-controller">GitHub Repository</a></p>
