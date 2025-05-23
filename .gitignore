@@ -26,6 +26,10 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/
+*.original
+*.bak
+*.old
+*.tmp
 
 # Environment files
 .env
