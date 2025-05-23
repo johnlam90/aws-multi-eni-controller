@@ -16,6 +16,7 @@ This comprehensive code review analyzes the AWS Multi-ENI Controller codebase fo
 ### 1. Memory & Performance Optimizations
 
 #### A. String Operations in Hot Paths
+
 **File**: `cmd/eni-manager/main.go`
 **Issue**: Inefficient string operations in monitoring loops
 **Lines**: 1089-1095, 1156-1162
@@ -36,6 +37,7 @@ if bytes.Contains(outputBytes, []byte("state UP")) {
 **Impact**: Reduces memory allocations in hot paths by ~30%
 
 #### B. Map Initialization Optimization
+
 **File**: `pkg/config/config.go`
 **Issue**: Maps initialized without capacity hints
 **Lines**: 45-50
@@ -51,6 +53,7 @@ InterfaceMTUs: make(map[string]int, 16), // Typical node has 2-8 ENIs
 **Impact**: Reduces map rehashing and memory allocations
 
 #### C. Slice Pre-allocation
+
 **File**: `pkg/controller/nodeeni_controller.go`
 **Issue**: Slices growing dynamically in loops
 **Lines**: 156-162, 890-895
@@ -71,6 +74,7 @@ requests := make([]reconcile.Request, 0, len(nodeENIList.Items))
 ### 2. Error Handling Improvements
 
 #### A. Structured Error Wrapping
+
 **File**: `pkg/aws/ec2.go`
 **Issue**: Generic error messages without context
 **Lines**: 89, 156, 203
@@ -85,6 +89,7 @@ return "", fmt.Errorf("failed to create ENI in subnet %s with security groups %v
 ```
 
 #### B. Error Type Checking
+
 **File**: `cmd/eni-manager/main.go`
 **Issue**: String-based error checking instead of error types
 **Lines**: 1456-1460, 1523-1527
@@ -106,6 +111,7 @@ func (e ENINotFoundError) Error() string {
 ### 3. Resource Management
 
 #### A. Context Timeout Handling
+
 **File**: `pkg/controller/nodeeni_controller.go`
 **Issue**: Missing context timeouts for AWS operations
 **Lines**: 234-240, 567-573
@@ -121,6 +127,7 @@ eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
 ```
 
 #### B. Goroutine Leak Prevention
+
 **File**: `pkg/controller/parallel_cleanup.go`
 **Issue**: Potential goroutine leaks in worker pools
 **Lines**: 35-45
@@ -138,6 +145,7 @@ case <-ctx.Done():
 ### 4. Configuration Validation
 
 #### A. Input Validation
+
 **File**: `pkg/config/config.go`
 **Issue**: Missing validation for configuration values
 **Lines**: 85-95, 120-130
@@ -160,6 +168,7 @@ func (c *ControllerConfig) Validate() error {
 ### 1. Caching Improvements
 
 #### A. TTL-based Cache Implementation
+
 **File**: `pkg/aws/ec2.go`
 **Issue**: Simple time-based cache without TTL per entry
 **Lines**: 45-55
@@ -177,6 +186,7 @@ type TTLCache struct {
 ```
 
 #### B. Cache Size Limits
+
 **File**: `pkg/aws/ec2.go`
 **Issue**: Unbounded cache growth
 **Solution**: Implement LRU cache with size limits
@@ -184,6 +194,7 @@ type TTLCache struct {
 ### 2. Logging Optimization
 
 #### A. Structured Logging Enhancement
+
 **File**: `cmd/eni-manager/main.go`
 **Issue**: Inconsistent log levels and excessive logging
 **Lines**: 890-900, 1200-1210
@@ -200,6 +211,7 @@ log.V(1).Info("Interface mapping found",
 ```
 
 #### B. Log Sampling for High-Frequency Events
+
 **File**: `cmd/eni-manager/main.go`
 **Issue**: Potential log flooding in monitoring loops
 **Solution**: Implement log sampling for repetitive events
@@ -207,6 +219,7 @@ log.V(1).Info("Interface mapping found",
 ### 3. Concurrency Improvements
 
 #### A. Worker Pool Optimization
+
 **File**: `pkg/controller/parallel_cleanup.go`
 **Issue**: Fixed worker count regardless of workload
 **Lines**: 30-35
@@ -217,6 +230,7 @@ workerCount := min(maxConcurrent, max(1, len(attachments)/2))
 ```
 
 #### B. Rate Limiting for AWS API Calls
+
 **File**: `pkg/aws/ec2.go`
 **Issue**: No client-side rate limiting
 **Solution**: Implement token bucket rate limiter
@@ -240,6 +254,7 @@ if err := c.rateLimiter.Wait(ctx); err != nil {
 ### 1. Interface Segregation
 
 #### A. Split Large Interfaces
+
 **File**: `pkg/aws/interface.go`
 **Issue**: Single large interface for all EC2 operations
 **Solution**: Split into focused interfaces
@@ -265,6 +280,7 @@ type SubnetResolver interface {
 ### 2. Event-Driven Architecture
 
 #### A. Replace Polling with Events
+
 **File**: `cmd/eni-manager/main.go`
 **Issue**: Polling-based interface monitoring
 **Lines**: 1089-1120
@@ -273,6 +289,7 @@ type SubnetResolver interface {
 ### 3. State Management
 
 #### A. Finite State Machine for ENI Lifecycle
+
 **File**: `pkg/controller/nodeeni_controller.go`
 **Issue**: Complex state management in reconciler
 **Solution**: Implement explicit state machine
@@ -300,6 +317,7 @@ type ENIStateMachine struct {
 ### 1. Input Sanitization
 
 #### A. Command Injection Prevention
+
 **File**: `cmd/eni-manager/main.go`
 **Issue**: Potential command injection in shell commands
 **Lines**: 1456-1470
@@ -314,6 +332,7 @@ cmd.Stdin = strings.NewReader(pciAddress)
 ```
 
 #### B. Path Traversal Prevention
+
 **File**: `pkg/config/config.go`
 **Issue**: File paths not validated
 **Lines**: 180-185
@@ -331,6 +350,7 @@ func validatePath(path string) error {
 ### 2. Secrets Management
 
 #### A. Avoid Logging Sensitive Data
+
 **File**: `pkg/aws/ec2.go`
 **Issue**: Potential logging of sensitive AWS responses
 **Solution**: Implement sensitive data filtering in logs
@@ -340,6 +360,7 @@ func validatePath(path string) error {
 ### 1. Metrics Implementation
 
 #### A. Prometheus Metrics
+
 **File**: `pkg/controller/nodeeni_controller.go`
 **Issue**: Limited metrics for monitoring
 **Solution**: Add comprehensive metrics
@@ -367,6 +388,7 @@ var (
 ### 2. Health Checks
 
 #### A. Comprehensive Health Endpoints
+
 **File**: `cmd/main.go`
 **Issue**: Basic health checking
 **Solution**: Implement detailed health checks
@@ -391,12 +413,15 @@ func (h *HealthChecker) CheckKubernetes(ctx context.Context) error {
 ### 1. Test Coverage Enhancement
 
 #### A. Integration Tests
+
 **File**: `test/e2e/e2e_test.go`
 **Issue**: Limited test scenarios
 **Solution**: Add comprehensive integration tests
 
 #### B. Chaos Testing
+
 **Solution**: Add tests for failure scenarios
+
 - Network partitions
 - AWS API failures
 - Node failures
@@ -404,6 +429,7 @@ func (h *HealthChecker) CheckKubernetes(ctx context.Context) error {
 ### 2. Mock Improvements
 
 #### A. Better Mock Interfaces
+
 **File**: `pkg/test/mock_client.go`
 **Issue**: Simple mocks without behavior verification
 **Solution**: Use testify/mock for better assertions
@@ -429,18 +455,21 @@ func BenchmarkParallelCleanup(b *testing.B) {
 ## 🔄 Migration Strategy
 
 ### Phase 1: Quick Wins (1-2 weeks)
+
 1. Fix string operations in hot paths
 2. Add map capacity hints
 3. Implement slice pre-allocation
 4. Add input validation
 
 ### Phase 2: Medium Changes (2-4 weeks)
+
 1. Implement structured error types
 2. Add context timeouts
 3. Enhance logging
 4. Add basic metrics
 
 ### Phase 3: Architectural Changes (4-8 weeks)
+
 1. Implement event-driven monitoring
 2. Add state machine
 3. Enhance security measures
@@ -449,6 +478,7 @@ func BenchmarkParallelCleanup(b *testing.B) {
 ## 📋 Implementation Checklist
 
 ### High Priority (Complete First)
+
 - [ ] Fix memory allocations in hot paths
 - [ ] Add context timeouts to AWS operations
 - [ ] Implement proper error wrapping
@@ -456,6 +486,7 @@ func BenchmarkParallelCleanup(b *testing.B) {
 - [ ] Fix potential goroutine leaks
 
 ### Medium Priority
+
 - [ ] Implement TTL-based caching
 - [ ] Add rate limiting for AWS APIs
 - [ ] Enhance logging structure
@@ -463,6 +494,7 @@ func BenchmarkParallelCleanup(b *testing.B) {
 - [ ] Implement health checks
 
 ### Low Priority (Future Enhancements)
+
 - [ ] Event-driven interface monitoring
 - [ ] State machine implementation
 - [ ] Chaos testing framework
@@ -471,27 +503,30 @@ func BenchmarkParallelCleanup(b *testing.B) {
 ## 🎯 Expected Impact
 
 ### Performance Improvements
+
 - **Memory usage**: 20-30% reduction
 - **CPU usage**: 15-25% reduction
 - **API response times**: 10-20% improvement
 - **Startup time**: 30-40% faster
 
 ### Reliability Improvements
+
 - **Error recovery**: Better handling of transient failures
 - **Resource leaks**: Elimination of memory/goroutine leaks
 - **Monitoring**: Comprehensive observability
 
 ### Maintainability Improvements
+
 - **Code clarity**: Better structure and documentation
 - **Testing**: Higher coverage and better test quality
 - **Debugging**: Enhanced logging and metrics
 
 ## 🔗 Additional Resources
 
-1. **Go Performance Best Practices**: https://github.com/golang/go/wiki/Performance
-2. **Kubernetes Controller Best Practices**: https://book.kubebuilder.io/
-3. **AWS SDK Go v2 Guide**: https://aws.github.io/aws-sdk-go-v2/
-4. **Prometheus Metrics Guidelines**: https://prometheus.io/docs/practices/naming/
+1. **Go Performance Best Practices**: <https://github.com/golang/go/wiki/Performance>
+2. **Kubernetes Controller Best Practices**: <https://book.kubebuilder.io/>
+3. **AWS SDK Go v2 Guide**: <https://aws.github.io/aws-sdk-go-v2/>
+4. **Prometheus Metrics Guidelines**: <https://prometheus.io/docs/practices/naming/>
 
 ---
 
