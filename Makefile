@@ -47,12 +47,33 @@ deploy: install
 manifests:
 	controller-gen crd rbac:roleName=eni-controller-role webhook paths="./..." output:crd:artifacts:config=deploy/crds
 
-# Run tests
+# Run unit tests
 test: fmt vet
-	go test ./... -coverprofile cover.out
+	go test ./... -short -coverprofile cover.out
+
+# Run unit tests only
+test-unit:
+	go test -v ./pkg/... -short
+
+# Run integration tests (requires AWS credentials)
+test-integration:
+	go test -v ./pkg/aws -tags=integration
+
+# Run end-to-end tests (requires AWS credentials and Kubernetes cluster)
+test-e2e:
+	go test -v ./test/e2e -tags=e2e
+
+# Run all tests
+test-all: test-unit test-integration test-e2e
+
+# Run unit tests with coverage
+test-coverage:
+	go test -v ./pkg/... -short -coverprofile=coverage.out
+	go tool cover -html=coverage.out -o coverage.html
 
 # Clean up
 clean:
 	rm -rf bin/
+	rm -f coverage.out coverage.html cover.out
 
-.PHONY: all build run fmt vet docker-build docker-push install deploy manifests test clean
+.PHONY: all build run fmt vet docker-build docker-push install deploy manifests test test-unit test-integration test-e2e test-all test-coverage clean

@@ -47,7 +47,7 @@ jobs:
         run: go build -v ./...
 
       - name: Run unit tests
-        run: go test -v ./pkg/... -coverprofile=coverage.txt -covermode=atomic
+        run: go test -v ./pkg/... -short -coverprofile=coverage.txt -covermode=atomic
 
       - name: Display test coverage
         run: go tool cover -func=coverage.txt
