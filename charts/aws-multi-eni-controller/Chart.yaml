@@ -2,7 +2,7 @@ apiVersion: v2
 name: aws-multi-eni-controller
 description: A Helm chart for AWS Multi-ENI Controller
 type: application
-version: "1.3.2"
+version: "1.3.6"
 appVersion: "v1.3.2"
 home: https://github.com/johnlam90/aws-multi-eni-controller
 sources:
@@ -20,10 +20,9 @@ keywords:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/changes: |
-    - Update version to v1.3.2
-    - Add OpenSSF Best Practices Badge compliance with security policy
-    - Enhance contribution guidelines with detailed coding standards
-    - Add comprehensive DPDK support for high-performance networking
-    - Implement automated dependency management with Dependabot
-    - Establish formal vulnerability reporting process
-    - Add test policy documentation and coverage requirements
+    - Update version to v1.3.6
+    - Fix bash compatibility issue in DPDK operations
+    - Replace bash with sh for ENI Manager container compatibility
+    - Resolve "bash: executable file not found" errors during DPDK unbinding
+    - Update controller image to v1.4.0-bash-fix
+    - Complete fix for DPDK cleanup operations

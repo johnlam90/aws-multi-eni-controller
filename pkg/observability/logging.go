@@ -159,7 +159,7 @@ func (sl *StructuredLogger) LogAWSAPICall(ctx context.Context, service, operatio
 	if err != nil {
 		fields = append(fields, "error", err.Error())
 		sl.logger.Error(err, "AWS API call failed", fields...)
-		
+
 		if sl.metrics != nil {
 			errorCategory := categorizeError(err)
 			sl.metrics.RecordAWSAPIError(service, operation, errorCategory)
@@ -167,7 +167,7 @@ func (sl *StructuredLogger) LogAWSAPICall(ctx context.Context, service, operatio
 		}
 	} else {
 		sl.logger.Info("AWS API call succeeded", fields...)
-		
+
 		if sl.metrics != nil {
 			sl.metrics.RecordAWSAPICall(service, operation, "success", duration)
 		}
@@ -227,7 +227,7 @@ func (sl *StructuredLogger) LogStaleResourceDetection(ctx context.Context, resou
 
 // LogDPDKRollback logs DPDK rollback events
 func (sl *StructuredLogger) LogDPDKRollback(ctx context.Context, opCtx *OperationContext, reason string, rollbackSuccess bool) {
-	fields := append(opCtx.LogFields(), 
+	fields := append(opCtx.LogFields(),
 		"reason", reason,
 		"rollbackSuccess", rollbackSuccess,
 	)
@@ -274,7 +274,7 @@ func categorizeError(err error) string {
 	}
 
 	errMsg := err.Error()
-	
+
 	// AWS-specific errors
 	if contains(errMsg, "throttling", "rate limit", "requestlimitexceeded") {
 		return "throttling"
@@ -291,7 +291,7 @@ func categorizeError(err error) string {
 	if contains(errMsg, "invalid", "malformed", "bad request") {
 		return "validation"
 	}
-	
+
 	return "unknown"
 }
 

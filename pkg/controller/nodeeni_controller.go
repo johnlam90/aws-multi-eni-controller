@@ -465,7 +465,7 @@ func (r *NodeENIReconciler) captureInterfaceState(ctx context.Context, nodeENI *
 
 	// Create a command to capture interface state
 	cmd := []string{
-		"bash", "-c",
+		"sh", "-c",
 		fmt.Sprintf(`
 # Try to find the PCI address for this interface
 pci_address=""
@@ -628,7 +628,7 @@ func (r *NodeENIReconciler) atomicDPDKUnbind(ctx context.Context, nodeENI *netwo
 
 	// Create atomic unbind command with error checking
 	cmd := []string{
-		"bash", "-c",
+		"sh", "-c",
 		fmt.Sprintf(`
 set -e  # Exit on any error
 
@@ -700,7 +700,7 @@ func (r *NodeENIReconciler) rollbackInterfaceState(ctx context.Context, nodeENI 
 
 	// Create rollback command
 	cmd := []string{
-		"bash", "-c",
+		"sh", "-c",
 		fmt.Sprintf(`
 set -e  # Exit on any error
 

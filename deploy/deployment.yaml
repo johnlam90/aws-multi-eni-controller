@@ -63,6 +63,40 @@ rules:
   - delete
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eni-controller-pod-reader
+  namespace: eni-controller-system
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - ""
+  resources:
+  - pods/exec
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eni-controller-pod-reader
+  namespace: eni-controller-system
+subjects:
+- kind: ServiceAccount
+  name: eni-controller
+  namespace: eni-controller-system
+roleRef:
+  kind: Role
+  name: eni-controller-pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: eni-controller-rolebinding

@@ -45,14 +45,14 @@ func DefaultCircuitBreakerConfig() *CircuitBreakerConfig {
 
 // CircuitBreaker implements the circuit breaker pattern for AWS operations
 type CircuitBreaker struct {
-	config           *CircuitBreakerConfig
-	state            CircuitBreakerState
-	failureCount     int
-	successCount     int
-	lastFailureTime  time.Time
-	requestCount     int
-	mutex            sync.RWMutex
-	logger           logr.Logger
+	config          *CircuitBreakerConfig
+	state           CircuitBreakerState
+	failureCount    int
+	successCount    int
+	lastFailureTime time.Time
+	requestCount    int
+	mutex           sync.RWMutex
+	logger          logr.Logger
 }
 
 // NewCircuitBreaker creates a new circuit breaker
@@ -152,8 +152,8 @@ func (cb *CircuitBreaker) onFailure() {
 	case CircuitBreakerClosed:
 		if cb.failureCount >= cb.config.FailureThreshold {
 			cb.state = CircuitBreakerOpen
-			cb.logger.Info("Circuit breaker opened due to consecutive failures", 
-				"failureCount", cb.failureCount, 
+			cb.logger.Info("Circuit breaker opened due to consecutive failures",
+				"failureCount", cb.failureCount,
 				"threshold", cb.config.FailureThreshold)
 		}
 	case CircuitBreakerHalfOpen:
@@ -178,14 +178,14 @@ func (cb *CircuitBreaker) GetStats() map[string]interface{} {
 	defer cb.mutex.RUnlock()
 
 	return map[string]interface{}{
-		"state":                cb.getStateString(),
-		"failureCount":         cb.failureCount,
-		"successCount":         cb.successCount,
-		"requestCount":         cb.requestCount,
-		"lastFailureTime":      cb.lastFailureTime,
-		"failureThreshold":     cb.config.FailureThreshold,
-		"successThreshold":     cb.config.SuccessThreshold,
-		"timeout":              cb.config.Timeout,
+		"state":                 cb.getStateString(),
+		"failureCount":          cb.failureCount,
+		"successCount":          cb.successCount,
+		"requestCount":          cb.requestCount,
+		"lastFailureTime":       cb.lastFailureTime,
+		"failureThreshold":      cb.config.FailureThreshold,
+		"successThreshold":      cb.config.SuccessThreshold,
+		"timeout":               cb.config.Timeout,
 		"maxConcurrentRequests": cb.config.MaxConcurrentRequests,
 	}
 }

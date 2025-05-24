@@ -76,7 +76,7 @@ func setupIntegrationTestConfig(t *testing.T, tempDir string) *config.ENIManager
 	cfg.SRIOVDPConfigPath = filepath.Join(tempDir, "config.json")
 	cfg.DPDKBindingScript = "/opt/dpdk/dpdk-devbind.py" // Assume this exists in integration environment
 	cfg.EnableDPDK = true
-	
+
 	// Create initial empty SR-IOV config
 	initialConfig := map[string]interface{}{
 		"resourceList": []interface{}{},
@@ -204,7 +204,7 @@ func testNonDPDKSRIOVConfiguration(t *testing.T, ctx context.Context, runtimeCli
 func testAWSENADriverDetection(t *testing.T, cfg *config.ENIManagerConfig) {
 	// This test would require actual AWS ENA devices
 	// For now, we'll test the logic with mock data
-	
+
 	// Test the driver determination logic
 	testCases := []struct {
 		name           string
@@ -237,7 +237,7 @@ func testConcurrentSRIOVOperations(t *testing.T, cfg *config.ENIManagerConfig) {
 	// This test verifies that concurrent operations don't corrupt the configuration
 	// It would create multiple NodeENI resources simultaneously and verify consistency
 	t.Log("Testing concurrent SR-IOV operations")
-	
+
 	// For integration tests, this would create multiple NodeENI resources
 	// and verify that the SR-IOV configuration remains consistent
 }
@@ -279,9 +279,9 @@ func TestSRIOVConfigurationValidation(t *testing.T) {
 
 	// Test various configuration scenarios
 	testCases := []struct {
-		name          string
-		config        interface{}
-		expectValid   bool
+		name        string
+		config      interface{}
+		expectValid bool
 	}{
 		{
 			name: "valid modern config",

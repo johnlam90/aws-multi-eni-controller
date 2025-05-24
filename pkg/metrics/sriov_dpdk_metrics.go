@@ -206,15 +206,15 @@ func (t *SRIOVOperationTimer) Finish(success bool) {
 
 // ErrorType constants for consistent error categorization
 const (
-	ErrorTypePCINotFound        = "pci_not_found"
-	ErrorTypeDriverNotFound     = "driver_not_found"
-	ErrorTypePermissionDenied   = "permission_denied"
-	ErrorTypeDeviceInUse        = "device_in_use"
-	ErrorTypeConfigFileError    = "config_file_error"
-	ErrorTypeValidationError    = "validation_error"
-	ErrorTypeConcurrencyError   = "concurrency_error"
-	ErrorTypeTimeoutError       = "timeout_error"
-	ErrorTypeUnknownError       = "unknown_error"
+	ErrorTypePCINotFound      = "pci_not_found"
+	ErrorTypeDriverNotFound   = "driver_not_found"
+	ErrorTypePermissionDenied = "permission_denied"
+	ErrorTypeDeviceInUse      = "device_in_use"
+	ErrorTypeConfigFileError  = "config_file_error"
+	ErrorTypeValidationError  = "validation_error"
+	ErrorTypeConcurrencyError = "concurrency_error"
+	ErrorTypeTimeoutError     = "timeout_error"
+	ErrorTypeUnknownError     = "unknown_error"
 )
 
 // OperationType constants for consistent operation categorization

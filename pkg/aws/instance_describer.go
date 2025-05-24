@@ -72,7 +72,7 @@ func (d *EC2InstanceDescriber) DescribeInstance(ctx context.Context, instanceID 
 	}
 
 	instance := result.Reservations[0].Instances[0]
-	
+
 	// Convert to our internal type
 	ec2Instance := &EC2Instance{
 		InstanceID: *instance.InstanceId,
