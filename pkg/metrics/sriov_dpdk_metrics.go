@@ -96,18 +96,18 @@ var (
 	)
 )
 
-// MetricsCollector provides methods for collecting SR-IOV and DPDK metrics
-type MetricsCollector struct {
+// Collector provides methods for collecting SR-IOV and DPDK metrics
+type Collector struct {
 	mu sync.RWMutex
 }
 
-// NewMetricsCollector creates a new metrics collector
-func NewMetricsCollector() *MetricsCollector {
-	return &MetricsCollector{}
+// NewCollector creates a new metrics collector
+func NewCollector() *Collector {
+	return &Collector{}
 }
 
 // RecordDPDKBindOperation records a DPDK bind operation
-func (m *MetricsCollector) RecordDPDKBindOperation(driver, operationType string, duration time.Duration, success bool) {
+func (m *Collector) RecordDPDKBindOperation(driver, operationType string, duration time.Duration, success bool) {
 	status := "success"
 	if !success {
 		status = "failure"
@@ -118,7 +118,7 @@ func (m *MetricsCollector) RecordDPDKBindOperation(driver, operationType string,
 }
 
 // RecordSRIOVConfigOperation records an SR-IOV configuration operation
-func (m *MetricsCollector) RecordSRIOVConfigOperation(operationType string, duration time.Duration, success bool) {
+func (m *Collector) RecordSRIOVConfigOperation(operationType string, duration time.Duration, success bool) {
 	status := "success"
 	if !success {
 		status = "failure"
@@ -129,32 +129,32 @@ func (m *MetricsCollector) RecordSRIOVConfigOperation(operationType string, dura
 }
 
 // UpdateDPDKBoundInterfacesCount updates the count of DPDK bound interfaces
-func (m *MetricsCollector) UpdateDPDKBoundInterfacesCount(driver, node string, count float64) {
+func (m *Collector) UpdateDPDKBoundInterfacesCount(driver, node string, count float64) {
 	dpdkBoundInterfacesGauge.WithLabelValues(driver, node).Set(count)
 }
 
 // UpdateSRIOVResourcesCount updates the count of SR-IOV resources
-func (m *MetricsCollector) UpdateSRIOVResourcesCount(resourceName, node string, count float64) {
+func (m *Collector) UpdateSRIOVResourcesCount(resourceName, node string, count float64) {
 	sriovResourcesGauge.WithLabelValues(resourceName, node).Set(count)
 }
 
 // RecordDPDKOperationError records a DPDK operation error
-func (m *MetricsCollector) RecordDPDKOperationError(errorType, operation string) {
+func (m *Collector) RecordDPDKOperationError(errorType, operation string) {
 	dpdkOperationErrorsTotal.WithLabelValues(errorType, operation).Inc()
 }
 
 // RecordSRIOVConfigError records an SR-IOV configuration error
-func (m *MetricsCollector) RecordSRIOVConfigError(errorType, operation string) {
+func (m *Collector) RecordSRIOVConfigError(errorType, operation string) {
 	sriovConfigErrorsTotal.WithLabelValues(errorType, operation).Inc()
 }
 
 // UpdateConcurrentDPDKOperations updates the count of concurrent DPDK operations
-func (m *MetricsCollector) UpdateConcurrentDPDKOperations(count float64) {
+func (m *Collector) UpdateConcurrentDPDKOperations(count float64) {
 	concurrentDpdkOperationsGauge.Set(count)
 }
 
 // UpdateDPDKOperationsMapSize updates the size of the DPDK operations map
-func (m *MetricsCollector) UpdateDPDKOperationsMapSize(size float64) {
+func (m *Collector) UpdateDPDKOperationsMapSize(size float64) {
 	dpdkOperationsMapSizeGauge.Set(size)
 }
 
@@ -163,11 +163,11 @@ type DPDKOperationTimer struct {
 	startTime     time.Time
 	driver        string
 	operationType string
-	collector     *MetricsCollector
+	collector     *Collector
 }
 
 // NewDPDKOperationTimer creates a new DPDK operation timer
-func (m *MetricsCollector) NewDPDKOperationTimer(driver, operationType string) *DPDKOperationTimer {
+func (m *Collector) NewDPDKOperationTimer(driver, operationType string) *DPDKOperationTimer {
 	return &DPDKOperationTimer{
 		startTime:     time.Now(),
 		driver:        driver,
@@ -186,11 +186,11 @@ func (t *DPDKOperationTimer) Finish(success bool) {
 type SRIOVOperationTimer struct {
 	startTime     time.Time
 	operationType string
-	collector     *MetricsCollector
+	collector     *Collector
 }
 
 // NewSRIOVOperationTimer creates a new SR-IOV operation timer
-func (m *MetricsCollector) NewSRIOVOperationTimer(operationType string) *SRIOVOperationTimer {
+func (m *Collector) NewSRIOVOperationTimer(operationType string) *SRIOVOperationTimer {
 	return &SRIOVOperationTimer{
 		startTime:     time.Now(),
 		operationType: operationType,
@@ -227,8 +227,8 @@ const (
 	OperationTypeConfigRestore  = "config_restore"
 )
 
-// Global metrics collector instance
-var GlobalMetricsCollector = NewMetricsCollector()
+// GlobalMetricsCollector is the global metrics collector instance
+var GlobalMetricsCollector = NewCollector()
 
 // Helper functions for common metric operations
 

@@ -43,7 +43,7 @@ func TestSRIOVDPDKIntegration(t *testing.T) {
 
 	// Test 1: Create NodeENI with DPDK enabled
 	t.Run("CreateNodeENIWithDPDK", func(t *testing.T) {
-		testCreateNodeENIWithDPDK(t, ctx, runtimeClient, cfg)
+		testCreateNodeENIWithDPDK(ctx, t, runtimeClient, cfg)
 	})
 
 	// Test 2: Verify SR-IOV configuration is created
@@ -53,7 +53,7 @@ func TestSRIOVDPDKIntegration(t *testing.T) {
 
 	// Test 3: Test non-DPDK SR-IOV configuration
 	t.Run("TestNonDPDKSRIOV", func(t *testing.T) {
-		testNonDPDKSRIOVConfiguration(t, ctx, runtimeClient, cfg)
+		testNonDPDKSRIOVConfiguration(ctx, t, runtimeClient, cfg)
 	})
 
 	// Test 4: Test AWS ENA driver detection
@@ -67,7 +67,7 @@ func TestSRIOVDPDKIntegration(t *testing.T) {
 	})
 
 	// Cleanup
-	cleanupIntegrationTest(t, ctx, clientset, runtimeClient)
+	cleanupIntegrationTest(ctx, t, clientset, runtimeClient)
 }
 
 // setupIntegrationTestConfig creates a test configuration
@@ -99,7 +99,7 @@ func createK8sClients(t *testing.T) (kubernetes.Interface, client.Client) {
 }
 
 // testCreateNodeENIWithDPDK tests creating a NodeENI with DPDK enabled
-func testCreateNodeENIWithDPDK(t *testing.T, ctx context.Context, runtimeClient client.Client, cfg *config.ENIManagerConfig) {
+func testCreateNodeENIWithDPDK(ctx context.Context, t *testing.T, runtimeClient client.Client, cfg *config.ENIManagerConfig) {
 	nodeENI := &networkingv1alpha1.NodeENI{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "integration-test-dpdk",
@@ -168,7 +168,7 @@ func testVerifySRIOVConfiguration(t *testing.T, cfg *config.ENIManagerConfig) {
 }
 
 // testNonDPDKSRIOVConfiguration tests SR-IOV configuration without DPDK
-func testNonDPDKSRIOVConfiguration(t *testing.T, ctx context.Context, runtimeClient client.Client, cfg *config.ENIManagerConfig) {
+func testNonDPDKSRIOVConfiguration(ctx context.Context, t *testing.T, runtimeClient client.Client, cfg *config.ENIManagerConfig) {
 	nodeENI := &networkingv1alpha1.NodeENI{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "integration-test-non-dpdk",
@@ -243,7 +243,7 @@ func testConcurrentSRIOVOperations(t *testing.T, cfg *config.ENIManagerConfig) {
 }
 
 // cleanupIntegrationTest cleans up resources created during integration testing
-func cleanupIntegrationTest(t *testing.T, ctx context.Context, clientset kubernetes.Interface, runtimeClient client.Client) {
+func cleanupIntegrationTest(ctx context.Context, t *testing.T, clientset kubernetes.Interface, runtimeClient client.Client) {
 	// Delete test NodeENI resources
 	nodeENINames := []string{
 		"integration-test-dpdk",

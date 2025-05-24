@@ -36,8 +36,8 @@ type ErrorCategorizer func(error) ErrorCategory
 // LegacyErrorCategorizer categorizes errors as retryable or not (for backward compatibility)
 type LegacyErrorCategorizer func(error) bool
 
-// RetryStrategy defines retry behavior for different error categories
-type RetryStrategy struct {
+// Strategy defines retry behavior for different error categories
+type Strategy struct {
 	Category    ErrorCategory
 	Backoff     wait.Backoff
 	MaxAttempts int
@@ -157,10 +157,10 @@ func containsAny(errMsg string, keywords []string) bool {
 }
 
 // GetRetryStrategy returns the appropriate retry strategy for an error category
-func GetRetryStrategy(category ErrorCategory) RetryStrategy {
+func GetRetryStrategy(category ErrorCategory) Strategy {
 	switch category {
 	case ErrorCategoryThrottling:
-		return RetryStrategy{
+		return Strategy{
 			Category: category,
 			Backoff: wait.Backoff{
 				Steps:    8,               // More attempts for throttling
@@ -171,7 +171,7 @@ func GetRetryStrategy(category ErrorCategory) RetryStrategy {
 			MaxAttempts: 8,
 		}
 	case ErrorCategoryNetwork:
-		return RetryStrategy{
+		return Strategy{
 			Category: category,
 			Backoff: wait.Backoff{
 				Steps:    6,
@@ -182,7 +182,7 @@ func GetRetryStrategy(category ErrorCategory) RetryStrategy {
 			MaxAttempts: 6,
 		}
 	case ErrorCategoryResource:
-		return RetryStrategy{
+		return Strategy{
 			Category: category,
 			Backoff: wait.Backoff{
 				Steps:    4,
@@ -193,7 +193,7 @@ func GetRetryStrategy(category ErrorCategory) RetryStrategy {
 			MaxAttempts: 4,
 		}
 	case ErrorCategoryTransient:
-		return RetryStrategy{
+		return Strategy{
 			Category: category,
 			Backoff: wait.Backoff{
 				Steps:    5,
@@ -204,7 +204,7 @@ func GetRetryStrategy(category ErrorCategory) RetryStrategy {
 			MaxAttempts: 5,
 		}
 	default: // ErrorCategoryNonRetryable
-		return RetryStrategy{
+		return Strategy{
 			Category:    category,
 			Backoff:     wait.Backoff{Steps: 1}, // No retry
 			MaxAttempts: 1,
