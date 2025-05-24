@@ -2,8 +2,8 @@ apiVersion: v2
 name: aws-multi-eni-controller
 description: A Helm chart for AWS Multi-ENI Controller
 type: application
-version: "1.3.6"
-appVersion: "v1.3.2"
+version: "1.3.7"
+appVersion: "v1.3.3"
 home: https://github.com/johnlam90/aws-multi-eni-controller
 sources:
   - https://github.com/johnlam90/aws-multi-eni-controller
@@ -20,9 +20,10 @@ keywords:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/changes: |
-    - Update version to v1.3.6
-    - Fix bash compatibility issue in DPDK operations
-    - Replace bash with sh for ENI Manager container compatibility
-    - Resolve "bash: executable file not found" errors during DPDK unbinding
-    - Update controller image to v1.4.0-bash-fix
-    - Complete fix for DPDK cleanup operations
+    - Update version to v1.3.7
+    - Implement cloud-native SR-IOV device plugin restart functionality
+    - Replace kubectl dependency with native Kubernetes API calls
+    - Add comprehensive RBAC permissions for pod management
+    - Enhance SR-IOV device plugin restart reliability
+    - Support multiple SR-IOV device plugin naming conventions
+    - Add timeout protection and improved error handling

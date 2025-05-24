@@ -2314,20 +2314,27 @@ func updateSRIOVDevicePluginConfig(ifaceName, pciAddress, driver string, cfg *co
 type SRIOVConfigManager struct {
 	configPath string
 	backupPath string
-	restartCmd []string
 	maxRetries int
 	retryDelay time.Duration
 	fileMutex  sync.Mutex // Add file-level mutex for atomic operations
+	k8sClient  *kubernetes.Clientset
 }
 
 // NewSRIOVConfigManager creates a new SR-IOV configuration manager
 func NewSRIOVConfigManager(configPath string) *SRIOVConfigManager {
+	// Create Kubernetes client for device plugin restart
+	k8sClient, err := createK8sClientset()
+	if err != nil {
+		log.Printf("Warning: Failed to create Kubernetes client for SR-IOV restart: %v", err)
+		// Continue without client - restart will be skipped but config updates will work
+	}
+
 	return &SRIOVConfigManager{
 		configPath: configPath,
 		backupPath: configPath + ".backup",
-		restartCmd: []string{"kubectl", "delete", "pods", "-n", "kube-system", "-l", "app=sriovdp"},
 		maxRetries: 3,
 		retryDelay: 2 * time.Second,
+		k8sClient:  k8sClient,
 	}
 }
 
@@ -2629,16 +2636,75 @@ func isValidHexString(s string) bool {
 
 // restartDevicePlugin restarts the SR-IOV device plugin to pick up configuration changes
 func (m *SRIOVConfigManager) restartDevicePlugin() error {
-	log.Printf("Attempting to restart SR-IOV device plugin")
+	log.Printf("Attempting to restart SR-IOV device plugin using Kubernetes API")
 
-	// Try to restart using kubectl
-	cmd := exec.Command(m.restartCmd[0], m.restartCmd[1:]...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to restart device plugin: %v, output: %s", err, string(output))
+	if m.k8sClient == nil {
+		return fmt.Errorf("Kubernetes client not available for device plugin restart")
 	}
 
-	log.Printf("SR-IOV device plugin restart initiated: %s", string(output))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Try multiple common SR-IOV device plugin label selectors
+	labelSelectors := []string{
+		"app=sriov-device-plugin",  // Most common
+		"app=sriovdp",              // Alternative naming
+		"name=sriov-device-plugin", // Another common pattern
+	}
+
+	var lastErr error
+	var deletedPods int
+
+	for _, labelSelector := range labelSelectors {
+		log.Printf("Searching for SR-IOV device plugin pods with label selector: %s", labelSelector)
+
+		// List pods in kube-system namespace with the label selector
+		pods, err := m.k8sClient.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
+			LabelSelector: labelSelector,
+		})
+		if err != nil {
+			lastErr = fmt.Errorf("failed to list pods with selector %s: %v", labelSelector, err)
+			log.Printf("Warning: %v", lastErr)
+			continue
+		}
+
+		if len(pods.Items) == 0 {
+			log.Printf("No pods found with label selector: %s", labelSelector)
+			continue
+		}
+
+		log.Printf("Found %d SR-IOV device plugin pods with selector %s", len(pods.Items), labelSelector)
+
+		// Delete each pod to trigger restart
+		for _, pod := range pods.Items {
+			log.Printf("Deleting SR-IOV device plugin pod: %s", pod.Name)
+
+			err := m.k8sClient.CoreV1().Pods("kube-system").Delete(ctx, pod.Name, metav1.DeleteOptions{
+				GracePeriodSeconds: &[]int64{0}[0], // Force immediate deletion
+			})
+			if err != nil {
+				log.Printf("Warning: Failed to delete pod %s: %v", pod.Name, err)
+				lastErr = err
+			} else {
+				log.Printf("Successfully deleted SR-IOV device plugin pod: %s", pod.Name)
+				deletedPods++
+			}
+		}
+
+		// If we found and processed pods with this selector, we're done
+		if len(pods.Items) > 0 {
+			break
+		}
+	}
+
+	if deletedPods == 0 {
+		if lastErr != nil {
+			return fmt.Errorf("failed to restart any SR-IOV device plugin pods: %v", lastErr)
+		}
+		return fmt.Errorf("no SR-IOV device plugin pods found in kube-system namespace")
+	}
+
+	log.Printf("Successfully initiated restart of %d SR-IOV device plugin pods", deletedPods)
 	return nil
 }
 

@@ -83,6 +83,30 @@ rules:
   - create
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: eni-controller-sriov-manager
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - delete
+  resourceNames: []
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  verbs:
+  - get
+  - list
+  - patch
+  resourceNames: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: eni-controller-pod-reader
@@ -104,6 +128,19 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: eni-controller-role
+subjects:
+- kind: ServiceAccount
+  name: eni-controller
+  namespace: eni-controller-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: eni-controller-sriov-manager-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: eni-controller-sriov-manager
 subjects:
 - kind: ServiceAccount
   name: eni-controller
@@ -136,7 +173,7 @@ spec:
       #   - "kubernetes"
       containers:
       - name: manager
-        image: ghcr.io/johnlam90/aws-multi-eni-controller:v1.3.2
+        image: johnlam90/aws-multi-eni-controller:v1.3.3-cloud-native-sriov
         env:
         - name: COMPONENT
           value: "eni-controller"
