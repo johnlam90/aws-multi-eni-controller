@@ -982,10 +982,10 @@ func updateSRIOVConfigIfNeeded(ifaceName string, nodeENI networkingv1alpha1.Node
 		}
 
 		cfg.DPDKResourceNames[ifaceName] = nodeENI.Spec.DPDKResourceName
-		// Update the SRIOV device plugin config with the specified resource name
+		// Update the SRIOV device plugin config with the specified resource name using change detection
 		pciAddress, err := getPCIAddressForInterface(ifaceName)
 		if err == nil {
-			if err := updateSRIOVDevicePluginConfigWithRetry(ifaceName, pciAddress, dpdkDriver, nodeENI.Spec.DPDKResourceName, cfg); err != nil {
+			if err := updateModernSRIOVDevicePluginConfig(pciAddress, dpdkDriver, nodeENI.Spec.DPDKResourceName, cfg); err != nil {
 				log.Printf("Warning: Failed to update SRIOV device plugin config with resource name %s: %v",
 					nodeENI.Spec.DPDKResourceName, err)
 			} else {
@@ -1268,8 +1268,10 @@ func bindInterfaceToDPDK(link vnetlink.Link, driver string, cfg *config.ENIManag
 		log.Printf("Warning: Failed to update persistent mapping store: %v", err)
 	}
 
-	// Update the SRIOV device plugin configuration
-	if err := updateSRIOVDevicePluginConfig(ifaceName, pciAddress, driver, cfg); err != nil {
+	// Update the SRIOV device plugin configuration with change detection
+	// This ensures SR-IOV device plugin restarts only when configuration actually changes
+	resourceName := getResourceNameForDevice(ifaceName, pciAddress, cfg)
+	if err := updateModernSRIOVDevicePluginConfig(pciAddress, driver, resourceName, cfg); err != nil {
 		log.Printf("Error: Failed to update SRIOV device plugin config: %v", err)
 		// This is a critical failure - the interface is bound to DPDK but not available to pods
 		// Try to unbind the interface to maintain consistency
