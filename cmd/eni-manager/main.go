@@ -160,15 +160,15 @@ func performInitialNodeENIUpdate(ctx context.Context, clientset *kubernetes.Clie
 	// Do an initial update for MTU
 	updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
 
-	// Do an initial update for DPDK binding
+	// Do an initial update for DPDK binding with startup-specific logic
 	if cfg.EnableDPDK {
-		log.Printf("Performing initial DPDK binding check after startup (important for node reboots)")
-		updateDPDKBindingFromNodeENI(nodeName, cfg, nodeENIs)
+		log.Printf("Performing initial DPDK binding check after startup (important for node reboots and Helm upgrades)")
+		updateDPDKBindingFromNodeENIWithStartup(nodeName, cfg, nodeENIs, true)
+	} else {
+		// Also check for non-DPDK SR-IOV configuration updates during startup
+		log.Printf("Performing initial non-DPDK SR-IOV configuration check")
+		updateSRIOVConfigForAllInterfacesWithStartup(nodeName, cfg, nodeENIs, true)
 	}
-
-	// Also check for non-DPDK SR-IOV configuration updates
-	log.Printf("Performing initial non-DPDK SR-IOV configuration check")
-	updateSRIOVConfigForAllInterfaces(nodeName, cfg, nodeENIs)
 
 	return true
 }
@@ -567,16 +567,211 @@ func getNodeENIResources(ctx context.Context, clientset *kubernetes.Clientset) (
 
 // updateDPDKBindingFromNodeENI updates DPDK binding from NodeENI resources
 func updateDPDKBindingFromNodeENI(nodeName string, cfg *config.ENIManagerConfig, nodeENIs []networkingv1alpha1.NodeENI) {
-	log.Printf("Updating DPDK binding from NodeENI resources for node %s", nodeName)
+	updateDPDKBindingFromNodeENIWithStartup(nodeName, cfg, nodeENIs, false)
+}
+
+// updateDPDKBindingFromNodeENIWithStartup updates DPDK binding from NodeENI resources with startup-specific logic
+func updateDPDKBindingFromNodeENIWithStartup(nodeName string, cfg *config.ENIManagerConfig, nodeENIs []networkingv1alpha1.NodeENI, isStartup bool) {
+	if isStartup {
+		log.Printf("Updating DPDK binding from NodeENI resources for node %s (STARTUP MODE - will force SR-IOV restart if needed)", nodeName)
+	} else {
+		log.Printf("Updating DPDK binding from NodeENI resources for node %s", nodeName)
+	}
 
 	// First, check if we have any interfaces that need to be unbound from DPDK
 	// This can happen if a NodeENI resource was deleted or DPDK was disabled
 	checkForDPDKUnbinding(nodeName, cfg, nodeENIs)
 
+	// Track if we found any existing DPDK-bound devices during startup
+	foundExistingDPDKDevices := false
+
 	// Process each NodeENI resource
 	for _, nodeENI := range nodeENIs {
+		if isStartup && nodeENI.Spec.EnableDPDK && nodeENI.Spec.DPDKResourceName != "" {
+			// Check if this NodeENI has existing DPDK-bound devices
+			if hasExistingDPDKBinding(nodeENI, nodeName, cfg) {
+				foundExistingDPDKDevices = true
+			}
+		}
 		processDPDKBindingForNodeENI(nodeENI, nodeName, cfg)
 	}
+
+	// During startup, if we found existing DPDK devices, force an SR-IOV device plugin restart
+	if isStartup && foundExistingDPDKDevices {
+		log.Printf("STARTUP: Found existing DPDK-bound devices, forcing SR-IOV device plugin restart to refresh inventory")
+		forceRestartSRIOVDevicePlugin(cfg)
+	}
+}
+
+// hasExistingDPDKBinding checks if a NodeENI has existing DPDK-bound devices
+func hasExistingDPDKBinding(nodeENI networkingv1alpha1.NodeENI, nodeName string, cfg *config.ENIManagerConfig) bool {
+	// Check if any attachments for this node have DPDK binding information
+	for _, attachment := range nodeENI.Status.Attachments {
+		if attachment.NodeID == nodeName {
+			// Check if this attachment has DPDK-related status
+			if attachment.DPDKBound && attachment.DPDKResourceName != "" {
+				// Try to find the PCI address for this ENI
+				pciAddr := ""
+
+				// First check if we have it in our bound interfaces map
+				for pci, boundInterface := range cfg.DPDKBoundInterfaces {
+					if boundInterface.ENIID == attachment.ENIID {
+						pciAddr = pci
+						break
+					}
+				}
+
+				// If we found a PCI address, verify the driver
+				if pciAddr != "" {
+					if driver, err := getCurrentDriverForPCI(pciAddr); err == nil {
+						if driver == "vfio-pci" || driver == "igb_uio" || driver == "uio_pci_generic" {
+							log.Printf("STARTUP: Found existing DPDK binding for ENI %s (PCI: %s, Resource: %s)",
+								attachment.ENIID, pciAddr, attachment.DPDKResourceName)
+							return true
+						}
+					}
+				} else {
+					// If no PCI address found but DPDKBound is true, assume it exists
+					log.Printf("STARTUP: Found existing DPDK binding for ENI %s (Resource: %s, PCI unknown)",
+						attachment.ENIID, attachment.DPDKResourceName)
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// forceRestartSRIOVDevicePlugin forces a restart of the SR-IOV device plugin during startup
+func forceRestartSRIOVDevicePlugin(cfg *config.ENIManagerConfig) {
+	if cfg.SRIOVDPConfigPath == "" {
+		log.Printf("STARTUP: SR-IOV device plugin config path not configured, skipping forced restart")
+		return
+	}
+
+	manager := NewSRIOVConfigManager(cfg.SRIOVDPConfigPath)
+
+	log.Printf("STARTUP: Forcing SR-IOV device plugin restart to refresh device inventory after pod restart")
+	if err := manager.restartDevicePlugin(); err != nil {
+		log.Printf("STARTUP: Warning - Failed to force restart SR-IOV device plugin: %v", err)
+	} else {
+		log.Printf("STARTUP: Successfully forced restart of SR-IOV device plugin")
+	}
+}
+
+// updateSRIOVConfigForAllInterfacesWithStartup updates SR-IOV configuration with startup-specific logic
+func updateSRIOVConfigForAllInterfacesWithStartup(nodeName string, cfg *config.ENIManagerConfig, nodeENIs []networkingv1alpha1.NodeENI, isStartup bool) {
+	if isStartup {
+		log.Printf("Checking SR-IOV configuration for all interfaces on node %s (STARTUP MODE - will force restart if SR-IOV resources found)", nodeName)
+	} else {
+		log.Printf("Checking SR-IOV configuration for all interfaces on node %s", nodeName)
+	}
+
+	// Track if we found any existing SR-IOV resources during startup
+	foundExistingSRIOVResources := false
+
+	// Get all network interfaces
+	links, err := vnetlink.LinkList()
+	if err != nil {
+		log.Printf("Error listing interfaces for SR-IOV config update: %v", err)
+		return
+	}
+
+	for _, link := range links {
+		ifaceName := link.Attrs().Name
+
+		// Skip loopback and primary interface
+		if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
+			continue
+		}
+
+		// Skip interfaces that don't match our ENI pattern
+		if !isAWSENI(ifaceName, cfg) {
+			continue
+		}
+
+		// Check if this is a DPDK-bound interface (skip for non-DPDK reconciliation)
+		if isInterfaceDPDKBound(ifaceName, cfg) {
+			continue
+		}
+
+		log.Printf("Checking SR-IOV configuration for non-DPDK interface %s", ifaceName)
+
+		// Get PCI address for this interface
+		pciAddress, err := getPCIAddressForInterface(ifaceName)
+		if err != nil {
+			log.Printf("Warning: Failed to get PCI address for interface %s: %v", ifaceName, err)
+			continue
+		}
+
+		// Check if there's a NodeENI resource for this interface
+		nodeENI := findNodeENIResourceForInterface(ifaceName, pciAddress, nodeName, nodeENIs)
+		if nodeENI == nil {
+			continue
+		}
+
+		// Skip if this NodeENI doesn't have SR-IOV resource name
+		if nodeENI.Spec.DPDKResourceName == "" {
+			continue
+		}
+
+		// During startup, track that we found SR-IOV resources
+		if isStartup {
+			foundExistingSRIOVResources = true
+		}
+
+		// Find the corresponding attachment for this interface
+		var targetAttachment *networkingv1alpha1.ENIAttachment
+		for _, attachment := range nodeENI.Status.Attachments {
+			if attachment.NodeID == nodeName {
+				// Try to match by interface name or PCI address
+				targetInterface, attachmentPCI := resolveInterfaceAndPCI(*nodeENI, attachment)
+				if targetInterface == ifaceName || attachmentPCI == pciAddress {
+					targetAttachment = &attachment
+					break
+				}
+			}
+		}
+
+		if targetAttachment != nil {
+			// Process SR-IOV configuration for this attachment
+			processSRIOVConfigForAttachment(ifaceName, pciAddress, cfg, *nodeENI, *targetAttachment)
+		}
+	}
+
+	// During startup, if we found existing SR-IOV resources, force a restart
+	if isStartup && foundExistingSRIOVResources {
+		log.Printf("STARTUP: Found existing SR-IOV resources, forcing device plugin restart to refresh inventory")
+		forceRestartSRIOVDevicePlugin(cfg)
+	}
+}
+
+// isInterfaceDPDKBound checks if an interface is currently bound to DPDK
+func isInterfaceDPDKBound(ifaceName string, cfg *config.ENIManagerConfig) bool {
+	// Check if this interface is in our DPDK bound interfaces map
+	for _, boundInterface := range cfg.DPDKBoundInterfaces {
+		if boundInterface.IfaceName == ifaceName {
+			return true
+		}
+	}
+	return false
+}
+
+// findNodeENIResourceForInterface finds a NodeENI resource that matches the given interface
+func findNodeENIResourceForInterface(ifaceName, pciAddress, nodeName string, nodeENIs []networkingv1alpha1.NodeENI) *networkingv1alpha1.NodeENI {
+	for _, nodeENI := range nodeENIs {
+		// Check if this NodeENI has attachments for our node
+		for _, attachment := range nodeENI.Status.Attachments {
+			if attachment.NodeID == nodeName {
+				// Try to match by interface name or PCI address
+				targetInterface, attachmentPCI := resolveInterfaceAndPCI(nodeENI, attachment)
+				if targetInterface == ifaceName || attachmentPCI == pciAddress {
+					return &nodeENI
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // checkForDPDKUnbinding checks if any interfaces need to be unbound from DPDK
