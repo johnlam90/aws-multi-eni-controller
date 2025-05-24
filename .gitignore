@@ -15,6 +15,13 @@ coverage.txt
 *.out
 *.test
 
+# Go build artifacts
+eni-manager
+manager
+
+# AWS CLI distribution (if present)
+aws/dist/
+
 # Kubernetes generated files
 kubeconfig
 .kube/
@@ -34,11 +41,20 @@ temp/
 # Environment files
 .env
 .envrc
+
+# Development and analysis files (should not be committed)
 .augment-guidelines
 CODE_ORGANIZATION_IMPROVEMENTS.md
 CODE_REVIEW_OPTIMIZATIONS.md
-.gitignore
 README_IMPROVEMENTS.md
 PERFORMANCE_OPTIMIZATIONS_IMPLEMENTED.md
 sample-configuration-action-plan.md
-eni-manager
+codebase-re-review-analysis.md
+deployment-summary-*.md
+eni-cleanup-analysis-report.md
+multi-subnet-clarification.md
+nodeeni-samples-analysis-report.md
+recommended-sample-improvements.yaml
+
+# Test artifacts that shouldn't be committed
+sriov-device-plugin-hostpath.yaml

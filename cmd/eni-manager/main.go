@@ -661,11 +661,7 @@ func forceRestartSRIOVDevicePlugin(cfg *config.ENIManagerConfig) {
 
 // updateSRIOVConfigForAllInterfacesWithStartup updates SR-IOV configuration with startup-specific logic
 func updateSRIOVConfigForAllInterfacesWithStartup(nodeName string, cfg *config.ENIManagerConfig, nodeENIs []networkingv1alpha1.NodeENI, isStartup bool) {
-	if isStartup {
-		log.Printf("Checking SR-IOV configuration for all interfaces on node %s (STARTUP MODE - will force restart if SR-IOV resources found)", nodeName)
-	} else {
-		log.Printf("Checking SR-IOV configuration for all interfaces on node %s", nodeName)
-	}
+	logStartupMode(nodeName, isStartup)
 
 	// Track if we found any existing SR-IOV resources during startup
 	foundExistingSRIOVResources := false
@@ -680,66 +676,100 @@ func updateSRIOVConfigForAllInterfacesWithStartup(nodeName string, cfg *config.E
 	for _, link := range links {
 		ifaceName := link.Attrs().Name
 
-		// Skip loopback and primary interface
-		if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
+		// Skip interfaces that should not be processed
+		if shouldSkipInterface(ifaceName, cfg) {
 			continue
 		}
 
-		// Skip interfaces that don't match our ENI pattern
-		if !isAWSENI(ifaceName, cfg) {
-			continue
-		}
-
-		// Check if this is a DPDK-bound interface (skip for non-DPDK reconciliation)
-		if isInterfaceDPDKBound(ifaceName, cfg) {
-			continue
-		}
-
-		log.Printf("Checking SR-IOV configuration for non-DPDK interface %s", ifaceName)
-
-		// Get PCI address for this interface
-		pciAddress, err := getPCIAddressForInterface(ifaceName)
-		if err != nil {
-			log.Printf("Warning: Failed to get PCI address for interface %s: %v", ifaceName, err)
-			continue
-		}
-
-		// Check if there's a NodeENI resource for this interface
-		nodeENI := findNodeENIResourceForInterface(ifaceName, pciAddress, nodeName, nodeENIs)
-		if nodeENI == nil {
-			continue
-		}
-
-		// Skip if this NodeENI doesn't have SR-IOV resource name
-		if nodeENI.Spec.DPDKResourceName == "" {
-			continue
-		}
-
-		// During startup, track that we found SR-IOV resources
-		if isStartup {
+		// Process this interface for SR-IOV configuration
+		if processInterfaceForSRIOV(ifaceName, nodeName, cfg, nodeENIs, isStartup) {
 			foundExistingSRIOVResources = true
-		}
-
-		// Find the corresponding attachment for this interface
-		var targetAttachment *networkingv1alpha1.ENIAttachment
-		for _, attachment := range nodeENI.Status.Attachments {
-			if attachment.NodeID == nodeName {
-				// Try to match by interface name or PCI address
-				targetInterface, attachmentPCI := resolveInterfaceAndPCI(*nodeENI, attachment)
-				if targetInterface == ifaceName || attachmentPCI == pciAddress {
-					targetAttachment = &attachment
-					break
-				}
-			}
-		}
-
-		if targetAttachment != nil {
-			// Process SR-IOV configuration for this attachment
-			processSRIOVConfigForAttachment(ifaceName, pciAddress, cfg, *nodeENI, *targetAttachment)
 		}
 	}
 
-	// During startup, if we found existing SR-IOV resources, force a restart
+	// Handle startup-specific restart logic
+	handleStartupSRIOVRestart(isStartup, foundExistingSRIOVResources, cfg)
+}
+
+// logStartupMode logs the appropriate message based on startup mode
+func logStartupMode(nodeName string, isStartup bool) {
+	if isStartup {
+		log.Printf("Checking SR-IOV configuration for all interfaces on node %s (STARTUP MODE - will force restart if SR-IOV resources found)", nodeName)
+	} else {
+		log.Printf("Checking SR-IOV configuration for all interfaces on node %s", nodeName)
+	}
+}
+
+// shouldSkipInterface determines if an interface should be skipped for SR-IOV processing
+func shouldSkipInterface(ifaceName string, cfg *config.ENIManagerConfig) bool {
+	// Skip loopback and primary interface
+	if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
+		return true
+	}
+
+	// Skip interfaces that don't match our ENI pattern
+	if !isAWSENI(ifaceName, cfg) {
+		return true
+	}
+
+	// Check if this is a DPDK-bound interface (skip for non-DPDK reconciliation)
+	if isInterfaceDPDKBound(ifaceName, cfg) {
+		return true
+	}
+
+	return false
+}
+
+// processInterfaceForSRIOV processes a single interface for SR-IOV configuration
+// Returns true if SR-IOV resources were found during startup
+func processInterfaceForSRIOV(ifaceName, nodeName string, cfg *config.ENIManagerConfig, nodeENIs []networkingv1alpha1.NodeENI, isStartup bool) bool {
+	log.Printf("Checking SR-IOV configuration for non-DPDK interface %s", ifaceName)
+
+	// Get PCI address for this interface
+	pciAddress, err := getPCIAddressForInterface(ifaceName)
+	if err != nil {
+		log.Printf("Warning: Failed to get PCI address for interface %s: %v", ifaceName, err)
+		return false
+	}
+
+	// Check if there's a NodeENI resource for this interface
+	nodeENI := findNodeENIResourceForInterface(ifaceName, pciAddress, nodeName, nodeENIs)
+	if nodeENI == nil {
+		return false
+	}
+
+	// Skip if this NodeENI doesn't have SR-IOV resource name
+	if nodeENI.Spec.DPDKResourceName == "" {
+		return false
+	}
+
+	// Find the corresponding attachment for this interface
+	targetAttachment := findTargetAttachment(ifaceName, pciAddress, nodeName, *nodeENI)
+	if targetAttachment != nil {
+		// Process SR-IOV configuration for this attachment
+		processSRIOVConfigForAttachment(ifaceName, pciAddress, cfg, *nodeENI, *targetAttachment)
+	}
+
+	// Return true if we found SR-IOV resources during startup
+	return isStartup
+}
+
+// findTargetAttachment finds the target attachment for a given interface
+func findTargetAttachment(ifaceName, pciAddress, nodeName string, nodeENI networkingv1alpha1.NodeENI) *networkingv1alpha1.ENIAttachment {
+	for _, attachment := range nodeENI.Status.Attachments {
+		if attachment.NodeID == nodeName {
+			// Try to match by interface name or PCI address
+			targetInterface, attachmentPCI := resolveInterfaceAndPCI(nodeENI, attachment)
+			if targetInterface == ifaceName || attachmentPCI == pciAddress {
+				return &attachment
+			}
+		}
+	}
+	return nil
+}
+
+// handleStartupSRIOVRestart handles the startup-specific restart logic
+func handleStartupSRIOVRestart(isStartup, foundExistingSRIOVResources bool, cfg *config.ENIManagerConfig) {
 	if isStartup && foundExistingSRIOVResources {
 		log.Printf("STARTUP: Found existing SR-IOV resources, forcing device plugin restart to refresh inventory")
 		forceRestartSRIOVDevicePlugin(cfg)
