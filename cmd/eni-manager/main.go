@@ -4116,12 +4116,12 @@ func processSRIOVConfigForAttachment(ifaceName, pciAddress string, cfg *config.E
 	}
 
 	// Determine the driver to use (detect actual driver for non-DPDK)
+	// For non-DPDK reconciliation, always use the actual current driver, not the specified DPDK driver
 	driver := determineDriverForInterface(ifaceName, pciAddress)
-	if nodeENI.Spec.DPDKDriver != "" {
-		// Override with explicitly specified driver
-		driver = nodeENI.Spec.DPDKDriver
-		log.Printf("Using explicitly specified driver %s for interface %s", driver, ifaceName)
-	}
+
+	// Note: We do NOT use nodeENI.Spec.DPDKDriver here because this is the non-DPDK reconciliation path
+	// The explicitly specified DPDK driver should only be used during actual DPDK binding operations
+	log.Printf("Using detected driver %s for non-DPDK interface %s (ignoring specified DPDK driver)", driver, ifaceName)
 
 	// Update SR-IOV configuration
 	if err := updateModernSRIOVDevicePluginConfig(pciAddress, driver, nodeENI.Spec.DPDKResourceName, cfg); err != nil {
