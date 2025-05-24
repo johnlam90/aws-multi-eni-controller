@@ -2376,8 +2376,18 @@ func updateSRIOVDevicePluginConfigWithRetry(ifaceName, pciAddress, driver, resou
 		log.Printf("Warning: Failed to create backup of SR-IOV config: %v", err)
 	}
 
+	// Load current configuration to check for changes
+	currentConfig, err := loadOrCreateSRIOVConfig(cfg.SRIOVDPConfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to load current SR-IOV config: %v", err)
+	}
+
+	// Create a copy for comparison
+	originalConfig := deepCopySRIOVConfig(currentConfig)
+
 	// Attempt to update the configuration with retries
 	var lastErr error
+	var configChanged bool
 	for attempt := 1; attempt <= manager.maxRetries; attempt++ {
 		log.Printf("Attempting to update SR-IOV config (attempt %d/%d) for resource %s",
 			attempt, manager.maxRetries, resourceName)
@@ -2408,10 +2418,25 @@ func updateSRIOVDevicePluginConfigWithRetry(ifaceName, pciAddress, driver, resou
 			return fmt.Errorf("configuration validation failed: %v", err)
 		}
 
-		// Configuration is valid, trigger device plugin restart
-		if err := manager.restartDevicePlugin(); err != nil {
-			log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
-			// Don't fail the operation for restart failures
+		// Check if configuration actually changed
+		updatedConfig, err := loadOrCreateSRIOVConfig(cfg.SRIOVDPConfigPath)
+		if err != nil {
+			log.Printf("Warning: Failed to load updated config for comparison: %v", err)
+			configChanged = true // Assume changed if we can't verify
+		} else {
+			configChanged = !sriovConfigsEqual(originalConfig, updatedConfig)
+		}
+
+		// Only restart device plugin if configuration changed
+		if configChanged {
+			if err := manager.restartDevicePlugin(); err != nil {
+				log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
+				// Don't fail the operation for restart failures
+			} else {
+				log.Printf("Successfully restarted SR-IOV device plugin due to configuration change")
+			}
+		} else {
+			log.Printf("SR-IOV configuration unchanged for resource %s - skipping device plugin restart", resourceName)
 		}
 
 		log.Printf("Successfully updated SR-IOV config for resource %s", resourceName)
@@ -3729,24 +3754,41 @@ func updateModernSRIOVDevicePluginConfig(pciAddress, driver, resourceName string
 		log.Printf("Warning: Failed to create backup of SR-IOV config: %v", err)
 	}
 
-	config, err := loadOrCreateSRIOVConfig(cfg.SRIOVDPConfigPath)
+	// Load current configuration
+	currentConfig, err := loadOrCreateSRIOVConfig(cfg.SRIOVDPConfigPath)
 	if err != nil {
 		return err
 	}
 
-	updateSRIOVResourceConfig(&config, pciAddress, driver, resourcePrefix, resourceShortName)
+	// Create a copy for comparison
+	originalConfig := deepCopySRIOVConfig(currentConfig)
 
-	if err := saveSRIOVConfig(cfg.SRIOVDPConfigPath, config); err != nil {
+	// Update the configuration
+	updateSRIOVResourceConfig(&currentConfig, pciAddress, driver, resourcePrefix, resourceShortName)
+
+	// Check if configuration actually changed
+	configChanged := !sriovConfigsEqual(originalConfig, currentConfig)
+
+	if !configChanged {
+		log.Printf("SR-IOV configuration unchanged for resource %s/%s (PCI: %s) - skipping device plugin restart",
+			resourcePrefix, resourceShortName, pciAddress)
+		return nil
+	}
+
+	// Save the updated configuration
+	if err := saveSRIOVConfig(cfg.SRIOVDPConfigPath, currentConfig); err != nil {
 		return err
 	}
 
-	log.Printf("Successfully updated modern SR-IOV config for resource %s/%s (PCI: %s)",
+	log.Printf("Successfully updated modern SR-IOV config for resource %s/%s (PCI: %s) - configuration changed",
 		resourcePrefix, resourceShortName, pciAddress)
 
-	// Restart the SR-IOV device plugin to pick up changes
+	// Restart the SR-IOV device plugin only when configuration changed
 	if err := manager.restartDevicePlugin(); err != nil {
 		log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
 		// Don't fail the operation for restart failures
+	} else {
+		log.Printf("Successfully restarted SR-IOV device plugin due to configuration change")
 	}
 
 	return nil
@@ -3851,6 +3893,151 @@ func saveSRIOVConfig(configPath string, config ModernSRIOVDPConfig) error {
 	}
 
 	return nil
+}
+
+// deepCopySRIOVConfig creates a deep copy of the SR-IOV configuration
+func deepCopySRIOVConfig(config ModernSRIOVDPConfig) ModernSRIOVDPConfig {
+	configCopy := ModernSRIOVDPConfig{
+		ResourceList: make([]ModernSRIOVResource, len(config.ResourceList)),
+	}
+
+	for i, resource := range config.ResourceList {
+		configCopy.ResourceList[i] = ModernSRIOVResource{
+			ResourceName:   resource.ResourceName,
+			ResourcePrefix: resource.ResourcePrefix,
+			Selectors:      make([]ModernSRIOVSelector, len(resource.Selectors)),
+		}
+
+		for j, selector := range resource.Selectors {
+			configCopy.ResourceList[i].Selectors[j] = ModernSRIOVSelector{
+				Drivers:      make([]string, len(selector.Drivers)),
+				PCIAddresses: make([]string, len(selector.PCIAddresses)),
+			}
+			copy(configCopy.ResourceList[i].Selectors[j].Drivers, selector.Drivers)
+			copy(configCopy.ResourceList[i].Selectors[j].PCIAddresses, selector.PCIAddresses)
+		}
+	}
+
+	return configCopy
+}
+
+// sriovConfigsEqual compares two SR-IOV configurations for equality
+func sriovConfigsEqual(config1, config2 ModernSRIOVDPConfig) bool {
+	if len(config1.ResourceList) != len(config2.ResourceList) {
+		return false
+	}
+
+	// Create maps for easier comparison
+	resources1 := make(map[string]ModernSRIOVResource)
+	resources2 := make(map[string]ModernSRIOVResource)
+
+	for _, resource := range config1.ResourceList {
+		key := resource.ResourcePrefix + "/" + resource.ResourceName
+		resources1[key] = resource
+	}
+
+	for _, resource := range config2.ResourceList {
+		key := resource.ResourcePrefix + "/" + resource.ResourceName
+		resources2[key] = resource
+	}
+
+	// Check if all resources from config1 exist in config2 and are equal
+	for key, resource1 := range resources1 {
+		resource2, exists := resources2[key]
+		if !exists || !sriovResourcesEqual(resource1, resource2) {
+			return false
+		}
+	}
+
+	// Check if all resources from config2 exist in config1 (should be covered above, but for completeness)
+	for key := range resources2 {
+		if _, exists := resources1[key]; !exists {
+			return false
+		}
+	}
+
+	return true
+}
+
+// sriovResourcesEqual compares two SR-IOV resources for equality
+func sriovResourcesEqual(resource1, resource2 ModernSRIOVResource) bool {
+	if resource1.ResourceName != resource2.ResourceName ||
+		resource1.ResourcePrefix != resource2.ResourcePrefix ||
+		len(resource1.Selectors) != len(resource2.Selectors) {
+		return false
+	}
+
+	// Create maps for easier comparison of selectors
+	selectors1 := make(map[string]ModernSRIOVSelector)
+	selectors2 := make(map[string]ModernSRIOVSelector)
+
+	for _, selector := range resource1.Selectors {
+		// Create a key based on sorted PCI addresses for consistent comparison
+		key := strings.Join(sortedStringSlice(selector.PCIAddresses), ",")
+		selectors1[key] = selector
+	}
+
+	for _, selector := range resource2.Selectors {
+		key := strings.Join(sortedStringSlice(selector.PCIAddresses), ",")
+		selectors2[key] = selector
+	}
+
+	// Compare selectors
+	for key, selector1 := range selectors1 {
+		selector2, exists := selectors2[key]
+		if !exists || !sriovSelectorsEqual(selector1, selector2) {
+			return false
+		}
+	}
+
+	for key := range selectors2 {
+		if _, exists := selectors1[key]; !exists {
+			return false
+		}
+	}
+
+	return true
+}
+
+// sriovSelectorsEqual compares two SR-IOV selectors for equality
+func sriovSelectorsEqual(selector1, selector2 ModernSRIOVSelector) bool {
+	// Compare drivers (order doesn't matter)
+	if !stringSlicesEqual(selector1.Drivers, selector2.Drivers) {
+		return false
+	}
+
+	// Compare PCI addresses (order doesn't matter)
+	if !stringSlicesEqual(selector1.PCIAddresses, selector2.PCIAddresses) {
+		return false
+	}
+
+	return true
+}
+
+// stringSlicesEqual compares two string slices for equality (order doesn't matter)
+func stringSlicesEqual(slice1, slice2 []string) bool {
+	if len(slice1) != len(slice2) {
+		return false
+	}
+
+	sorted1 := sortedStringSlice(slice1)
+	sorted2 := sortedStringSlice(slice2)
+
+	for i := range sorted1 {
+		if sorted1[i] != sorted2[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+// sortedStringSlice returns a sorted copy of a string slice
+func sortedStringSlice(slice []string) []string {
+	sorted := make([]string, len(slice))
+	copy(sorted, slice)
+	sort.Strings(sorted)
+	return sorted
 }
 
 // updateSRIOVConfigForNonDPDK updates SR-IOV configuration for non-DPDK scenarios

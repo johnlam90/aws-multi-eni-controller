@@ -4,9 +4,9 @@
 
 # Image configuration
 image:
-  repository: johnlam90/aws-multi-eni-controller
-  tag: v1.3.3-cloud-native-sriov-fixed
-  pullPolicy: IfNotPresent
+  repository: ghcr.io/johnlam90/aws-multi-eni-controller
+  tag: beta-latest
+  pullPolicy: Always
 
 # Namespace to deploy the controller
 namespace: eni-controller-system
