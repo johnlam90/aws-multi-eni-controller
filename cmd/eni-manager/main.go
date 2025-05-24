@@ -664,6 +664,12 @@ func updateNodeENIDPDKStatus(eniID string, nodeENIName string, dpdkDriver string
 // updateNodeENIDPDKStatusWithPCI updates the DPDK status of an ENI attachment in the NodeENI resource
 // including the PCI address of the device bound to DPDK
 func updateNodeENIDPDKStatusWithPCI(eniID string, nodeENIName string, dpdkDriver string, dpdkBound bool, pciAddress string) error {
+	return updateNodeENIDPDKStatusComplete(eniID, nodeENIName, dpdkDriver, dpdkBound, pciAddress, "")
+}
+
+// updateNodeENIDPDKStatusComplete updates the DPDK status of an ENI attachment in the NodeENI resource
+// including the PCI address and resource name of the device bound to DPDK
+func updateNodeENIDPDKStatusComplete(eniID string, nodeENIName string, dpdkDriver string, dpdkBound bool, pciAddress string, resourceName string) error {
 	// Create a Kubernetes client
 	k8sConfig, err := rest.InClusterConfig()
 	if err != nil {
@@ -703,6 +709,12 @@ func updateNodeENIDPDKStatusWithPCI(eniID string, nodeENIName string, dpdkDriver
 			if pciAddress != "" {
 				nodeENI.Status.Attachments[i].DPDKPCIAddress = pciAddress
 				log.Printf("Setting PCI address %s in NodeENI status for ENI %s", pciAddress, eniID)
+			}
+
+			// Update the resource name if provided
+			if resourceName != "" {
+				nodeENI.Status.Attachments[i].DPDKResourceName = resourceName
+				log.Printf("Setting DPDK resource name %s in NodeENI status for ENI %s", resourceName, eniID)
 			}
 
 			nodeENI.Status.Attachments[i].LastUpdated = metav1.Now()
@@ -834,8 +846,14 @@ func bindWithExplicitPCIAddress(pciAddress, dpdkDriver string, nodeENI networkin
 
 	log.Printf("Successfully bound PCI device %s to DPDK driver %s", pciAddress, dpdkDriver)
 
-	// Update the attachment status to mark it as DPDK-bound and include the PCI address
-	if err := updateNodeENIDPDKStatusWithPCI(attachment.ENIID, nodeENI.Name, dpdkDriver, true, pciAddress); err != nil {
+	// Get the resource name for this device
+	resourceName := ""
+	if nodeENI.Spec.DPDKResourceName != "" {
+		resourceName = nodeENI.Spec.DPDKResourceName
+	}
+
+	// Update the attachment status to mark it as DPDK-bound and include the PCI address and resource name
+	if err := updateNodeENIDPDKStatusComplete(attachment.ENIID, nodeENI.Name, dpdkDriver, true, pciAddress, resourceName); err != nil {
 		log.Printf("Warning: Failed to update attachment DPDK status: %v", err)
 		// Continue anyway, the interface is bound to DPDK
 	} else {
@@ -919,8 +937,14 @@ func bindInterfaceByName(ifaceName, dpdkDriver string, nodeENI networkingv1alpha
 
 	log.Printf("Successfully bound interface %s to DPDK driver %s", ifaceName, dpdkDriver)
 
-	// Update the attachment status to mark it as DPDK-bound and include the PCI address
-	if err := updateNodeENIDPDKStatusWithPCI(attachment.ENIID, nodeENI.Name, dpdkDriver, true, pciAddress); err != nil {
+	// Get the resource name for this device
+	resourceName := ""
+	if nodeENI.Spec.DPDKResourceName != "" {
+		resourceName = nodeENI.Spec.DPDKResourceName
+	}
+
+	// Update the attachment status to mark it as DPDK-bound and include the PCI address and resource name
+	if err := updateNodeENIDPDKStatusComplete(attachment.ENIID, nodeENI.Name, dpdkDriver, true, pciAddress, resourceName); err != nil {
 		log.Printf("Warning: Failed to update attachment DPDK status: %v", err)
 		// Continue anyway, the interface is bound to DPDK
 	} else {
@@ -934,14 +958,26 @@ func bindInterfaceByName(ifaceName, dpdkDriver string, nodeENI networkingv1alpha
 func updateSRIOVConfigIfNeeded(ifaceName string, nodeENI networkingv1alpha1.NodeENI, dpdkDriver string, cfg *config.ENIManagerConfig) {
 	// Store the resource name for this interface if specified in the NodeENI
 	if nodeENI.Spec.DPDKResourceName != "" {
+		// Validate the resource name first
+		if err := validateSRIOVResourceName(nodeENI.Spec.DPDKResourceName); err != nil {
+			log.Printf("Error: Invalid DPDK resource name '%s' in NodeENI %s: %v",
+				nodeENI.Spec.DPDKResourceName, nodeENI.Name, err)
+			return
+		}
+
 		cfg.DPDKResourceNames[ifaceName] = nodeENI.Spec.DPDKResourceName
 		// Update the SRIOV device plugin config with the specified resource name
 		pciAddress, err := getPCIAddressForInterface(ifaceName)
 		if err == nil {
-			if err := updateSRIOVDevicePluginConfig(ifaceName, pciAddress, dpdkDriver, cfg); err != nil {
+			if err := updateSRIOVDevicePluginConfigWithRetry(ifaceName, pciAddress, dpdkDriver, nodeENI.Spec.DPDKResourceName, cfg); err != nil {
 				log.Printf("Warning: Failed to update SRIOV device plugin config with resource name %s: %v",
 					nodeENI.Spec.DPDKResourceName, err)
+			} else {
+				log.Printf("Successfully configured SR-IOV device plugin for resource %s (interface: %s, PCI: %s)",
+					nodeENI.Spec.DPDKResourceName, ifaceName, pciAddress)
 			}
+		} else {
+			log.Printf("Warning: Failed to get PCI address for interface %s: %v", ifaceName, err)
 		}
 	}
 }
@@ -1935,7 +1971,9 @@ func removeSRIOVDevicePluginConfig(ifaceName, pciAddress string, cfg *config.ENI
 
 	// Find and remove the resource that contains this PCI address
 	modified := false
-	for i, resource := range config.ResourceList {
+	for i := range config.ResourceList {
+		resource := &config.ResourceList[i]
+
 		// Find the resource that contains this PCI address
 		newDevices := []PCIDeviceInfo{}
 		for _, device := range resource.Devices {
@@ -1949,8 +1987,20 @@ func removeSRIOVDevicePluginConfig(ifaceName, pciAddress string, cfg *config.ENI
 		}
 
 		// Update the devices list
-		config.ResourceList[i].Devices = newDevices
+		resource.Devices = newDevices
 	}
+
+	// Remove empty resource lists
+	var newResourceList []SRIOVDeviceConfig
+	for _, resource := range config.ResourceList {
+		if len(resource.Devices) > 0 {
+			newResourceList = append(newResourceList, resource)
+		} else {
+			log.Printf("Removing empty resource %s", resource.ResourceName)
+			modified = true
+		}
+	}
+	config.ResourceList = newResourceList
 
 	// If we didn't modify anything, return
 	if !modified {
@@ -2172,6 +2222,316 @@ func updateSRIOVDevicePluginConfig(ifaceName, pciAddress, driver string, cfg *co
 
 	log.Printf("Successfully updated SRIOV device plugin config for interface %s with resource name %s",
 		ifaceName, resourceName)
+	return nil
+}
+
+// SRIOVConfigManager manages SR-IOV device plugin configuration with enhanced error handling
+type SRIOVConfigManager struct {
+	configPath string
+	backupPath string
+	restartCmd []string
+	maxRetries int
+	retryDelay time.Duration
+}
+
+// NewSRIOVConfigManager creates a new SR-IOV configuration manager
+func NewSRIOVConfigManager(configPath string) *SRIOVConfigManager {
+	return &SRIOVConfigManager{
+		configPath: configPath,
+		backupPath: configPath + ".backup",
+		restartCmd: []string{"kubectl", "delete", "pods", "-n", "kube-system", "-l", "app=sriovdp"},
+		maxRetries: 3,
+		retryDelay: 2 * time.Second,
+	}
+}
+
+// updateSRIOVDevicePluginConfigWithRetry updates the SR-IOV device plugin config with retry logic and rollback
+func updateSRIOVDevicePluginConfigWithRetry(ifaceName, pciAddress, driver, resourceName string, cfg *config.ENIManagerConfig) error {
+	manager := NewSRIOVConfigManager(cfg.SRIOVDPConfigPath)
+
+	// Create backup before making changes
+	if err := manager.createBackup(); err != nil {
+		log.Printf("Warning: Failed to create backup of SR-IOV config: %v", err)
+	}
+
+	// Attempt to update the configuration with retries
+	var lastErr error
+	for attempt := 1; attempt <= manager.maxRetries; attempt++ {
+		log.Printf("Attempting to update SR-IOV config (attempt %d/%d) for resource %s",
+			attempt, manager.maxRetries, resourceName)
+
+		if err := manager.updateConfig(ifaceName, pciAddress, driver, resourceName); err != nil {
+			lastErr = err
+			log.Printf("Attempt %d failed: %v", attempt, err)
+
+			if attempt < manager.maxRetries {
+				time.Sleep(manager.retryDelay)
+				continue
+			}
+
+			// All attempts failed, try to restore backup
+			log.Printf("All attempts failed, attempting to restore backup")
+			if restoreErr := manager.restoreBackup(); restoreErr != nil {
+				log.Printf("Critical: Failed to restore backup: %v", restoreErr)
+			}
+			return fmt.Errorf("failed to update SR-IOV config after %d attempts: %v", manager.maxRetries, lastErr)
+		}
+
+		// Success - validate the configuration
+		if err := manager.validateConfig(); err != nil {
+			log.Printf("Configuration validation failed: %v", err)
+			if restoreErr := manager.restoreBackup(); restoreErr != nil {
+				log.Printf("Critical: Failed to restore backup after validation failure: %v", restoreErr)
+			}
+			return fmt.Errorf("configuration validation failed: %v", err)
+		}
+
+		// Configuration is valid, trigger device plugin restart
+		if err := manager.restartDevicePlugin(); err != nil {
+			log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
+			// Don't fail the operation for restart failures
+		}
+
+		log.Printf("Successfully updated SR-IOV config for resource %s", resourceName)
+		return nil
+	}
+
+	return lastErr
+}
+
+// createBackup creates a backup of the current configuration
+func (m *SRIOVConfigManager) createBackup() error {
+	if _, err := os.Stat(m.configPath); os.IsNotExist(err) {
+		// No config file exists, nothing to backup
+		return nil
+	}
+
+	data, err := os.ReadFile(m.configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read config file: %v", err)
+	}
+
+	if err := os.WriteFile(m.backupPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write backup file: %v", err)
+	}
+
+	log.Printf("Created backup of SR-IOV config at %s", m.backupPath)
+	return nil
+}
+
+// restoreBackup restores the configuration from backup
+func (m *SRIOVConfigManager) restoreBackup() error {
+	if _, err := os.Stat(m.backupPath); os.IsNotExist(err) {
+		return fmt.Errorf("backup file does not exist")
+	}
+
+	data, err := os.ReadFile(m.backupPath)
+	if err != nil {
+		return fmt.Errorf("failed to read backup file: %v", err)
+	}
+
+	if err := os.WriteFile(m.configPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to restore config file: %v", err)
+	}
+
+	log.Printf("Restored SR-IOV config from backup")
+	return nil
+}
+
+// updateConfig updates the SR-IOV configuration with the specified device
+func (m *SRIOVConfigManager) updateConfig(ifaceName, pciAddress, driver, resourceName string) error {
+	// Step 1: Check if the config file exists and handle accordingly
+	var config SRIOVDPConfig
+	if _, err := os.Stat(m.configPath); os.IsNotExist(err) {
+		// Create a new config file with this device
+		config = createNewSRIOVConfig(resourceName, pciAddress, driver)
+	} else {
+		// Read and update the existing config file
+		var err error
+		config, err = readExistingSRIOVConfig(m.configPath)
+		if err != nil {
+			return err
+		}
+
+		config = updateExistingSRIOVConfig(config, resourceName, pciAddress, driver)
+	}
+
+	// Step 2: Write the updated config back to the file
+	if err := writeSRIOVConfig(config, m.configPath); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateConfig validates the SR-IOV configuration file
+func (m *SRIOVConfigManager) validateConfig() error {
+	// Check if file exists and is readable
+	if _, err := os.Stat(m.configPath); err != nil {
+		return fmt.Errorf("config file is not accessible: %v", err)
+	}
+
+	// Try to parse the configuration
+	config, err := readExistingSRIOVConfig(m.configPath)
+	if err != nil {
+		return fmt.Errorf("config file is not valid JSON: %v", err)
+	}
+
+	// Validate the structure
+	if len(config.ResourceList) == 0 {
+		return fmt.Errorf("config file has no resources defined")
+	}
+
+	// Validate each resource
+	for i, resource := range config.ResourceList {
+		if resource.ResourceName == "" {
+			return fmt.Errorf("resource %d has empty resource name", i)
+		}
+
+		if len(resource.Devices) == 0 {
+			log.Printf("Warning: Resource %s has no devices defined", resource.ResourceName)
+		}
+
+		// Validate each device
+		for j, device := range resource.Devices {
+			if device.PCIAddress == "" {
+				return fmt.Errorf("device %d in resource %s has empty PCI address", j, resource.ResourceName)
+			}
+
+			// Validate PCI address format (basic check)
+			if !isValidPCIAddress(device.PCIAddress) {
+				return fmt.Errorf("device %d in resource %s has invalid PCI address format: %s",
+					j, resource.ResourceName, device.PCIAddress)
+			}
+		}
+	}
+
+	log.Printf("SR-IOV configuration validation passed")
+	return nil
+}
+
+// isValidPCIAddress performs basic validation of PCI address format
+func isValidPCIAddress(addr string) bool {
+	// Basic format check: XXXX:XX:XX.X
+	if len(addr) != 12 {
+		return false
+	}
+
+	parts := strings.Split(addr, ":")
+	if len(parts) != 3 {
+		return false
+	}
+
+	// Check domain (4 hex digits)
+	if len(parts[0]) != 4 {
+		return false
+	}
+
+	// Check bus (2 hex digits)
+	if len(parts[1]) != 2 {
+		return false
+	}
+
+	// Check device.function (XX.X format)
+	devFunc := parts[2]
+	if len(devFunc) != 4 || devFunc[2] != '.' {
+		return false
+	}
+
+	return true
+}
+
+// restartDevicePlugin restarts the SR-IOV device plugin to pick up configuration changes
+func (m *SRIOVConfigManager) restartDevicePlugin() error {
+	log.Printf("Attempting to restart SR-IOV device plugin")
+
+	// Try to restart using kubectl
+	cmd := exec.Command(m.restartCmd[0], m.restartCmd[1:]...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to restart device plugin: %v, output: %s", err, string(output))
+	}
+
+	log.Printf("SR-IOV device plugin restart initiated: %s", string(output))
+	return nil
+}
+
+// cleanupSRIOVConfigForNodeENI removes SR-IOV configuration for a deleted NodeENI
+func cleanupSRIOVConfigForNodeENI(nodeENIName string, cfg *config.ENIManagerConfig) error {
+	log.Printf("Cleaning up SR-IOV configuration for deleted NodeENI: %s", nodeENIName)
+
+	// Find all DPDK bound interfaces for this NodeENI
+	var interfacesToCleanup []string
+	for pciAddr, boundInterface := range cfg.DPDKBoundInterfaces {
+		if boundInterface.NodeENIName == nodeENIName {
+			interfacesToCleanup = append(interfacesToCleanup, pciAddr)
+		}
+	}
+
+	if len(interfacesToCleanup) == 0 {
+		log.Printf("No DPDK interfaces found for NodeENI %s", nodeENIName)
+		return nil
+	}
+
+	manager := NewSRIOVConfigManager(cfg.SRIOVDPConfigPath)
+
+	// Create backup before making changes
+	if err := manager.createBackup(); err != nil {
+		log.Printf("Warning: Failed to create backup before cleanup: %v", err)
+	}
+
+	// Remove each interface from SR-IOV config
+	for _, pciAddr := range interfacesToCleanup {
+		boundInterface := cfg.DPDKBoundInterfaces[pciAddr]
+		if err := removeSRIOVDevicePluginConfig(boundInterface.IfaceName, pciAddr, cfg); err != nil {
+			log.Printf("Warning: Failed to remove SR-IOV config for PCI %s: %v", pciAddr, err)
+		} else {
+			log.Printf("Removed SR-IOV config for PCI %s (NodeENI: %s)", pciAddr, nodeENIName)
+		}
+	}
+
+	// Restart device plugin to pick up changes
+	if err := manager.restartDevicePlugin(); err != nil {
+		log.Printf("Warning: Failed to restart SR-IOV device plugin after cleanup: %v", err)
+	}
+
+	return nil
+}
+
+// validateSRIOVResourceName validates that a resource name follows best practices
+func validateSRIOVResourceName(resourceName string) error {
+	if resourceName == "" {
+		return fmt.Errorf("resource name cannot be empty")
+	}
+
+	// Check for valid format (domain/resource)
+	parts := strings.Split(resourceName, "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("resource name must be in format 'domain/resource', got: %s", resourceName)
+	}
+
+	domain := parts[0]
+	resource := parts[1]
+
+	// Validate domain
+	if domain == "" {
+		return fmt.Errorf("domain part cannot be empty")
+	}
+
+	// Validate resource
+	if resource == "" {
+		return fmt.Errorf("resource part cannot be empty")
+	}
+
+	// Check for reserved prefixes
+	reservedPrefixes := []string{"kubernetes.io", "k8s.io"}
+	for _, prefix := range reservedPrefixes {
+		if strings.HasPrefix(domain, prefix) {
+			return fmt.Errorf("resource name cannot use reserved domain prefix: %s", prefix)
+		}
+	}
+
+	log.Printf("Resource name validation passed: %s", resourceName)
 	return nil
 }
 

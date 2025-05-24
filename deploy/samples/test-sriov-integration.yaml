@@ -1,0 +1,84 @@
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: test-sriov-integration-1
+spec:
+  deleteOnTermination: true
+  description: Test NodeENI with enhanced SR-IOV integration
+  deviceIndex: 2
+  dpdkDriver: vfio-pci
+  dpdkPCIAddress: "0000:00:07.0"
+  dpdkResourceName: intel.com/sriov_test_1
+  enableDPDK: true
+  mtu: 9001
+  nodeSelector:
+    ng: multi-eni
+  securityGroupIDs:
+  - sg-0e4680d35b5053f29
+  subnetIDs:
+  - subnet-08c2ddc07218f1105
+
+---
+
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: test-sriov-integration-2
+spec:
+  deleteOnTermination: true
+  description: Test NodeENI with enhanced SR-IOV integration
+  deviceIndex: 3
+  dpdkDriver: vfio-pci
+  dpdkPCIAddress: "0000:00:08.0"
+  dpdkResourceName: intel.com/sriov_test_2
+  enableDPDK: true
+  mtu: 9001
+  nodeSelector:
+    ng: multi-eni
+  securityGroupNames:
+  - multus-test-sg
+  subnetNames:
+  - multus-test-subnet-2
+
+---
+
+# Test pod that consumes the SR-IOV resources
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-sriov-consumer
+  namespace: default
+spec:
+  nodeSelector:
+    ng: multi-eni
+  containers:
+  - name: dpdk-app
+    image: ubuntu:22.04
+    command: ["/bin/bash", "-c", "sleep 3600"]
+    resources:
+      requests:
+        intel.com/sriov_test_1: "1"
+        intel.com/sriov_test_2: "1"
+      limits:
+        intel.com/sriov_test_1: "1"
+        intel.com/sriov_test_2: "1"
+    securityContext:
+      privileged: true
+    volumeMounts:
+    - name: hugepages
+      mountPath: /dev/hugepages
+    - name: sys
+      mountPath: /sys
+    - name: dev
+      mountPath: /dev
+  volumes:
+  - name: hugepages
+    hostPath:
+      path: /dev/hugepages
+  - name: sys
+    hostPath:
+      path: /sys
+  - name: dev
+    hostPath:
+      path: /dev
+  restartPolicy: Never
