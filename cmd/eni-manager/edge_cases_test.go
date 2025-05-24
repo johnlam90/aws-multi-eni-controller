@@ -144,136 +144,143 @@ func TestSRIOVConfigEdgeCases(t *testing.T) {
 }
 
 // TestDPDKOperationEdgeCases tests edge cases in DPDK operations
-func TestDPDKOperationEdgeCases(t *testing.T) {
+// TestDPDKRapidSuccessiveOperations tests rapid successive DPDK operations
+func TestDPDKRapidSuccessiveOperations(t *testing.T) {
 	// Reset global state
 	dpdkOperations = make(map[string]bool)
 
-	t.Run("RapidSuccessiveOperations", func(t *testing.T) {
-		const numOperations = 100
-		const pciAddress = "0000:00:01.0"
+	const numOperations = 100
+	const pciAddress = "0000:00:01.0"
 
-		var wg sync.WaitGroup
-		successCount := 0
-		var successMutex sync.Mutex
+	var wg sync.WaitGroup
+	successCount := 0
+	var successMutex sync.Mutex
 
-		// Rapidly try to acquire locks
-		for i := 0; i < numOperations; i++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
-
-				releaseLock, err := acquireDPDKLock(pciAddress)
-				if err == nil {
-					// Simulate very short operation
-					time.Sleep(1 * time.Millisecond)
-
-					successMutex.Lock()
-					successCount++
-					successMutex.Unlock()
-
-					releaseLock()
-				}
-			}(i)
-		}
-
-		wg.Wait()
-
-		// Should have serialized all operations
-		if successCount != numOperations {
-			t.Errorf("Expected %d successful operations, got %d", numOperations, successCount)
-		}
-
-		// Map should be empty
-		dpdkOpsMutex.Lock()
-		mapSize := len(dpdkOperations)
-		dpdkOpsMutex.Unlock()
-
-		if mapSize != 0 {
-			t.Errorf("Expected empty operations map, got size %d", mapSize)
-		}
-	})
-
-	t.Run("OperationTimeout", func(t *testing.T) {
-		const pciAddress = "0000:00:02.0"
-
-		// Acquire lock and hold it
-		releaseLock, err := acquireDPDKLock(pciAddress)
-		if err != nil {
-			t.Fatalf("Failed to acquire initial lock: %v", err)
-		}
-
-		// Try to acquire same lock from another goroutine with a short timeout
-		done := make(chan bool, 1)
-		go func() {
-			// This will wait for up to 30 seconds, but we'll test that it's queuing properly
-			startTime := time.Now()
-			releaseLock2, err := acquireDPDKLock(pciAddress)
-			duration := time.Since(startTime)
-
-			if err != nil {
-				// Should only error if timeout exceeded
-				done <- true
-			} else {
-				// Should succeed after the first lock is released
-				releaseLock2()
-				// Check that it waited (indicating proper queuing)
-				if duration > 100*time.Millisecond {
-					done <- true // Waited properly
-				} else {
-					done <- false // Didn't wait
-				}
-			}
-		}()
-
-		// Wait a bit, then release the first lock
-		time.Sleep(200 * time.Millisecond)
-		releaseLock()
-
-		// Should succeed after we release the lock
-		select {
-		case success := <-done:
-			if !success {
-				t.Error("Expected lock acquisition to succeed after first lock was released")
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("Lock acquisition took too long even after first lock was released")
-		}
-	})
-
-	t.Run("MemoryLeakPrevention", func(t *testing.T) {
-		// Simulate many operations to test memory cleanup
-		for i := 0; i < 200; i++ {
-			pciAddress := fmt.Sprintf("0000:00:%02x.0", i%256)
+	// Rapidly try to acquire locks
+	for i := 0; i < numOperations; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
 
 			releaseLock, err := acquireDPDKLock(pciAddress)
-			if err != nil {
-				t.Fatalf("Failed to acquire lock for %s: %v", pciAddress, err)
+			if err == nil {
+				// Simulate very short operation
+				time.Sleep(1 * time.Millisecond)
+
+				successMutex.Lock()
+				successCount++
+				successMutex.Unlock()
+
+				releaseLock()
 			}
+		}(i)
+	}
 
-			// Immediately release
-			releaseLock()
+	wg.Wait()
 
-			// Check map size periodically
-			if i%50 == 0 {
-				dpdkOpsMutex.Lock()
-				mapSize := len(dpdkOperations)
-				dpdkOpsMutex.Unlock()
+	// Should have serialized all operations
+	if successCount != numOperations {
+		t.Errorf("Expected %d successful operations, got %d", numOperations, successCount)
+	}
 
-				if mapSize > 10 {
-					t.Errorf("Operations map growing too large: %d entries at iteration %d", mapSize, i)
-				}
+	// Map should be empty
+	dpdkOpsMutex.Lock()
+	mapSize := len(dpdkOperations)
+	dpdkOpsMutex.Unlock()
+
+	if mapSize != 0 {
+		t.Errorf("Expected empty operations map, got size %d", mapSize)
+	}
+}
+
+// TestDPDKOperationTimeout tests DPDK operation timeout behavior
+func TestDPDKOperationTimeout(t *testing.T) {
+	// Reset global state
+	dpdkOperations = make(map[string]bool)
+
+	const pciAddress = "0000:00:02.0"
+
+	// Acquire lock and hold it
+	releaseLock, err := acquireDPDKLock(pciAddress)
+	if err != nil {
+		t.Fatalf("Failed to acquire initial lock: %v", err)
+	}
+
+	// Try to acquire same lock from another goroutine with a short timeout
+	done := make(chan bool, 1)
+	go func() {
+		// This will wait for up to 30 seconds, but we'll test that it's queuing properly
+		startTime := time.Now()
+		releaseLock2, err := acquireDPDKLock(pciAddress)
+		duration := time.Since(startTime)
+
+		if err != nil {
+			// Should only error if timeout exceeded
+			done <- true
+		} else {
+			// Should succeed after the first lock is released
+			releaseLock2()
+			// Check that it waited (indicating proper queuing)
+			if duration > 100*time.Millisecond {
+				done <- true // Waited properly
+			} else {
+				done <- false // Didn't wait
 			}
 		}
+	}()
 
-		// Final check - map should be empty
-		dpdkOpsMutex.Lock()
-		finalSize := len(dpdkOperations)
-		dpdkOpsMutex.Unlock()
+	// Wait a bit, then release the first lock
+	time.Sleep(200 * time.Millisecond)
+	releaseLock()
 
-		if finalSize != 0 {
-			t.Errorf("Expected empty operations map, got size %d", finalSize)
+	// Should succeed after we release the lock
+	select {
+	case success := <-done:
+		if !success {
+			t.Error("Expected lock acquisition to succeed after first lock was released")
 		}
-	})
+	case <-time.After(5 * time.Second):
+		t.Error("Lock acquisition took too long even after first lock was released")
+	}
+}
+
+// TestDPDKMemoryLeakPrevention tests memory leak prevention in DPDK operations
+func TestDPDKMemoryLeakPrevention(t *testing.T) {
+	// Reset global state
+	dpdkOperations = make(map[string]bool)
+
+	// Simulate many operations to test memory cleanup
+	for i := 0; i < 200; i++ {
+		pciAddress := fmt.Sprintf("0000:00:%02x.0", i%256)
+
+		releaseLock, err := acquireDPDKLock(pciAddress)
+		if err != nil {
+			t.Fatalf("Failed to acquire lock for %s: %v", pciAddress, err)
+		}
+
+		// Immediately release
+		releaseLock()
+
+		// Check map size periodically
+		if i%50 == 0 {
+			dpdkOpsMutex.Lock()
+			mapSize := len(dpdkOperations)
+			dpdkOpsMutex.Unlock()
+
+			if mapSize > 10 {
+				t.Errorf("Operations map growing too large: %d entries at iteration %d", mapSize, i)
+			}
+		}
+	}
+
+	// Final check - map should be empty
+	dpdkOpsMutex.Lock()
+	finalSize := len(dpdkOperations)
+	dpdkOpsMutex.Unlock()
+
+	if finalSize != 0 {
+		t.Errorf("Expected empty operations map, got size %d", finalSize)
+	}
 }
 
 // TestResourceNameValidationEdgeCases tests edge cases in resource name validation

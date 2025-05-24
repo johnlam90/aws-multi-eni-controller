@@ -179,6 +179,32 @@ func (c *ENIManagerConfig) Validate() error {
 func LoadControllerConfig() (*ControllerConfig, error) {
 	config := DefaultControllerConfig()
 
+	if err := loadBasicConfig(config); err != nil {
+		return nil, err
+	}
+
+	if err := loadConcurrencyConfig(config); err != nil {
+		return nil, err
+	}
+
+	if err := loadTimeoutConfig(config); err != nil {
+		return nil, err
+	}
+
+	if err := loadCircuitBreakerConfig(config); err != nil {
+		return nil, err
+	}
+
+	// Validate the configuration
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("configuration validation failed: %w", err)
+	}
+
+	return config, nil
+}
+
+// loadBasicConfig loads basic configuration from environment variables
+func loadBasicConfig(config *ControllerConfig) error {
 	// Load AWS region from environment variable
 	if region := os.Getenv("AWS_REGION"); region != "" {
 		config.AWSRegion = region
@@ -188,34 +214,16 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	if periodStr := os.Getenv("RECONCILE_PERIOD"); periodStr != "" {
 		period, err := time.ParseDuration(periodStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid RECONCILE_PERIOD: %w", err)
+			return fmt.Errorf("invalid RECONCILE_PERIOD: %w", err)
 		}
 		config.ReconcilePeriod = period
-	}
-
-	// Load detachment timeout from environment variable
-	if timeoutStr := os.Getenv("DETACHMENT_TIMEOUT"); timeoutStr != "" {
-		timeout, err := time.ParseDuration(timeoutStr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid DETACHMENT_TIMEOUT: %w", err)
-		}
-		config.DetachmentTimeout = timeout
-	}
-
-	// Load max concurrent reconciles from environment variable
-	if maxStr := os.Getenv("MAX_CONCURRENT_RECONCILES"); maxStr != "" {
-		max, err := strconv.Atoi(maxStr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid MAX_CONCURRENT_RECONCILES: %w", err)
-		}
-		config.MaxConcurrentReconciles = max
 	}
 
 	// Load default device index from environment variable
 	if indexStr := os.Getenv("DEFAULT_DEVICE_INDEX"); indexStr != "" {
 		index, err := strconv.Atoi(indexStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid DEFAULT_DEVICE_INDEX: %w", err)
+			return fmt.Errorf("invalid DEFAULT_DEVICE_INDEX: %w", err)
 		}
 		config.DefaultDeviceIndex = index
 	}
@@ -224,34 +232,66 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	if dotStr := os.Getenv("DEFAULT_DELETE_ON_TERMINATION"); dotStr != "" {
 		dot, err := strconv.ParseBool(dotStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid DEFAULT_DELETE_ON_TERMINATION: %w", err)
+			return fmt.Errorf("invalid DEFAULT_DELETE_ON_TERMINATION: %w", err)
 		}
 		config.DefaultDeleteOnTermination = dot
+	}
+
+	return nil
+}
+
+// loadConcurrencyConfig loads concurrency-related configuration from environment variables
+func loadConcurrencyConfig(config *ControllerConfig) error {
+	// Load max concurrent reconciles from environment variable
+	if maxStr := os.Getenv("MAX_CONCURRENT_RECONCILES"); maxStr != "" {
+		max, err := strconv.Atoi(maxStr)
+		if err != nil {
+			return fmt.Errorf("invalid MAX_CONCURRENT_RECONCILES: %w", err)
+		}
+		config.MaxConcurrentReconciles = max
 	}
 
 	// Load max concurrent ENI cleanup from environment variable
 	if maxStr := os.Getenv("MAX_CONCURRENT_ENI_CLEANUP"); maxStr != "" {
 		max, err := strconv.Atoi(maxStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid MAX_CONCURRENT_ENI_CLEANUP: %w", err)
+			return fmt.Errorf("invalid MAX_CONCURRENT_ENI_CLEANUP: %w", err)
 		}
 		config.MaxConcurrentENICleanup = max
+	}
+
+	return nil
+}
+
+// loadTimeoutConfig loads timeout-related configuration from environment variables
+func loadTimeoutConfig(config *ControllerConfig) error {
+	// Load detachment timeout from environment variable
+	if timeoutStr := os.Getenv("DETACHMENT_TIMEOUT"); timeoutStr != "" {
+		timeout, err := time.ParseDuration(timeoutStr)
+		if err != nil {
+			return fmt.Errorf("invalid DETACHMENT_TIMEOUT: %w", err)
+		}
+		config.DetachmentTimeout = timeout
 	}
 
 	// Load max cleanup duration from environment variable
 	if durationStr := os.Getenv("MAX_CLEANUP_DURATION"); durationStr != "" {
 		duration, err := time.ParseDuration(durationStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid MAX_CLEANUP_DURATION: %w", err)
+			return fmt.Errorf("invalid MAX_CLEANUP_DURATION: %w", err)
 		}
 		config.MaxCleanupDuration = duration
 	}
 
-	// Load circuit breaker configuration from environment variables
+	return nil
+}
+
+// loadCircuitBreakerConfig loads circuit breaker configuration from environment variables
+func loadCircuitBreakerConfig(config *ControllerConfig) error {
 	if enabledStr := os.Getenv("CIRCUIT_BREAKER_ENABLED"); enabledStr != "" {
 		enabled, err := strconv.ParseBool(enabledStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid CIRCUIT_BREAKER_ENABLED: %w", err)
+			return fmt.Errorf("invalid CIRCUIT_BREAKER_ENABLED: %w", err)
 		}
 		config.CircuitBreakerEnabled = enabled
 	}
@@ -259,7 +299,7 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	if thresholdStr := os.Getenv("CIRCUIT_BREAKER_FAILURE_THRESHOLD"); thresholdStr != "" {
 		threshold, err := strconv.Atoi(thresholdStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid CIRCUIT_BREAKER_FAILURE_THRESHOLD: %w", err)
+			return fmt.Errorf("invalid CIRCUIT_BREAKER_FAILURE_THRESHOLD: %w", err)
 		}
 		config.CircuitBreakerFailureThreshold = threshold
 	}
@@ -267,7 +307,7 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	if thresholdStr := os.Getenv("CIRCUIT_BREAKER_SUCCESS_THRESHOLD"); thresholdStr != "" {
 		threshold, err := strconv.Atoi(thresholdStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid CIRCUIT_BREAKER_SUCCESS_THRESHOLD: %w", err)
+			return fmt.Errorf("invalid CIRCUIT_BREAKER_SUCCESS_THRESHOLD: %w", err)
 		}
 		config.CircuitBreakerSuccessThreshold = threshold
 	}
@@ -275,17 +315,12 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 	if timeoutStr := os.Getenv("CIRCUIT_BREAKER_TIMEOUT"); timeoutStr != "" {
 		timeout, err := time.ParseDuration(timeoutStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid CIRCUIT_BREAKER_TIMEOUT: %w", err)
+			return fmt.Errorf("invalid CIRCUIT_BREAKER_TIMEOUT: %w", err)
 		}
 		config.CircuitBreakerTimeout = timeout
 	}
 
-	// Validate the configuration
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("configuration validation failed: %w", err)
-	}
-
-	return config, nil
+	return nil
 }
 
 // applyFlagOverrides applies command-line flag overrides to the config

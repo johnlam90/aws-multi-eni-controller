@@ -56,59 +56,104 @@ func CategorizeError(err error) ErrorCategory {
 
 	errMsg := strings.ToLower(err.Error())
 
-	// Throttling errors - need longer backoff
-	if strings.Contains(errMsg, "requestlimitexceeded") ||
-		strings.Contains(errMsg, "throttling") ||
-		strings.Contains(errMsg, "rate limit") ||
-		strings.Contains(errMsg, "too many requests") ||
-		strings.Contains(errMsg, "slowdown") {
+	if isThrottlingError(errMsg) {
 		return ErrorCategoryThrottling
 	}
 
-	// Resource errors - check first to avoid conflicts with network errors
-	if strings.Contains(errMsg, "invalidnetworkinterfaceid.notfound") ||
-		strings.Contains(errMsg, "invalidinstanceid.notfound") ||
-		strings.Contains(errMsg, "invalidsubnetid.notfound") ||
-		strings.Contains(errMsg, "invalidgroupid.notfound") ||
-		strings.Contains(errMsg, "resource not found") ||
-		strings.Contains(errMsg, "does not exist") {
+	if isResourceError(errMsg) {
 		return ErrorCategoryResource
 	}
 
-	// Network errors - can retry quickly (more specific checks to avoid conflicts)
-	if strings.Contains(errMsg, "connection timeout") ||
-		strings.Contains(errMsg, "connection refused") ||
-		strings.Contains(errMsg, "connection reset") ||
-		strings.Contains(errMsg, "network unreachable") ||
-		strings.Contains(errMsg, "dns") ||
-		strings.Contains(errMsg, "host unreachable") ||
-		strings.Contains(errMsg, "no route to host") {
+	if isNetworkError(errMsg) {
 		return ErrorCategoryNetwork
 	}
 
-	// Transient errors - medium backoff
-	if strings.Contains(errMsg, "internal error") ||
-		strings.Contains(errMsg, "service unavailable") ||
-		strings.Contains(errMsg, "temporary failure") ||
-		strings.Contains(errMsg, "try again") ||
-		strings.Contains(errMsg, "busy") ||
-		strings.Contains(errMsg, "conflict") {
+	if isTransientError(errMsg) {
 		return ErrorCategoryTransient
 	}
 
-	// Non-retryable errors
-	if strings.Contains(errMsg, "access denied") ||
-		strings.Contains(errMsg, "unauthorized") ||
-		strings.Contains(errMsg, "forbidden") ||
-		strings.Contains(errMsg, "invalid parameter") ||
-		strings.Contains(errMsg, "malformed") ||
-		strings.Contains(errMsg, "bad request") ||
-		strings.Contains(errMsg, "validation") {
+	if isNonRetryableError(errMsg) {
 		return ErrorCategoryNonRetryable
 	}
 
 	// Default to transient for unknown errors (conservative approach)
 	return ErrorCategoryTransient
+}
+
+// isThrottlingError checks if the error is related to throttling
+func isThrottlingError(errMsg string) bool {
+	throttlingKeywords := []string{
+		"requestlimitexceeded",
+		"throttling",
+		"rate limit",
+		"too many requests",
+		"slowdown",
+	}
+	return containsAny(errMsg, throttlingKeywords)
+}
+
+// isResourceError checks if the error is related to resource not found
+func isResourceError(errMsg string) bool {
+	resourceKeywords := []string{
+		"invalidnetworkinterfaceid.notfound",
+		"invalidinstanceid.notfound",
+		"invalidsubnetid.notfound",
+		"invalidgroupid.notfound",
+		"resource not found",
+		"does not exist",
+	}
+	return containsAny(errMsg, resourceKeywords)
+}
+
+// isNetworkError checks if the error is related to network connectivity
+func isNetworkError(errMsg string) bool {
+	networkKeywords := []string{
+		"connection timeout",
+		"connection refused",
+		"connection reset",
+		"network unreachable",
+		"dns",
+		"host unreachable",
+		"no route to host",
+	}
+	return containsAny(errMsg, networkKeywords)
+}
+
+// isTransientError checks if the error is transient and should be retried
+func isTransientError(errMsg string) bool {
+	transientKeywords := []string{
+		"internal error",
+		"service unavailable",
+		"temporary failure",
+		"try again",
+		"busy",
+		"conflict",
+	}
+	return containsAny(errMsg, transientKeywords)
+}
+
+// isNonRetryableError checks if the error should not be retried
+func isNonRetryableError(errMsg string) bool {
+	nonRetryableKeywords := []string{
+		"access denied",
+		"unauthorized",
+		"forbidden",
+		"invalid parameter",
+		"malformed",
+		"bad request",
+		"validation",
+	}
+	return containsAny(errMsg, nonRetryableKeywords)
+}
+
+// containsAny checks if the error message contains any of the given keywords
+func containsAny(errMsg string, keywords []string) bool {
+	for _, keyword := range keywords {
+		if strings.Contains(errMsg, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetRetryStrategy returns the appropriate retry strategy for an error category
