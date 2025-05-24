@@ -166,6 +166,10 @@ func performInitialNodeENIUpdate(ctx context.Context, clientset *kubernetes.Clie
 		updateDPDKBindingFromNodeENI(nodeName, cfg, nodeENIs)
 	}
 
+	// Also check for non-DPDK SR-IOV configuration updates
+	log.Printf("Performing initial non-DPDK SR-IOV configuration check")
+	updateSRIOVConfigForAllInterfaces(nodeName, cfg, nodeENIs)
+
 	return true
 }
 
@@ -211,6 +215,9 @@ func startNodeENIUpdaterLoop(ctx context.Context, clientset *kubernetes.Clientse
 			if cfg.EnableDPDK {
 				updateDPDKBindingFromNodeENI(nodeName, cfg, nodeENIs)
 			}
+
+			// Update SR-IOV configuration for all interfaces
+			updateSRIOVConfigForAllInterfaces(nodeName, cfg, nodeENIs)
 		}
 	}
 }
@@ -279,6 +286,9 @@ func main() {
 
 	// Set the global configuration
 	globalConfig = cfg
+
+	// Ensure SR-IOV device plugin config file exists
+	ensureSRIOVConfigExists(cfg)
 
 	// Setup context with signal handling
 	ctx, cancel := setupContext()
@@ -860,6 +870,9 @@ func bindWithExplicitPCIAddress(pciAddress, dpdkDriver string, nodeENI networkin
 		log.Printf("Successfully updated attachment DPDK status for ENI %s", attachment.ENIID)
 	}
 
+	// Update SR-IOV config for this DPDK-bound device
+	updateSRIOVConfigForDPDK(pciAddress, nodeENI, dpdkDriver, cfg)
+
 	return true
 }
 
@@ -951,6 +964,9 @@ func bindInterfaceByName(ifaceName, dpdkDriver string, nodeENI networkingv1alpha
 		log.Printf("Successfully updated attachment DPDK status for ENI %s with PCI address %s", attachment.ENIID, pciAddress)
 	}
 
+	// Update SR-IOV config for this DPDK-bound device
+	updateSRIOVConfigForDPDK(pciAddress, nodeENI, dpdkDriver, cfg)
+
 	return true
 }
 
@@ -979,6 +995,34 @@ func updateSRIOVConfigIfNeeded(ifaceName string, nodeENI networkingv1alpha1.Node
 		} else {
 			log.Printf("Warning: Failed to get PCI address for interface %s: %v", ifaceName, err)
 		}
+	}
+}
+
+// updateSRIOVConfigForDPDK updates the SRIOV device plugin config for DPDK-bound devices using PCI address
+func updateSRIOVConfigForDPDK(pciAddress string, nodeENI networkingv1alpha1.NodeENI, dpdkDriver string, cfg *config.ENIManagerConfig) {
+	// Only proceed if a resource name is specified in the NodeENI
+	if nodeENI.Spec.DPDKResourceName == "" {
+		log.Printf("No DPDK resource name specified for NodeENI %s, skipping SR-IOV config update", nodeENI.Name)
+		return
+	}
+
+	// Validate the resource name first
+	if err := validateSRIOVResourceName(nodeENI.Spec.DPDKResourceName); err != nil {
+		log.Printf("Error: Invalid DPDK resource name '%s' in NodeENI %s: %v",
+			nodeENI.Spec.DPDKResourceName, nodeENI.Name, err)
+		return
+	}
+
+	log.Printf("Updating SR-IOV device plugin config for PCI device %s with resource name %s",
+		pciAddress, nodeENI.Spec.DPDKResourceName)
+
+	// Update the SRIOV device plugin config using the modern format
+	if err := updateModernSRIOVDevicePluginConfig(pciAddress, dpdkDriver, nodeENI.Spec.DPDKResourceName, cfg); err != nil {
+		log.Printf("Warning: Failed to update SR-IOV device plugin config for PCI %s with resource name %s: %v",
+			pciAddress, nodeENI.Spec.DPDKResourceName, err)
+	} else {
+		log.Printf("Successfully configured SR-IOV device plugin for resource %s (PCI: %s, driver: %s)",
+			nodeENI.Spec.DPDKResourceName, pciAddress, dpdkDriver)
 	}
 }
 
@@ -1037,8 +1081,12 @@ func processDPDKBindingForAttachment(attachment networkingv1alpha1.ENIAttachment
 
 	// Try binding with the interface name from ENI ID lookup
 	if bindInterfaceByName(ifaceName, dpdkDriver, nodeENI, attachment, cfg) {
-		// Update SRIOV config if needed
-		updateSRIOVConfigIfNeeded(ifaceName, nodeENI, dpdkDriver, cfg)
+		// Update SRIOV config if needed - use PCI address since interface may not be available after DPDK binding
+		if pciAddr, err := getPCIAddressForInterface(ifaceName); err == nil {
+			updateSRIOVConfigForDPDK(pciAddr, nodeENI, dpdkDriver, cfg)
+		} else {
+			log.Printf("Warning: Failed to get PCI address for interface %s: %v", ifaceName, err)
+		}
 	}
 }
 
@@ -2573,6 +2621,9 @@ func bringUpInterface(link vnetlink.Link, cfg *config.ENIManagerConfig) error {
 					if cfg.EnableDPDK {
 						log.Printf("Checking DPDK binding for interface %s", ifaceName)
 						updateDPDKBindingFromNodeENI(nodeName, cfg, nodeENIs)
+					} else {
+						// Even if DPDK is disabled, check if SR-IOV configuration should be updated
+						updateSRIOVConfigForNonDPDK(ifaceName, nodeName, cfg, nodeENIs)
 					}
 				}
 			}
@@ -3403,4 +3454,344 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// ModernSRIOVSelector represents a selector in the modern SR-IOV device plugin format
+type ModernSRIOVSelector struct {
+	Drivers      []string `json:"drivers,omitempty"`
+	PCIAddresses []string `json:"pciAddresses,omitempty"`
+	Vendors      []string `json:"vendors,omitempty"`
+	Devices      []string `json:"devices,omitempty"`
+}
+
+// ModernSRIOVResource represents a resource in the modern SR-IOV device plugin format
+type ModernSRIOVResource struct {
+	ResourceName   string                `json:"resourceName"`
+	ResourcePrefix string                `json:"resourcePrefix,omitempty"`
+	Selectors      []ModernSRIOVSelector `json:"selectors"`
+}
+
+// ModernSRIOVDPConfig represents the modern SR-IOV device plugin configuration
+type ModernSRIOVDPConfig struct {
+	ResourceList []ModernSRIOVResource `json:"resourceList"`
+}
+
+// updateModernSRIOVDevicePluginConfig updates the SR-IOV device plugin config using the modern format
+func updateModernSRIOVDevicePluginConfig(pciAddress, driver, resourceName string, cfg *config.ENIManagerConfig) error {
+	if cfg.SRIOVDPConfigPath == "" {
+		return fmt.Errorf("SR-IOV device plugin config path not configured")
+	}
+
+	log.Printf("Updating modern SR-IOV device plugin config for PCI %s with resource %s", pciAddress, resourceName)
+
+	// Parse the resource name to get prefix and name
+	parts := strings.Split(resourceName, "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid resource name format: %s (expected domain/resource)", resourceName)
+	}
+	resourcePrefix := parts[0]
+	resourceShortName := parts[1]
+
+	manager := NewSRIOVConfigManager(cfg.SRIOVDPConfigPath)
+
+	// Create backup before making changes
+	if err := manager.createBackup(); err != nil {
+		log.Printf("Warning: Failed to create backup of SR-IOV config: %v", err)
+	}
+
+	// Read existing configuration or create new one
+	var config ModernSRIOVDPConfig
+	if _, err := os.Stat(cfg.SRIOVDPConfigPath); os.IsNotExist(err) {
+		// Create new configuration
+		config = ModernSRIOVDPConfig{
+			ResourceList: []ModernSRIOVResource{},
+		}
+	} else {
+		// Read existing configuration
+		configData, err := os.ReadFile(cfg.SRIOVDPConfigPath)
+		if err != nil {
+			return fmt.Errorf("failed to read SR-IOV config: %v", err)
+		}
+
+		if err := json.Unmarshal(configData, &config); err != nil {
+			return fmt.Errorf("failed to parse SR-IOV config: %v", err)
+		}
+	}
+
+	// Find or create the resource
+	resourceFound := false
+	for i := range config.ResourceList {
+		resource := &config.ResourceList[i]
+		if resource.ResourceName == resourceShortName && resource.ResourcePrefix == resourcePrefix {
+			resourceFound = true
+
+			// Check if PCI address already exists in selectors
+			pciFound := false
+			for j := range resource.Selectors {
+				selector := &resource.Selectors[j]
+				for _, addr := range selector.PCIAddresses {
+					if addr == pciAddress {
+						pciFound = true
+						// Update driver if different
+						if len(selector.Drivers) == 0 || selector.Drivers[0] != driver {
+							selector.Drivers = []string{driver}
+						}
+						break
+					}
+				}
+				if pciFound {
+					break
+				}
+			}
+
+			// If PCI address not found, add it
+			if !pciFound {
+				resource.Selectors = append(resource.Selectors, ModernSRIOVSelector{
+					Drivers:      []string{driver},
+					PCIAddresses: []string{pciAddress},
+				})
+			}
+			break
+		}
+	}
+
+	// If resource not found, create it
+	if !resourceFound {
+		newResource := ModernSRIOVResource{
+			ResourceName:   resourceShortName,
+			ResourcePrefix: resourcePrefix,
+			Selectors: []ModernSRIOVSelector{
+				{
+					Drivers:      []string{driver},
+					PCIAddresses: []string{pciAddress},
+				},
+			},
+		}
+		config.ResourceList = append(config.ResourceList, newResource)
+	}
+
+	// Write the updated configuration
+	configData, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal SR-IOV config: %v", err)
+	}
+
+	if err := os.WriteFile(cfg.SRIOVDPConfigPath, configData, 0644); err != nil {
+		return fmt.Errorf("failed to write SR-IOV config: %v", err)
+	}
+
+	log.Printf("Successfully updated modern SR-IOV config for resource %s/%s (PCI: %s)",
+		resourcePrefix, resourceShortName, pciAddress)
+
+	// Restart the SR-IOV device plugin to pick up changes
+	if err := manager.restartDevicePlugin(); err != nil {
+		log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
+		// Don't fail the operation for restart failures
+	}
+
+	return nil
+}
+
+// updateSRIOVConfigForNonDPDK updates SR-IOV configuration for non-DPDK scenarios
+func updateSRIOVConfigForNonDPDK(ifaceName, nodeName string, cfg *config.ENIManagerConfig, nodeENIs []networkingv1alpha1.NodeENI) {
+	log.Printf("Checking SR-IOV configuration for non-DPDK interface %s", ifaceName)
+
+	// Find NodeENI resources that apply to this node and have dpdkResourceName specified
+	for _, nodeENI := range nodeENIs {
+		if nodeENI.Spec.DPDKResourceName == "" {
+			continue // Skip if no resource name specified
+		}
+
+		// Check if this NodeENI applies to our node
+		if nodeENI.Status.Attachments == nil {
+			continue
+		}
+
+		for _, attachment := range nodeENI.Status.Attachments {
+			if attachment.NodeID != nodeName {
+				continue
+			}
+
+			// Check if this attachment corresponds to the current interface
+			var targetInterface string
+			var pciAddress string
+
+			// If PCI address is explicitly provided, use it
+			if nodeENI.Spec.DPDKPCIAddress != "" {
+				pciAddress = nodeENI.Spec.DPDKPCIAddress
+				// Try to find the interface name for this PCI address
+				if interfaceName, err := getInterfaceNameForPCIAddress(pciAddress); err == nil {
+					targetInterface = interfaceName
+				}
+			} else {
+				// Try to get the interface name for this ENI
+				if interfaceName, err := getInterfaceNameForENI(attachment.ENIID); err == nil {
+					targetInterface = interfaceName
+					// Get PCI address for this interface
+					if addr, err := getPCIAddressForInterface(interfaceName); err == nil {
+						pciAddress = addr
+					}
+				}
+			}
+
+			// Check if this is the interface we're processing
+			if targetInterface == ifaceName && pciAddress != "" {
+				log.Printf("Found NodeENI %s with SR-IOV resource name %s for interface %s (PCI: %s)",
+					nodeENI.Name, nodeENI.Spec.DPDKResourceName, ifaceName, pciAddress)
+
+				// Validate the resource name
+				if err := validateSRIOVResourceName(nodeENI.Spec.DPDKResourceName); err != nil {
+					log.Printf("Error: Invalid DPDK resource name '%s' in NodeENI %s: %v",
+						nodeENI.Spec.DPDKResourceName, nodeENI.Name, err)
+					continue
+				}
+
+				// Determine the driver to use (detect actual driver for non-DPDK)
+				driver := "ena" // Default to ena for AWS ENI devices
+				if nodeENI.Spec.DPDKDriver != "" {
+					driver = nodeENI.Spec.DPDKDriver
+				} else {
+					// Try to detect the actual driver in use
+					if actualDriver, err := getCurrentDriverForPCI(pciAddress); err == nil && actualDriver != "" {
+						driver = actualDriver
+						log.Printf("Detected driver %s for PCI address %s", driver, pciAddress)
+					}
+				}
+
+				// Update SR-IOV configuration
+				if err := updateModernSRIOVDevicePluginConfig(pciAddress, driver, nodeENI.Spec.DPDKResourceName, cfg); err != nil {
+					log.Printf("Warning: Failed to update SR-IOV device plugin config for non-DPDK interface %s with resource name %s: %v",
+						ifaceName, nodeENI.Spec.DPDKResourceName, err)
+				} else {
+					log.Printf("Successfully configured SR-IOV device plugin for non-DPDK resource %s (interface: %s, PCI: %s, driver: %s)",
+						nodeENI.Spec.DPDKResourceName, ifaceName, pciAddress, driver)
+
+					// Update the NodeENI status to reflect the resource name (even for non-DPDK)
+					if err := updateNodeENISRIOVStatus(attachment.ENIID, nodeENI.Name, pciAddress, nodeENI.Spec.DPDKResourceName); err != nil {
+						log.Printf("Warning: Failed to update NodeENI status for non-DPDK SR-IOV resource: %v", err)
+					}
+				}
+			}
+		}
+	}
+}
+
+// getInterfaceNameForPCIAddress gets the interface name for a PCI address
+func getInterfaceNameForPCIAddress(pciAddress string) (string, error) {
+	// Look for the network interface in /sys/bus/pci/devices/<pci_address>/net/
+	netPath := fmt.Sprintf("/sys/bus/pci/devices/%s/net", pciAddress)
+
+	entries, err := os.ReadDir(netPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read network interfaces for PCI %s: %v", pciAddress, err)
+	}
+
+	if len(entries) == 0 {
+		return "", fmt.Errorf("no network interfaces found for PCI address %s", pciAddress)
+	}
+
+	// Return the first interface found (there should typically be only one)
+	interfaceName := entries[0].Name()
+	log.Printf("Found interface %s for PCI address %s", interfaceName, pciAddress)
+	return interfaceName, nil
+}
+
+// updateNodeENISRIOVStatus updates the NodeENI status with SR-IOV resource information
+func updateNodeENISRIOVStatus(eniID, nodeENIName, pciAddress, resourceName string) error {
+	// This is a simplified version - in a full implementation, you would update the Kubernetes resource
+	log.Printf("Updating NodeENI %s status: ENI %s, PCI %s, Resource %s",
+		nodeENIName, eniID, pciAddress, resourceName)
+
+	// For now, just log the update. In a full implementation, you would:
+	// 1. Get the NodeENI resource from the Kubernetes API
+	// 2. Update the status with the SR-IOV resource information
+	// 3. Update the resource in the cluster
+
+	return nil
+}
+
+// ensureSRIOVConfigExists ensures that the SR-IOV device plugin config file exists
+func ensureSRIOVConfigExists(cfg *config.ENIManagerConfig) {
+	if cfg.SRIOVDPConfigPath == "" {
+		return // SR-IOV not configured
+	}
+
+	// Check if the config file already exists
+	if _, err := os.Stat(cfg.SRIOVDPConfigPath); err == nil {
+		log.Printf("SR-IOV device plugin config file already exists: %s", cfg.SRIOVDPConfigPath)
+		return
+	}
+
+	// Create the directory if it doesn't exist
+	configDir := filepath.Dir(cfg.SRIOVDPConfigPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		log.Printf("Warning: Failed to create SR-IOV config directory %s: %v", configDir, err)
+		return
+	}
+
+	// Create a default empty configuration
+	defaultConfig := ModernSRIOVDPConfig{
+		ResourceList: []ModernSRIOVResource{},
+	}
+
+	configData, err := json.MarshalIndent(defaultConfig, "", "  ")
+	if err != nil {
+		log.Printf("Warning: Failed to marshal default SR-IOV config: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(cfg.SRIOVDPConfigPath, configData, 0644); err != nil {
+		log.Printf("Warning: Failed to create default SR-IOV config file %s: %v", cfg.SRIOVDPConfigPath, err)
+		return
+	}
+
+	log.Printf("Created default SR-IOV device plugin config file: %s", cfg.SRIOVDPConfigPath)
+}
+
+// updateSRIOVConfigForAllInterfaces updates SR-IOV configuration for all interfaces based on NodeENI resources
+func updateSRIOVConfigForAllInterfaces(nodeName string, cfg *config.ENIManagerConfig, nodeENIs []networkingv1alpha1.NodeENI) {
+	log.Printf("Checking SR-IOV configuration for all interfaces on node %s", nodeName)
+
+	// Get all network interfaces
+	links, err := vnetlink.LinkList()
+	if err != nil {
+		log.Printf("Error listing network interfaces for SR-IOV config: %v", err)
+		return
+	}
+
+	// Process each interface
+	for _, link := range links {
+		ifaceName := link.Attrs().Name
+
+		// Skip loopback and primary interface
+		if ifaceName == "lo" || ifaceName == cfg.PrimaryInterface {
+			continue
+		}
+
+		// Skip interfaces that don't match our ENI pattern or are in the ignore list
+		if !isAWSENI(ifaceName, cfg) {
+			continue
+		}
+
+		// Check if this interface should have SR-IOV configuration
+		updateSRIOVConfigForNonDPDK(ifaceName, nodeName, cfg, nodeENIs)
+	}
+}
+
+// getCurrentDriverForPCI gets the current driver for a PCI device
+func getCurrentDriverForPCI(pciAddress string) (string, error) {
+	// Read the driver symlink from /sys/bus/pci/devices/<pci_address>/driver
+	driverPath := fmt.Sprintf("/sys/bus/pci/devices/%s/driver", pciAddress)
+
+	// Read the symlink to get the driver name
+	driverLink, err := os.Readlink(driverPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read driver symlink for PCI %s: %v", pciAddress, err)
+	}
+
+	// Extract the driver name from the path (e.g., "../../../bus/pci/drivers/ena" -> "ena")
+	driverName := filepath.Base(driverLink)
+
+	log.Printf("Found driver %s for PCI address %s", driverName, pciAddress)
+	return driverName, nil
 }

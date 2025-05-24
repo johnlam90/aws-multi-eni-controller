@@ -1,0 +1,75 @@
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: test-sriov-nondpdk-1
+spec:
+  nodeSelector:
+    ng: multi-eni
+  subnetIDs:
+    - subnet-08c2ddc07218f1105
+  securityGroupIDs:
+    - sg-0e4680d35b5053f29
+  description: "Test NodeENI with SR-IOV but without DPDK binding"
+  deviceIndex: 2
+  deleteOnTermination: true
+  mtu: 9001
+  # DPDK is explicitly disabled
+  enableDPDK: false
+  # But we still want SR-IOV device plugin configuration
+  dpdkResourceName: "intel.com/sriov_kernel_1"
+  # Specify the PCI address of the device for SR-IOV configuration
+  dpdkPCIAddress: "0000:00:07.0"
+---
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: test-sriov-nondpdk-2
+spec:
+  nodeSelector:
+    ng: multi-eni
+  subnetNames:
+    - multus-test-subnet-2
+  securityGroupNames:
+    - multus-test-sg
+  description: "Test NodeENI with SR-IOV but without DPDK binding"
+  deviceIndex: 3
+  deleteOnTermination: true
+  mtu: 9001
+  # DPDK is explicitly disabled
+  enableDPDK: false
+  # But we still want SR-IOV device plugin configuration with kernel driver
+  dpdkResourceName: "intel.com/sriov_kernel_2"
+  # Specify the PCI address of the device for SR-IOV configuration
+  dpdkPCIAddress: "0000:00:08.0"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-sriov-kernel-consumer
+  annotations:
+    k8s.v1.cni.cncf.io/networks: |
+      [
+        {
+          "name": "sriov-kernel-net-1",
+          "interface": "net1"
+        },
+        {
+          "name": "sriov-kernel-net-2",
+          "interface": "net2"
+        }
+      ]
+spec:
+  containers:
+  - name: test-container
+    image: alpine:3.19
+    command: ["sleep", "3600"]
+    resources:
+      requests:
+        intel.com/sriov_kernel_1: "1"
+        intel.com/sriov_kernel_2: "1"
+      limits:
+        intel.com/sriov_kernel_1: "1"
+        intel.com/sriov_kernel_2: "1"
+  nodeSelector:
+    ng: multi-eni
+  restartPolicy: Never

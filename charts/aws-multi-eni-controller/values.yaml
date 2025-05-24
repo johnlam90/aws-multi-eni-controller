@@ -5,7 +5,7 @@
 # Image configuration
 image:
   repository: johnlam90/aws-multi-eni-controller
-  tag: v1.3.2
+  tag: v1.3.2-sriov-driver-fix
   pullPolicy: IfNotPresent
 
 # Namespace to deploy the controller
