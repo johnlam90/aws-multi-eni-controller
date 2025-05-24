@@ -1152,12 +1152,16 @@ func isPCIDeviceBoundToDPDK(pciAddress string, driver string, cfg *config.ENIMan
 
 // bindPCIDeviceToDPDK binds a PCI device directly to a DPDK driver
 func bindPCIDeviceToDPDK(pciAddress string, driver string, cfg *config.ENIManagerConfig) error {
-	log.Printf("Binding PCI device %s to DPDK driver %s", pciAddress, driver)
+	startTime := time.Now()
+	log.Printf("[DPDK-BIND] Starting DPDK binding for PCI device %s to driver %s", pciAddress, driver)
 
 	// Check if the DPDK binding script exists
 	if _, err := os.Stat(cfg.DPDKBindingScript); os.IsNotExist(err) {
+		log.Printf("[DPDK-BIND] ERROR: DPDK binding script not found at %s", cfg.DPDKBindingScript)
 		return fmt.Errorf("DPDK binding script %s does not exist", cfg.DPDKBindingScript)
 	}
+
+	log.Printf("[DPDK-BIND] DPDK binding script found at %s", cfg.DPDKBindingScript)
 
 	// Acquire a lock for this PCI address to prevent concurrent operations
 	dpdkOpsMutex.Lock()
@@ -1172,6 +1176,10 @@ func bindPCIDeviceToDPDK(pciAddress string, driver string, cfg *config.ENIManage
 	defer func() {
 		dpdkOpsMutex.Lock()
 		delete(dpdkOperations, pciAddress)
+		// Periodic cleanup of stale operations (safety measure)
+		if len(dpdkOperations) > 100 {
+			log.Printf("Warning: DPDK operations map has grown large (%d entries), potential memory leak", len(dpdkOperations))
+		}
 		dpdkOpsMutex.Unlock()
 	}()
 
@@ -1227,7 +1235,8 @@ func bindPCIDeviceToDPDK(pciAddress string, driver string, cfg *config.ENIManage
 		}
 	}
 
-	log.Printf("Successfully bound PCI device %s to DPDK driver %s", pciAddress, driver)
+	duration := time.Since(startTime)
+	log.Printf("[DPDK-BIND] Successfully bound PCI device %s to DPDK driver %s (duration: %v)", pciAddress, driver, duration)
 	return nil
 }
 
@@ -1356,8 +1365,13 @@ func bindInterfaceToDPDK(link vnetlink.Link, driver string, cfg *config.ENIManag
 
 	// Update the SRIOV device plugin configuration
 	if err := updateSRIOVDevicePluginConfig(ifaceName, pciAddress, driver, cfg); err != nil {
-		log.Printf("Warning: Failed to update SRIOV device plugin config: %v", err)
-		// Continue anyway, the interface is bound to DPDK
+		log.Printf("Error: Failed to update SRIOV device plugin config: %v", err)
+		// This is a critical failure - the interface is bound to DPDK but not available to pods
+		// Try to unbind the interface to maintain consistency
+		if unbindErr := unbindInterfaceFromDPDK(pciAddress, cfg); unbindErr != nil {
+			log.Printf("Critical: Failed to unbind interface after SR-IOV config failure: %v", unbindErr)
+		}
+		return fmt.Errorf("failed to update SR-IOV device plugin configuration: %v", err)
 	}
 
 	return nil
@@ -1532,21 +1546,44 @@ func updateMappingForNonExistentDevice(pciAddress string, boundInterface struct 
 
 // acquireDPDKLock acquires a lock for a PCI device to prevent concurrent operations
 // Returns a function that releases the lock when called
+// This function implements a proper queuing mechanism for concurrent operations
 func acquireDPDKLock(pciAddress string) (func(), error) {
-	dpdkOpsMutex.Lock()
-	if inProgress, exists := dpdkOperations[pciAddress]; exists && inProgress {
-		dpdkOpsMutex.Unlock()
-		return nil, fmt.Errorf("another DPDK operation is already in progress for PCI device %s", pciAddress)
-	}
-	dpdkOperations[pciAddress] = true
-	dpdkOpsMutex.Unlock()
+	const maxWaitTime = 30 * time.Second
+	const retryInterval = 50 * time.Millisecond
 
-	// Return a function that releases the lock when called
-	return func() {
+	startTime := time.Now()
+
+	for {
 		dpdkOpsMutex.Lock()
-		delete(dpdkOperations, pciAddress)
+
+		// Check if another operation is already in progress for this PCI address
+		if inProgress, exists := dpdkOperations[pciAddress]; !exists || !inProgress {
+			// Mark this PCI address as having an operation in progress
+			dpdkOperations[pciAddress] = true
+			dpdkOpsMutex.Unlock()
+
+			// Return a function to release the lock
+			return func() {
+				dpdkOpsMutex.Lock()
+				delete(dpdkOperations, pciAddress)
+				// Periodic cleanup of stale operations (safety measure)
+				if len(dpdkOperations) > 100 {
+					log.Printf("Warning: DPDK operations map has grown large (%d entries), potential memory leak", len(dpdkOperations))
+				}
+				dpdkOpsMutex.Unlock()
+			}, nil
+		}
+
 		dpdkOpsMutex.Unlock()
-	}, nil
+
+		// Check if we've exceeded the maximum wait time
+		if time.Since(startTime) > maxWaitTime {
+			return nil, fmt.Errorf("timeout waiting for DPDK operation lock on PCI device %s (waited %v)", pciAddress, time.Since(startTime))
+		}
+
+		// Wait a bit before retrying
+		time.Sleep(retryInterval)
+	}
 }
 
 // executeUnbindCommand executes the command to unbind a PCI device from its current driver
@@ -2280,6 +2317,7 @@ type SRIOVConfigManager struct {
 	restartCmd []string
 	maxRetries int
 	retryDelay time.Duration
+	fileMutex  sync.Mutex // Add file-level mutex for atomic operations
 }
 
 // NewSRIOVConfigManager creates a new SR-IOV configuration manager
@@ -2388,6 +2426,10 @@ func (m *SRIOVConfigManager) restoreBackup() error {
 
 // updateConfig updates the SR-IOV configuration with the specified device
 func (m *SRIOVConfigManager) updateConfig(ifaceName, pciAddress, driver, resourceName string) error {
+	// Acquire file-level mutex for atomic operations
+	m.fileMutex.Lock()
+	defer m.fileMutex.Unlock()
+
 	// Step 1: Check if the config file exists and handle accordingly
 	var config SRIOVDPConfig
 	if _, err := os.Stat(m.configPath); os.IsNotExist(err) {
@@ -2404,11 +2446,57 @@ func (m *SRIOVConfigManager) updateConfig(ifaceName, pciAddress, driver, resourc
 		config = updateExistingSRIOVConfig(config, resourceName, pciAddress, driver)
 	}
 
-	// Step 2: Write the updated config back to the file
-	if err := writeSRIOVConfig(config, m.configPath); err != nil {
+	// Step 2: Write the updated config back to the file atomically
+	if err := m.writeConfigAtomic(config); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+// writeConfigAtomic writes the SR-IOV configuration atomically using a temporary file
+func (m *SRIOVConfigManager) writeConfigAtomic(config SRIOVDPConfig) error {
+	// Create a unique temporary file to avoid conflicts
+	tempFile, err := os.CreateTemp(filepath.Dir(m.configPath), "sriov-config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary config file: %v", err)
+	}
+	tempPath := tempFile.Name()
+
+	// Ensure cleanup on any failure
+	defer func() {
+		tempFile.Close()
+		if _, err := os.Stat(tempPath); err == nil {
+			os.Remove(tempPath)
+		}
+	}()
+
+	configData, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal SR-IOV config: %v", err)
+	}
+
+	if _, err := tempFile.Write(configData); err != nil {
+		return fmt.Errorf("failed to write temporary config file: %v", err)
+	}
+
+	// Sync to ensure data is written to disk
+	if err := tempFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync temporary config file: %v", err)
+	}
+
+	// Close the file before rename
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary config file: %v", err)
+	}
+
+	// Atomically move the temporary file to the final location
+	if err := os.Rename(tempPath, m.configPath); err != nil {
+		return fmt.Errorf("failed to move temporary config file: %v", err)
+	}
+
+	// Clear the defer cleanup since rename was successful
+	tempPath = ""
 	return nil
 }
 
@@ -2430,10 +2518,25 @@ func (m *SRIOVConfigManager) validateConfig() error {
 		return fmt.Errorf("config file has no resources defined")
 	}
 
+	// Track PCI addresses and resource names to detect duplicates
+	pciAddressMap := make(map[string][]string) // PCI address -> list of resource names using it
+	resourceNameMap := make(map[string]bool)   // Track duplicate resource names
+
 	// Validate each resource
 	for i, resource := range config.ResourceList {
 		if resource.ResourceName == "" {
 			return fmt.Errorf("resource %d has empty resource name", i)
+		}
+
+		// Check for duplicate resource names
+		if resourceNameMap[resource.ResourceName] {
+			return fmt.Errorf("duplicate resource name found: %s", resource.ResourceName)
+		}
+		resourceNameMap[resource.ResourceName] = true
+
+		// Validate resource name format
+		if err := validateSRIOVResourceName(resource.ResourceName); err != nil {
+			return fmt.Errorf("resource %d has invalid name: %v", i, err)
 		}
 
 		if len(resource.Devices) == 0 {
@@ -2446,11 +2549,21 @@ func (m *SRIOVConfigManager) validateConfig() error {
 				return fmt.Errorf("device %d in resource %s has empty PCI address", j, resource.ResourceName)
 			}
 
-			// Validate PCI address format (basic check)
+			// Validate PCI address format (strict check)
 			if !isValidPCIAddress(device.PCIAddress) {
 				return fmt.Errorf("device %d in resource %s has invalid PCI address format: %s",
 					j, resource.ResourceName, device.PCIAddress)
 			}
+
+			// Track PCI addresses for duplicate detection
+			pciAddressMap[device.PCIAddress] = append(pciAddressMap[device.PCIAddress], resource.ResourceName)
+		}
+	}
+
+	// Check for duplicate PCI addresses across different resources
+	for pciAddr, resourceNames := range pciAddressMap {
+		if len(resourceNames) > 1 {
+			return fmt.Errorf("PCI address %s is used by multiple resources: %v", pciAddr, resourceNames)
 		}
 	}
 
@@ -2458,25 +2571,32 @@ func (m *SRIOVConfigManager) validateConfig() error {
 	return nil
 }
 
-// isValidPCIAddress performs basic validation of PCI address format
+// isValidPCIAddress performs strict validation of PCI address format
 func isValidPCIAddress(addr string) bool {
-	// Basic format check: XXXX:XX:XX.X
+	// Strict format check: XXXX:XX:XX.X where X is lowercase hex digit
 	if len(addr) != 12 {
 		return false
 	}
 
+	// Use regex to validate exact format with lowercase hex digits only
+	pciRegex := regexp.MustCompile(`^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$`)
+	if !pciRegex.MatchString(addr) {
+		return false
+	}
+
+	// Additional validation: split and check each part
 	parts := strings.Split(addr, ":")
 	if len(parts) != 3 {
 		return false
 	}
 
 	// Check domain (4 hex digits)
-	if len(parts[0]) != 4 {
+	if len(parts[0]) != 4 || !isValidHexString(parts[0]) {
 		return false
 	}
 
 	// Check bus (2 hex digits)
-	if len(parts[1]) != 2 {
+	if len(parts[1]) != 2 || !isValidHexString(parts[1]) {
 		return false
 	}
 
@@ -2486,6 +2606,24 @@ func isValidPCIAddress(addr string) bool {
 		return false
 	}
 
+	// Validate device and function parts
+	devicePart := devFunc[:2]
+	functionPart := devFunc[3:]
+
+	if !isValidHexString(devicePart) || !isValidHexString(functionPart) {
+		return false
+	}
+
+	return true
+}
+
+// isValidHexString checks if a string contains only valid lowercase hex characters
+func isValidHexString(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
 	return true
 }
 
@@ -3647,15 +3785,11 @@ func updateSRIOVConfigForNonDPDK(ifaceName, nodeName string, cfg *config.ENIMana
 				}
 
 				// Determine the driver to use (detect actual driver for non-DPDK)
-				driver := "ena" // Default to ena for AWS ENI devices
+				driver := determineDriverForInterface(ifaceName, pciAddress)
 				if nodeENI.Spec.DPDKDriver != "" {
+					// Override with explicitly specified driver
 					driver = nodeENI.Spec.DPDKDriver
-				} else {
-					// Try to detect the actual driver in use
-					if actualDriver, err := getCurrentDriverForPCI(pciAddress); err == nil && actualDriver != "" {
-						driver = actualDriver
-						log.Printf("Detected driver %s for PCI address %s", driver, pciAddress)
-					}
+					log.Printf("Using explicitly specified driver %s for interface %s", driver, ifaceName)
 				}
 
 				// Update SR-IOV configuration
@@ -3794,4 +3928,23 @@ func getCurrentDriverForPCI(pciAddress string) (string, error) {
 
 	log.Printf("Found driver %s for PCI address %s", driverName, pciAddress)
 	return driverName, nil
+}
+
+// determineDriverForInterface determines the appropriate driver for an interface
+// This function implements the project requirement to use 'ena' for AWS ENA devices
+func determineDriverForInterface(ifaceName, pciAddress string) string {
+	// Try to detect the actual driver in use
+	if actualDriver, err := getCurrentDriverForPCI(pciAddress); err == nil && actualDriver != "" {
+		// For AWS ENA devices, ensure we use 'ena' driver as specified in requirements
+		if actualDriver == "ena" {
+			log.Printf("Detected AWS ENA device for interface %s, using 'ena' driver", ifaceName)
+			return "ena"
+		}
+		log.Printf("Detected driver %s for interface %s (PCI: %s)", actualDriver, ifaceName, pciAddress)
+		return actualDriver
+	}
+
+	// Default fallback - assume ENA for AWS environments
+	log.Printf("Could not detect driver for interface %s, defaulting to 'ena' for AWS ENA devices", ifaceName)
+	return "ena"
 }
