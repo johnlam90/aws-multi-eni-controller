@@ -33,6 +33,13 @@ type ControllerConfig struct {
 	DefaultDeleteOnTermination bool
 	// Maximum number of concurrent ENI cleanup operations
 	MaxConcurrentENICleanup int
+	// Maximum duration for cleanup operations before forcing finalizer removal
+	MaxCleanupDuration time.Duration
+	// Circuit breaker configuration for AWS operations
+	CircuitBreakerEnabled          bool
+	CircuitBreakerFailureThreshold int
+	CircuitBreakerSuccessThreshold int
+	CircuitBreakerTimeout          time.Duration
 }
 
 // ENIManagerConfig holds configuration for the ENI manager
@@ -80,13 +87,18 @@ type ENIManagerConfig struct {
 // DefaultControllerConfig returns the default configuration for the controller
 func DefaultControllerConfig() *ControllerConfig {
 	return &ControllerConfig{
-		AWSRegion:                  "us-east-1",
-		ReconcilePeriod:            5 * time.Minute,
-		DetachmentTimeout:          15 * time.Second,
-		MaxConcurrentReconciles:    5,
-		DefaultDeviceIndex:         1,
-		DefaultDeleteOnTermination: true,
-		MaxConcurrentENICleanup:    3, // Default to 3 concurrent ENI cleanup operations
+		AWSRegion:                      "us-east-1",
+		ReconcilePeriod:                5 * time.Minute,
+		DetachmentTimeout:              15 * time.Second,
+		MaxConcurrentReconciles:        5,
+		DefaultDeviceIndex:             1,
+		DefaultDeleteOnTermination:     true,
+		MaxConcurrentENICleanup:        3,                // Default to 3 concurrent ENI cleanup operations
+		MaxCleanupDuration:             30 * time.Minute, // Default to 30 minutes maximum cleanup duration
+		CircuitBreakerEnabled:          true,             // Enable circuit breaker by default
+		CircuitBreakerFailureThreshold: 5,                // Open circuit after 5 consecutive failures
+		CircuitBreakerSuccessThreshold: 3,                // Close circuit after 3 consecutive successes
+		CircuitBreakerTimeout:          30 * time.Second, // Wait 30 seconds before trying half-open
 	}
 }
 
@@ -131,6 +143,20 @@ func (c *ControllerConfig) Validate() error {
 	}
 	if c.ReconcilePeriod <= 0 {
 		return fmt.Errorf("ReconcilePeriod must be positive, got %v", c.ReconcilePeriod)
+	}
+	if c.MaxCleanupDuration <= 0 {
+		return fmt.Errorf("MaxCleanupDuration must be positive, got %v", c.MaxCleanupDuration)
+	}
+	if c.CircuitBreakerEnabled {
+		if c.CircuitBreakerFailureThreshold <= 0 {
+			return fmt.Errorf("CircuitBreakerFailureThreshold must be positive when circuit breaker is enabled, got %d", c.CircuitBreakerFailureThreshold)
+		}
+		if c.CircuitBreakerSuccessThreshold <= 0 {
+			return fmt.Errorf("CircuitBreakerSuccessThreshold must be positive when circuit breaker is enabled, got %d", c.CircuitBreakerSuccessThreshold)
+		}
+		if c.CircuitBreakerTimeout <= 0 {
+			return fmt.Errorf("CircuitBreakerTimeout must be positive when circuit breaker is enabled, got %v", c.CircuitBreakerTimeout)
+		}
 	}
 	return nil
 }
@@ -210,6 +236,48 @@ func LoadControllerConfig() (*ControllerConfig, error) {
 			return nil, fmt.Errorf("invalid MAX_CONCURRENT_ENI_CLEANUP: %w", err)
 		}
 		config.MaxConcurrentENICleanup = max
+	}
+
+	// Load max cleanup duration from environment variable
+	if durationStr := os.Getenv("MAX_CLEANUP_DURATION"); durationStr != "" {
+		duration, err := time.ParseDuration(durationStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid MAX_CLEANUP_DURATION: %w", err)
+		}
+		config.MaxCleanupDuration = duration
+	}
+
+	// Load circuit breaker configuration from environment variables
+	if enabledStr := os.Getenv("CIRCUIT_BREAKER_ENABLED"); enabledStr != "" {
+		enabled, err := strconv.ParseBool(enabledStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIRCUIT_BREAKER_ENABLED: %w", err)
+		}
+		config.CircuitBreakerEnabled = enabled
+	}
+
+	if thresholdStr := os.Getenv("CIRCUIT_BREAKER_FAILURE_THRESHOLD"); thresholdStr != "" {
+		threshold, err := strconv.Atoi(thresholdStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIRCUIT_BREAKER_FAILURE_THRESHOLD: %w", err)
+		}
+		config.CircuitBreakerFailureThreshold = threshold
+	}
+
+	if thresholdStr := os.Getenv("CIRCUIT_BREAKER_SUCCESS_THRESHOLD"); thresholdStr != "" {
+		threshold, err := strconv.Atoi(thresholdStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIRCUIT_BREAKER_SUCCESS_THRESHOLD: %w", err)
+		}
+		config.CircuitBreakerSuccessThreshold = threshold
+	}
+
+	if timeoutStr := os.Getenv("CIRCUIT_BREAKER_TIMEOUT"); timeoutStr != "" {
+		timeout, err := time.ParseDuration(timeoutStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIRCUIT_BREAKER_TIMEOUT: %w", err)
+		}
+		config.CircuitBreakerTimeout = timeout
 	}
 
 	// Validate the configuration

@@ -19,6 +19,7 @@ type MockEC2Client struct {
 	SubnetNames          map[string]string            // subnetName -> subnetID
 	SecurityGroups       map[string]string            // sgName -> sgID
 	InstanceENIs         map[string][]string          // instanceID -> list of attached ENI IDs
+	Instances            map[string]*EC2Instance      // instanceID -> instance
 	ENITags              map[string]map[string]string // eniID -> tags
 	FailureScenarios     map[string]bool              // operation -> should fail
 	DetachmentWaitTime   time.Duration                // time to wait for detachment
@@ -40,6 +41,7 @@ func NewMockEC2Client() *MockEC2Client {
 		SubnetNames:          make(map[string]string),
 		SecurityGroups:       make(map[string]string),
 		InstanceENIs:         make(map[string][]string),
+		Instances:            make(map[string]*EC2Instance),
 		ENITags:              make(map[string]map[string]string),
 		FailureScenarios:     make(map[string]bool),
 		DetachmentWaitTime:   0,
@@ -78,6 +80,16 @@ func (m *MockEC2Client) AddSecurityGroup(sgName, sgID string) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	m.SecurityGroups[sgName] = sgID
+}
+
+// AddInstance adds an instance to the mock client
+func (m *MockEC2Client) AddInstance(instanceID, state string) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.Instances[instanceID] = &EC2Instance{
+		InstanceID: instanceID,
+		State:      state,
+	}
 }
 
 // CreateENI creates a new ENI in the mock AWS environment
@@ -298,6 +310,36 @@ func (m *MockEC2Client) DescribeENI(ctx context.Context, eniID string) (*EC2v2Ne
 			InstanceID:          eni.Attachment.InstanceID,
 			Status:              eni.Attachment.Status,
 		}
+	}
+
+	return result, nil
+}
+
+// DescribeInstance describes an EC2 instance in the mock AWS environment
+func (m *MockEC2Client) DescribeInstance(ctx context.Context, instanceID string) (*EC2Instance, error) {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	// Simulate describe delay
+	if m.DescribeWaitTime > 0 {
+		time.Sleep(m.DescribeWaitTime)
+	}
+
+	// Check if we should simulate a failure
+	if m.FailureScenarios["DescribeInstance"] {
+		return nil, fmt.Errorf("simulated DescribeInstance failure")
+	}
+
+	// Check if instance exists
+	instance, ok := m.Instances[instanceID]
+	if !ok {
+		return nil, nil // Return nil, nil to simulate instance not found
+	}
+
+	// Create a copy to avoid modifying the original
+	result := &EC2Instance{
+		InstanceID: instance.InstanceID,
+		State:      instance.State,
 	}
 
 	return result, nil

@@ -65,9 +65,13 @@ spec:
     command: ["sleep", "3600"]
     resources:
       requests:
+        cpu: "100m"
+        memory: "128Mi"
         intel.com/sriov_kernel_1: "1"
         intel.com/sriov_kernel_2: "1"
       limits:
+        cpu: "200m"
+        memory: "256Mi"
         intel.com/sriov_kernel_1: "1"
         intel.com/sriov_kernel_2: "1"
   nodeSelector:

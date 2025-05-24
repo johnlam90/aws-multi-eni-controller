@@ -25,3 +25,9 @@ type EC2v2NetworkInterface struct {
 	Status             EC2v2NetworkInterfaceStatus
 	Attachment         *EC2v2NetworkInterfaceAttachment
 }
+
+// EC2Instance represents an EC2 instance
+type EC2Instance struct {
+	InstanceID string
+	State      string
+}

@@ -22,6 +22,7 @@ type EC2ClientFacade struct {
 	eniDescriber          *EC2ENIDescriber
 	subnetResolver        *EC2SubnetResolver
 	securityGroupResolver *EC2SecurityGroupResolver
+	instanceDescriber     *EC2InstanceDescriber
 }
 
 // NewEC2ClientFacade creates a new EC2ClientFacade using AWS SDK v2
@@ -40,6 +41,7 @@ func NewEC2ClientFacade(ctx context.Context, region string, logger logr.Logger) 
 	eniDescriber := NewEC2ENIDescriber(ec2Client, logger)
 	subnetResolver := NewEC2SubnetResolver(ec2Client, logger)
 	securityGroupResolver := NewEC2SecurityGroupResolver(ec2Client, logger)
+	instanceDescriber := NewEC2InstanceDescriber(ec2Client, logger)
 
 	return &EC2ClientFacade{
 		ec2Client:             ec2Client,
@@ -48,6 +50,7 @@ func NewEC2ClientFacade(ctx context.Context, region string, logger logr.Logger) 
 		eniDescriber:          eniDescriber,
 		subnetResolver:        subnetResolver,
 		securityGroupResolver: securityGroupResolver,
+		instanceDescriber:     instanceDescriber,
 	}, nil
 }
 
@@ -94,4 +97,9 @@ func (c *EC2ClientFacade) GetSubnetCIDRByID(ctx context.Context, subnetID string
 // GetSecurityGroupIDByName delegates to SecurityGroupResolver
 func (c *EC2ClientFacade) GetSecurityGroupIDByName(ctx context.Context, securityGroupName string) (string, error) {
 	return c.securityGroupResolver.GetSecurityGroupIDByName(ctx, securityGroupName)
+}
+
+// DescribeInstance delegates to InstanceDescriber
+func (c *EC2ClientFacade) DescribeInstance(ctx context.Context, instanceID string) (*EC2Instance, error) {
+	return c.instanceDescriber.DescribeInstance(ctx, instanceID)
 }

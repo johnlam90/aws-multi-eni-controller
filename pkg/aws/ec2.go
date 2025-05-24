@@ -347,6 +347,64 @@ func (c *EC2Client) DescribeENI(ctx context.Context, eniID string) (*EC2v2Networ
 	return eni, nil
 }
 
+// DescribeInstance describes an EC2 instance
+func (c *EC2Client) DescribeInstance(ctx context.Context, instanceID string) (*EC2Instance, error) {
+	log := c.Logger.WithValues("instanceID", instanceID)
+	log.V(1).Info("Describing EC2 instance")
+
+	input := &ec2.DescribeInstancesInput{
+		InstanceIds: []string{instanceID},
+	}
+
+	// Use exponential backoff for API rate limiting
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 1 * time.Second,
+		Factor:   2.0,
+		Jitter:   0.1,
+	}
+
+	var result *ec2.DescribeInstancesOutput
+	var lastErr error
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		var err error
+		result, err = c.EC2.DescribeInstances(ctx, input)
+		if err != nil {
+			// Check if this is a rate limit error
+			if strings.Contains(err.Error(), "RequestLimitExceeded") ||
+				strings.Contains(err.Error(), "Throttling") {
+				log.Info("AWS API rate limit exceeded, retrying", "error", err.Error())
+				lastErr = err
+				return false, nil // Return nil error to continue retrying
+			}
+
+			// For other errors, fail immediately
+			lastErr = err
+			return false, err
+		}
+		return true, nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to describe instance after retries: %v", lastErr)
+	}
+
+	if len(result.Reservations) == 0 || len(result.Reservations[0].Instances) == 0 {
+		return nil, nil // Instance not found
+	}
+
+	instance := result.Reservations[0].Instances[0]
+
+	// Convert to our internal type
+	ec2Instance := &EC2Instance{
+		InstanceID: *instance.InstanceId,
+		State:      string(instance.State.Name),
+	}
+
+	log.V(1).Info("Found EC2 instance", "instanceID", ec2Instance.InstanceID, "state", ec2Instance.State)
+	return ec2Instance, nil
+}
+
 // GetSubnetIDByName looks up a subnet ID by its Name tag
 func (c *EC2Client) GetSubnetIDByName(ctx context.Context, subnetName string) (string, error) {
 	log := c.Logger.WithValues("subnetName", subnetName)

@@ -17,7 +17,9 @@ import (
 	"github.com/go-logr/logr"
 	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
 	awsutil "github.com/johnlam90/aws-multi-eni-controller/pkg/aws"
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/aws/retry"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/observability"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -49,11 +51,15 @@ const (
 // NodeENIReconciler reconciles a NodeENI object
 type NodeENIReconciler struct {
 	client.Client
-	Log      logr.Logger
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
-	AWS      awsutil.EC2Interface
-	Config   *config.ControllerConfig
+	Log            logr.Logger
+	Scheme         *runtime.Scheme
+	Recorder       record.EventRecorder
+	AWS            awsutil.EC2Interface
+	Config         *config.ControllerConfig
+	CircuitBreaker *retry.CircuitBreaker
+	Coordinator    *CoordinationManager
+	Metrics        *observability.Metrics
+	StructuredLog  *observability.StructuredLogger
 }
 
 // NewNodeENIReconciler creates a new NodeENI controller
@@ -81,13 +87,42 @@ func NewNodeENIReconciler(mgr manager.Manager) (*NodeENIReconciler, error) {
 		return nil, fmt.Errorf("failed to create AWS EC2 client: %v", err)
 	}
 
+	// Create circuit breaker if enabled
+	var circuitBreaker *retry.CircuitBreaker
+	if cfg.CircuitBreakerEnabled {
+		cbConfig := &retry.CircuitBreakerConfig{
+			FailureThreshold:      cfg.CircuitBreakerFailureThreshold,
+			SuccessThreshold:      cfg.CircuitBreakerSuccessThreshold,
+			Timeout:               cfg.CircuitBreakerTimeout,
+			MaxConcurrentRequests: 1, // Conservative default
+		}
+		circuitBreaker = retry.NewCircuitBreaker(cbConfig, log)
+		log.Info("Circuit breaker enabled for AWS operations",
+			"failureThreshold", cbConfig.FailureThreshold,
+			"successThreshold", cbConfig.SuccessThreshold,
+			"timeout", cbConfig.Timeout)
+	} else {
+		log.Info("Circuit breaker disabled")
+	}
+
+	// Create coordination manager
+	coordinator := NewCoordinationManager(log)
+
+	// Create observability components
+	metrics := observability.NewMetrics()
+	structuredLog := observability.NewStructuredLogger(log, metrics)
+
 	return &NodeENIReconciler{
-		Client:   mgr.GetClient(),
-		Log:      log,
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("nodeeni-controller"),
-		AWS:      awsClient,
-		Config:   cfg,
+		Client:         mgr.GetClient(),
+		Log:            log,
+		Scheme:         mgr.GetScheme(),
+		Recorder:       mgr.GetEventRecorderFor("nodeeni-controller"),
+		AWS:            awsClient,
+		Config:         cfg,
+		CircuitBreaker: circuitBreaker,
+		Coordinator:    coordinator,
+		Metrics:        metrics,
+		StructuredLog:  structuredLog,
 	}, nil
 }
 
@@ -178,6 +213,23 @@ func (r *NodeENIReconciler) handleDeletion(ctx context.Context, nodeENI *network
 	if controllerutil.ContainsFinalizer(nodeENI, NodeENIFinalizer) {
 		log.Info("Cleaning up resources for NodeENI being deleted", "name", nodeENI.Name)
 
+		// Check if cleanup has been running too long
+		if r.isCleanupTimedOut(nodeENI) {
+			log.Error(nil, "Cleanup has timed out, forcing finalizer removal", "nodeeni", nodeENI.Name)
+			r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "CleanupTimeout",
+				"Cleanup timed out after maximum duration, forcing finalizer removal")
+
+			// Force remove finalizer to prevent resource from being stuck forever
+			controllerutil.RemoveFinalizer(nodeENI, NodeENIFinalizer)
+			return r.updateNodeENIWithRetry(ctx, nodeENI)
+		}
+
+		// Set cleanup start time if not already set
+		if err := r.setCleanupStartTime(ctx, nodeENI); err != nil {
+			log.Error(err, "Failed to set cleanup start time")
+			return ctrl.Result{RequeueAfter: r.Config.DetachmentTimeout}, nil
+		}
+
 		// Clean up all ENI attachments in parallel
 		cleanupSucceeded := r.cleanupENIAttachmentsInParallel(ctx, nodeENI)
 
@@ -190,53 +242,228 @@ func (r *NodeENIReconciler) handleDeletion(ctx context.Context, nodeENI *network
 
 		// All cleanup operations succeeded, remove the finalizer
 		log.Info("All cleanup operations succeeded, removing finalizer", "name", nodeENI.Name)
-		controllerutil.RemoveFinalizer(nodeENI, NodeENIFinalizer)
-		if err := r.Client.Update(ctx, nodeENI); err != nil {
-			return ctrl.Result{}, err
-		}
+		return r.removeFinalizer(ctx, nodeENI)
 	}
 
 	// Stop reconciliation as the item is being deleted
 	return ctrl.Result{}, nil
 }
 
-// unbindInterfaceFromDPDK unbinds an interface from DPDK driver
+// Constants for cleanup tracking annotations
+const (
+	CleanupStartTimeAnnotation = "aws-multi-eni-controller/cleanup-start-time"
+)
+
+// isCleanupTimedOut checks if cleanup has been running longer than the maximum allowed duration
+func (r *NodeENIReconciler) isCleanupTimedOut(nodeENI *networkingv1alpha1.NodeENI) bool {
+	if nodeENI.Annotations == nil {
+		return false
+	}
+
+	startTimeStr, exists := nodeENI.Annotations[CleanupStartTimeAnnotation]
+	if !exists {
+		return false
+	}
+
+	startTime, err := time.Parse(time.RFC3339, startTimeStr)
+	if err != nil {
+		// If we can't parse the time, assume it's not timed out
+		return false
+	}
+
+	elapsed := time.Since(startTime)
+	return elapsed > r.Config.MaxCleanupDuration
+}
+
+// setCleanupStartTime sets the cleanup start time annotation if not already set
+func (r *NodeENIReconciler) setCleanupStartTime(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI) error {
+	if nodeENI.Annotations == nil {
+		nodeENI.Annotations = make(map[string]string)
+	}
+
+	// Only set if not already set
+	if _, exists := nodeENI.Annotations[CleanupStartTimeAnnotation]; !exists {
+		nodeENI.Annotations[CleanupStartTimeAnnotation] = time.Now().Format(time.RFC3339)
+		return r.Client.Update(ctx, nodeENI)
+	}
+
+	return nil
+}
+
+// removeFinalizer removes the finalizer from a NodeENI resource with retry
+func (r *NodeENIReconciler) removeFinalizer(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI) (ctrl.Result, error) {
+	controllerutil.RemoveFinalizer(nodeENI, NodeENIFinalizer)
+
+	// Remove cleanup tracking annotation since cleanup is complete
+	if nodeENI.Annotations != nil {
+		delete(nodeENI.Annotations, CleanupStartTimeAnnotation)
+	}
+
+	return r.updateNodeENIWithRetry(ctx, nodeENI)
+}
+
+// updateNodeENIWithRetry updates a NodeENI resource with retry logic
+func (r *NodeENIReconciler) updateNodeENIWithRetry(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI) (ctrl.Result, error) {
+	if err := r.Client.Update(ctx, nodeENI); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+// executeWithCircuitBreaker executes an AWS operation with circuit breaker protection
+func (r *NodeENIReconciler) executeWithCircuitBreaker(ctx context.Context, operation string, fn func() error) error {
+	// If circuit breaker is disabled, execute directly
+	if r.CircuitBreaker == nil {
+		return fn()
+	}
+
+	// Check if circuit breaker allows the operation
+	if !r.CircuitBreaker.IsOperationAllowed() {
+		r.Log.Info("Circuit breaker is open, skipping AWS operation", "operation", operation)
+		return fmt.Errorf("circuit breaker is open for operation: %s", operation)
+	}
+
+	// Execute with circuit breaker protection
+	return r.CircuitBreaker.Execute(ctx, operation, fn)
+}
+
+// executeWithEnhancedRetry executes an AWS operation with enhanced error categorization and retry logic
+func (r *NodeENIReconciler) executeWithEnhancedRetry(ctx context.Context, operation string, fn func() error) error {
+	// Wrap the function to make it compatible with retry.RetryableFunc
+	retryableFunc := func() (bool, error) {
+		err := fn()
+		if err != nil {
+			return false, err // Not done, has error
+		}
+		return true, nil // Done, no error
+	}
+
+	// Use categorized retry with circuit breaker protection
+	if r.CircuitBreaker != nil {
+		// If circuit breaker is enabled, check if operation is allowed
+		if !r.CircuitBreaker.IsOperationAllowed() {
+			r.Log.Info("Circuit breaker is open, skipping AWS operation", "operation", operation)
+			return fmt.Errorf("circuit breaker is open for operation: %s", operation)
+		}
+
+		// Execute with both circuit breaker and categorized retry
+		return r.CircuitBreaker.Execute(ctx, operation, func() error {
+			return retry.WithCategorizedRetry(ctx, r.Log, operation, retryableFunc)
+		})
+	}
+
+	// Execute with categorized retry only
+	return retry.WithCategorizedRetry(ctx, r.Log, operation, retryableFunc)
+}
+
+// cleanupENIAttachmentCoordinated performs coordinated cleanup of an ENI attachment
+func (r *NodeENIReconciler) cleanupENIAttachmentCoordinated(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+
+	// Create operation ID for coordination
+	operationID := fmt.Sprintf("cleanup-%s-%s-%s", nodeENI.Name, attachment.NodeID, attachment.ENIID)
+
+	// Define resource IDs that this operation will use
+	resourceIDs := []string{
+		attachment.ENIID,                          // ENI resource
+		attachment.InstanceID,                     // Instance resource
+		fmt.Sprintf("node-%s", attachment.NodeID), // Node resource
+	}
+
+	// Create coordinated operation
+	operation := &CoordinatedOperation{
+		ID:          operationID,
+		Type:        "eni-cleanup",
+		ResourceIDs: resourceIDs,
+		Priority:    1,
+		DependsOn:   []string{}, // No dependencies for cleanup operations
+		Timeout:     r.Config.DetachmentTimeout,
+		Execute: func(ctx context.Context) error {
+			// Execute the actual cleanup
+			success := r.cleanupENIAttachment(ctx, nodeENI, attachment)
+			if !success {
+				return fmt.Errorf("cleanup failed for ENI %s", attachment.ENIID)
+			}
+			return nil
+		},
+	}
+
+	// Execute with coordination
+	err := r.Coordinator.ExecuteCoordinated(ctx, operation)
+	if err != nil {
+		log.Error(err, "Coordinated cleanup failed")
+		return false
+	}
+
+	log.Info("Coordinated cleanup succeeded")
+	return true
+}
+
+// InterfaceState represents the current state of a network interface
+type InterfaceState struct {
+	PCIAddress    string
+	CurrentDriver string
+	IfaceName     string
+	IsBoundToDPDK bool
+}
+
+// unbindInterfaceFromDPDK unbinds an interface from DPDK driver with rollback capability
 // This is called during cleanup to ensure interfaces are properly unbound before detachment
 func (r *NodeENIReconciler) unbindInterfaceFromDPDK(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) error {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
-	log.Info("Attempting to unbind interface from DPDK driver")
+	log.Info("Attempting to unbind interface from DPDK driver with rollback capability")
 
-	// Create a Kubernetes client to communicate with the ENI Manager
-	k8sConfig, err := rest.InClusterConfig()
+	// Step 1: Capture current state for rollback
+	currentState, err := r.captureInterfaceState(ctx, nodeENI, attachment)
 	if err != nil {
-		return fmt.Errorf("failed to create in-cluster config: %v", err)
+		return fmt.Errorf("failed to capture interface state: %v", err)
 	}
 
-	clientset, err := kubernetes.NewForConfig(k8sConfig)
+	// If interface is not bound to DPDK, nothing to do
+	if !currentState.IsBoundToDPDK {
+		log.Info("Interface is not bound to DPDK driver, skipping unbind", "currentDriver", currentState.CurrentDriver)
+		return nil
+	}
+
+	// Step 2: Perform atomic DPDK unbinding with rollback on failure
+	if err := r.atomicDPDKUnbind(ctx, nodeENI, attachment, currentState); err != nil {
+		// Step 3: Attempt rollback on failure
+		if rollbackErr := r.rollbackInterfaceState(ctx, nodeENI, attachment, currentState); rollbackErr != nil {
+			return fmt.Errorf("unbind failed and rollback failed: unbind=%v, rollback=%v", err, rollbackErr)
+		}
+		return fmt.Errorf("unbind failed but rollback succeeded: %v", err)
+	}
+
+	// Step 4: Verify unbinding succeeded
+	if err := r.verifyDPDKUnbind(ctx, nodeENI, attachment); err != nil {
+		return fmt.Errorf("unbind appeared to succeed but verification failed: %v", err)
+	}
+
+	log.Info("Successfully unbound interface from DPDK driver")
+	return nil
+}
+
+// captureInterfaceState captures the current state of an interface for rollback purposes
+func (r *NodeENIReconciler) captureInterfaceState(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) (*InterfaceState, error) {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+
+	// Create a Kubernetes client to communicate with the ENI Manager
+	clientset, err := r.createKubernetesClient()
 	if err != nil {
-		return fmt.Errorf("failed to create Kubernetes client: %v", err)
+		return nil, err
 	}
 
 	// Find the ENI Manager pod on the node
-	pods, err := clientset.CoreV1().Pods("eni-controller-system").List(ctx, metav1.ListOptions{
-		LabelSelector: "app=eni-manager",
-		FieldSelector: fmt.Sprintf("spec.nodeName=%s", attachment.NodeID),
-	})
+	pods, err := r.findENIManagerPod(ctx, clientset, attachment.NodeID)
 	if err != nil {
-		return fmt.Errorf("failed to list ENI Manager pods: %v", err)
-	}
-
-	if len(pods.Items) == 0 {
-		return fmt.Errorf("no ENI Manager pod found on node %s", attachment.NodeID)
+		return nil, err
 	}
 
 	// Get the interface name for this ENI
-	// We'll try to infer it from the device index
 	ifaceName := fmt.Sprintf("eth%d", attachment.DeviceIndex)
-	log.Info("Using interface name based on device index", "ifaceName", ifaceName, "deviceIndex", attachment.DeviceIndex)
+	log.Info("Capturing interface state", "ifaceName", ifaceName, "deviceIndex", attachment.DeviceIndex)
 
-	// Create a command to unbind the interface
-	// We'll use the dpdk-devbind.py script in the ENI Manager pod
+	// Create a command to capture interface state
 	cmd := []string{
 		"bash", "-c",
 		fmt.Sprintf(`
@@ -252,8 +479,6 @@ done
 # If we couldn't find it by interface name, try to find it by device index pattern
 if [ -z "$pci_address" ]; then
   # For AWS instances, the PCI addresses typically follow a pattern
-  # The primary interface is usually at 0000:00:03.0, and secondary interfaces
-  # are at 0000:00:04.0, 0000:00:05.0, etc.
   potential_addr="0000:00:%02d.0"
   if [ -d "/sys/bus/pci/devices/$potential_addr" ]; then
     pci_address="$potential_addr"
@@ -261,37 +486,39 @@ if [ -z "$pci_address" ]; then
 fi
 
 if [ -z "$pci_address" ]; then
-  echo "Could not find PCI address for interface %s"
+  echo "ERROR: Could not find PCI address for interface %s"
   exit 1
 fi
 
-echo "Found PCI address $pci_address for interface %s"
-
-# Check if the device is bound to a DPDK driver
+# Get current driver
 driver=$(basename $(readlink -f /sys/bus/pci/devices/$pci_address/driver 2>/dev/null) 2>/dev/null)
-if [ "$driver" != "vfio-pci" ] && [ "$driver" != "igb_uio" ]; then
-  echo "Interface %s is not bound to a DPDK driver (current driver: $driver), skipping unbind"
-  exit 0
+if [ -z "$driver" ]; then
+  driver="none"
 fi
 
-echo "Unbinding interface %s (PCI: $pci_address) from DPDK driver $driver"
+# Check if bound to DPDK
+is_dpdk="false"
+if [ "$driver" = "vfio-pci" ] || [ "$driver" = "igb_uio" ]; then
+  is_dpdk="true"
+fi
 
-# First unbind from the current driver
-echo $pci_address > /sys/bus/pci/drivers/$driver/unbind
-
-# Now bind to the original driver (ena for AWS instances)
-echo "ena" > /sys/bus/pci/devices/$pci_address/driver_override
-echo $pci_address > /sys/bus/pci/drivers/ena/bind
-echo "" > /sys/bus/pci/devices/$pci_address/driver_override
-
-echo "Successfully unbound interface %s (PCI: $pci_address) from DPDK driver and bound to ena driver"
-`, ifaceName, ifaceName, attachment.DeviceIndex+3, ifaceName, ifaceName, ifaceName, ifaceName, ifaceName),
+# Output state in parseable format
+echo "PCI_ADDRESS=$pci_address"
+echo "CURRENT_DRIVER=$driver"
+echo "INTERFACE_NAME=%s"
+echo "IS_BOUND_TO_DPDK=$is_dpdk"
+`, ifaceName, ifaceName, attachment.DeviceIndex+3, ifaceName, ifaceName),
 	}
 
-	// Execute the command in the ENI Manager pod
+	// Execute the command to capture state
+	k8sConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create in-cluster config: %v", err)
+	}
+
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
-		Name(pods.Items[0].Name).
+		Name(pods[0].Name).
 		Namespace("eni-controller-system").
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
@@ -304,7 +531,7 @@ echo "Successfully unbound interface %s (PCI: $pci_address) from DPDK driver and
 
 	exec, err := remotecommand.NewSPDYExecutor(k8sConfig, "POST", req.URL())
 	if err != nil {
-		return fmt.Errorf("failed to create executor: %v", err)
+		return nil, fmt.Errorf("failed to create executor: %v", err)
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -313,13 +540,284 @@ echo "Successfully unbound interface %s (PCI: $pci_address) from DPDK driver and
 		Stderr: &stderr,
 	})
 
-	log.Info("Unbind command output", "stdout", stdout.String(), "stderr", stderr.String())
-
 	if err != nil {
-		return fmt.Errorf("failed to execute unbind command: %v, stderr: %s", err, stderr.String())
+		return nil, fmt.Errorf("failed to execute state capture command: %v, stderr: %s", err, stderr.String())
 	}
 
-	log.Info("Successfully executed unbind command")
+	// Parse the output to create InterfaceState
+	state, err := r.parseInterfaceState(stdout.String(), ifaceName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse interface state: %v", err)
+	}
+
+	log.Info("Captured interface state", "pciAddress", state.PCIAddress, "currentDriver", state.CurrentDriver, "isBoundToDPDK", state.IsBoundToDPDK)
+	return state, nil
+}
+
+// createKubernetesClient creates a Kubernetes client for communicating with ENI Manager pods
+func (r *NodeENIReconciler) createKubernetesClient() (*kubernetes.Clientset, error) {
+	k8sConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create in-cluster config: %v", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kubernetes client: %v", err)
+	}
+
+	return clientset, nil
+}
+
+// findENIManagerPod finds the ENI Manager pod on a specific node
+func (r *NodeENIReconciler) findENIManagerPod(ctx context.Context, clientset *kubernetes.Clientset, nodeID string) ([]corev1.Pod, error) {
+	pods, err := clientset.CoreV1().Pods("eni-controller-system").List(ctx, metav1.ListOptions{
+		LabelSelector: "app=eni-manager",
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list ENI Manager pods: %v", err)
+	}
+
+	if len(pods.Items) == 0 {
+		return nil, fmt.Errorf("no ENI Manager pod found on node %s", nodeID)
+	}
+
+	return pods.Items, nil
+}
+
+// parseInterfaceState parses the output from the state capture command
+func (r *NodeENIReconciler) parseInterfaceState(output, ifaceName string) (*InterfaceState, error) {
+	state := &InterfaceState{
+		IfaceName: ifaceName,
+	}
+
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "PCI_ADDRESS=") {
+			state.PCIAddress = strings.TrimPrefix(line, "PCI_ADDRESS=")
+		} else if strings.HasPrefix(line, "CURRENT_DRIVER=") {
+			state.CurrentDriver = strings.TrimPrefix(line, "CURRENT_DRIVER=")
+		} else if strings.HasPrefix(line, "IS_BOUND_TO_DPDK=") {
+			isDPDKStr := strings.TrimPrefix(line, "IS_BOUND_TO_DPDK=")
+			state.IsBoundToDPDK = isDPDKStr == "true"
+		}
+	}
+
+	if state.PCIAddress == "" {
+		return nil, fmt.Errorf("could not determine PCI address from output: %s", output)
+	}
+
+	return state, nil
+}
+
+// atomicDPDKUnbind performs atomic DPDK unbinding operations
+func (r *NodeENIReconciler) atomicDPDKUnbind(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment, state *InterfaceState) error {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+	log.Info("Performing atomic DPDK unbind", "pciAddress", state.PCIAddress, "currentDriver", state.CurrentDriver)
+
+	clientset, err := r.createKubernetesClient()
+	if err != nil {
+		return err
+	}
+
+	pods, err := r.findENIManagerPod(ctx, clientset, attachment.NodeID)
+	if err != nil {
+		return err
+	}
+
+	// Create atomic unbind command with error checking
+	cmd := []string{
+		"bash", "-c",
+		fmt.Sprintf(`
+set -e  # Exit on any error
+
+pci_address="%s"
+current_driver="%s"
+
+echo "Starting atomic DPDK unbind for PCI address $pci_address"
+
+# Step 1: Verify current state
+actual_driver=$(basename $(readlink -f /sys/bus/pci/devices/$pci_address/driver 2>/dev/null) 2>/dev/null || echo "none")
+if [ "$actual_driver" != "$current_driver" ]; then
+  echo "ERROR: Driver state changed unexpectedly. Expected: $current_driver, Actual: $actual_driver"
+  exit 1
+fi
+
+# Step 2: Unbind from current DPDK driver
+echo "Unbinding from driver: $current_driver"
+echo $pci_address > /sys/bus/pci/drivers/$current_driver/unbind || {
+  echo "ERROR: Failed to unbind from $current_driver"
+  exit 1
+}
+
+# Step 3: Set driver override to ena
+echo "Setting driver override to ena"
+echo "ena" > /sys/bus/pci/devices/$pci_address/driver_override || {
+  echo "ERROR: Failed to set driver override"
+  # Try to rebind to original driver
+  echo $pci_address > /sys/bus/pci/drivers/$current_driver/bind 2>/dev/null || true
+  exit 1
+}
+
+# Step 4: Bind to ena driver
+echo "Binding to ena driver"
+echo $pci_address > /sys/bus/pci/drivers/ena/bind || {
+  echo "ERROR: Failed to bind to ena driver"
+  # Try to clear override and rebind to original driver
+  echo "" > /sys/bus/pci/devices/$pci_address/driver_override 2>/dev/null || true
+  echo $pci_address > /sys/bus/pci/drivers/$current_driver/bind 2>/dev/null || true
+  exit 1
+}
+
+# Step 5: Clear driver override
+echo "Clearing driver override"
+echo "" > /sys/bus/pci/devices/$pci_address/driver_override || {
+  echo "WARNING: Failed to clear driver override, but binding succeeded"
+}
+
+echo "Successfully completed atomic DPDK unbind"
+`, state.PCIAddress, state.CurrentDriver),
+	}
+
+	return r.executeCommand(ctx, clientset, pods[0].Name, cmd, "atomic DPDK unbind")
+}
+
+// rollbackInterfaceState attempts to restore the interface to its previous state
+func (r *NodeENIReconciler) rollbackInterfaceState(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment, state *InterfaceState) error {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+	log.Info("Attempting to rollback interface state", "pciAddress", state.PCIAddress, "targetDriver", state.CurrentDriver)
+
+	clientset, err := r.createKubernetesClient()
+	if err != nil {
+		return err
+	}
+
+	pods, err := r.findENIManagerPod(ctx, clientset, attachment.NodeID)
+	if err != nil {
+		return err
+	}
+
+	// Create rollback command
+	cmd := []string{
+		"bash", "-c",
+		fmt.Sprintf(`
+set -e  # Exit on any error
+
+pci_address="%s"
+target_driver="%s"
+
+echo "Starting rollback for PCI address $pci_address to driver $target_driver"
+
+# Get current driver
+current_driver=$(basename $(readlink -f /sys/bus/pci/devices/$pci_address/driver 2>/dev/null) 2>/dev/null || echo "none")
+
+# If already bound to target driver, nothing to do
+if [ "$current_driver" = "$target_driver" ]; then
+  echo "Interface already bound to target driver $target_driver"
+  exit 0
+fi
+
+# Unbind from current driver if bound
+if [ "$current_driver" != "none" ]; then
+  echo "Unbinding from current driver: $current_driver"
+  echo $pci_address > /sys/bus/pci/drivers/$current_driver/unbind || {
+    echo "WARNING: Failed to unbind from $current_driver"
+  }
+fi
+
+# Set driver override if needed
+if [ "$target_driver" != "ena" ]; then
+  echo "Setting driver override to $target_driver"
+  echo "$target_driver" > /sys/bus/pci/devices/$pci_address/driver_override || {
+    echo "ERROR: Failed to set driver override to $target_driver"
+    exit 1
+  }
+fi
+
+# Bind to target driver
+echo "Binding to target driver: $target_driver"
+echo $pci_address > /sys/bus/pci/drivers/$target_driver/bind || {
+  echo "ERROR: Failed to bind to $target_driver"
+  exit 1
+}
+
+# Clear driver override if we set it
+if [ "$target_driver" != "ena" ]; then
+  echo "Clearing driver override"
+  echo "" > /sys/bus/pci/devices/$pci_address/driver_override || {
+    echo "WARNING: Failed to clear driver override"
+  }
+fi
+
+echo "Successfully completed rollback to $target_driver"
+`, state.PCIAddress, state.CurrentDriver),
+	}
+
+	return r.executeCommand(ctx, clientset, pods[0].Name, cmd, "rollback interface state")
+}
+
+// verifyDPDKUnbind verifies that the DPDK unbinding was successful
+func (r *NodeENIReconciler) verifyDPDKUnbind(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) error {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+
+	// Capture current state to verify unbinding
+	currentState, err := r.captureInterfaceState(ctx, nodeENI, attachment)
+	if err != nil {
+		return fmt.Errorf("failed to capture state for verification: %v", err)
+	}
+
+	// Verify that interface is no longer bound to DPDK
+	if currentState.IsBoundToDPDK {
+		return fmt.Errorf("verification failed: interface is still bound to DPDK driver %s", currentState.CurrentDriver)
+	}
+
+	// Verify that interface is bound to ena driver
+	if currentState.CurrentDriver != "ena" {
+		return fmt.Errorf("verification failed: interface is bound to %s instead of ena", currentState.CurrentDriver)
+	}
+
+	log.Info("DPDK unbind verification successful", "currentDriver", currentState.CurrentDriver)
+	return nil
+}
+
+// executeCommand executes a command in an ENI Manager pod
+func (r *NodeENIReconciler) executeCommand(ctx context.Context, clientset *kubernetes.Clientset, podName string, cmd []string, operation string) error {
+	k8sConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("failed to create in-cluster config: %v", err)
+	}
+
+	req := clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace("eni-controller-system").
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Command: cmd,
+			Stdin:   false,
+			Stdout:  true,
+			Stderr:  true,
+			TTY:     false,
+		}, scheme.ParameterCodec)
+
+	exec, err := remotecommand.NewSPDYExecutor(k8sConfig, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("failed to create executor for %s: %v", operation, err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = exec.Stream(remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+
+	r.Log.Info("Command execution result", "operation", operation, "stdout", stdout.String(), "stderr", stderr.String())
+
+	if err != nil {
+		return fmt.Errorf("failed to execute %s: %v, stderr: %s", operation, err, stderr.String())
+	}
+
 	return nil
 }
 
@@ -882,18 +1380,33 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 	return nil
 }
 
-// removeStaleAttachments removes stale attachments from a NodeENI resource
+// removeStaleAttachments removes stale attachments from a NodeENI resource with comprehensive verification
 func (r *NodeENIReconciler) removeStaleAttachments(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, currentAttachments map[string]bool) []networkingv1alpha1.ENIAttachment {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name)
 	var updatedAttachments []networkingv1alpha1.ENIAttachment
 	var staleAttachments []networkingv1alpha1.ENIAttachment
 
-	// Separate current and stale attachments
+	// Separate current and stale attachments with comprehensive verification
 	for _, attachment := range nodeENI.Status.Attachments {
 		if currentAttachments[attachment.NodeID] {
-			updatedAttachments = append(updatedAttachments, attachment)
+			// Node exists in Kubernetes, but verify AWS instance state
+			if r.isAttachmentStaleInAWS(ctx, nodeENI, attachment) {
+				log.Info("Attachment is stale in AWS despite node existing in Kubernetes",
+					"nodeID", attachment.NodeID, "eniID", attachment.ENIID, "instanceID", attachment.InstanceID)
+				staleAttachments = append(staleAttachments, attachment)
+			} else {
+				updatedAttachments = append(updatedAttachments, attachment)
+			}
 		} else {
-			staleAttachments = append(staleAttachments, attachment)
+			// Node doesn't exist in Kubernetes, perform comprehensive stale detection
+			if r.isAttachmentComprehensivelyStale(ctx, nodeENI, attachment) {
+				staleAttachments = append(staleAttachments, attachment)
+			} else {
+				// Keep attachment if comprehensive verification suggests it's still valid
+				log.Info("Keeping attachment despite missing node - AWS verification suggests it's still valid",
+					"nodeID", attachment.NodeID, "eniID", attachment.ENIID)
+				updatedAttachments = append(updatedAttachments, attachment)
+			}
 		}
 	}
 
@@ -958,6 +1471,176 @@ func (r *NodeENIReconciler) removeStaleAttachments(ctx context.Context, nodeENI 
 	}
 
 	return updatedAttachments
+}
+
+// isAttachmentStaleInAWS checks if an attachment is stale in AWS despite the node existing in Kubernetes
+func (r *NodeENIReconciler) isAttachmentStaleInAWS(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "nodeID", attachment.NodeID, "eniID", attachment.ENIID)
+
+	// Step 1: Verify AWS instance exists and is running
+	if !r.verifyInstanceExists(ctx, attachment.InstanceID) {
+		log.Info("AWS instance does not exist or is terminated", "instanceID", attachment.InstanceID)
+		return true // Attachment is stale
+	}
+
+	// Step 2: Verify ENI attachment state in AWS
+	if !r.verifyENIAttachmentState(ctx, attachment) {
+		log.Info("ENI attachment state is invalid in AWS", "eniID", attachment.ENIID, "instanceID", attachment.InstanceID)
+		return true // Attachment is stale
+	}
+
+	// Step 3: Cross-verify ENI is attached to the correct instance
+	if !r.verifyENIInstanceMapping(ctx, attachment) {
+		log.Info("ENI is not attached to the expected instance", "eniID", attachment.ENIID, "expectedInstance", attachment.InstanceID)
+		return true // Attachment is stale
+	}
+
+	return false // Attachment is valid
+}
+
+// isAttachmentComprehensivelyStale performs comprehensive stale detection for attachments where the node is missing
+func (r *NodeENIReconciler) isAttachmentComprehensivelyStale(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "nodeID", attachment.NodeID, "eniID", attachment.ENIID)
+
+	// Step 1: Check if AWS instance exists (most definitive check)
+	if !r.verifyInstanceExists(ctx, attachment.InstanceID) {
+		log.Info("AWS instance does not exist, attachment is definitely stale", "instanceID", attachment.InstanceID)
+		return true // Definitely stale
+	}
+
+	// Step 2: Check ENI existence and attachment state
+	eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
+	if err != nil {
+		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+			log.Info("ENI does not exist in AWS, attachment is stale", "eniID", attachment.ENIID)
+			return true // Definitely stale
+		}
+		// For other errors, be conservative and keep the attachment
+		log.Error(err, "Failed to describe ENI, keeping attachment to be safe")
+		return false
+	}
+
+	if eni == nil {
+		log.Info("ENI does not exist, attachment is stale")
+		return true // Definitely stale
+	}
+
+	// Step 3: Check if ENI is attached to the expected instance
+	if eni.Attachment == nil {
+		log.Info("ENI is not attached to any instance, attachment is stale")
+		return true // Stale
+	}
+
+	if eni.Attachment.InstanceID != attachment.InstanceID {
+		log.Info("ENI is attached to a different instance",
+			"expectedInstance", attachment.InstanceID,
+			"actualInstance", eni.Attachment.InstanceID)
+		return true // Stale
+	}
+
+	// Step 4: Instance exists and ENI is properly attached, but node is missing from Kubernetes
+	// This could be a temporary condition (node restart, network issues, etc.)
+	// Be conservative and keep the attachment for now
+	log.Info("Instance and ENI exist and are properly attached, but node is missing from Kubernetes - keeping attachment")
+	return false
+}
+
+// verifyInstanceExists verifies that an AWS instance exists and is in a valid state
+func (r *NodeENIReconciler) verifyInstanceExists(ctx context.Context, instanceID string) bool {
+	log := r.Log.WithValues("instanceID", instanceID)
+
+	// Use AWS API to check instance state
+	instance, err := r.AWS.DescribeInstance(ctx, instanceID)
+	if err != nil {
+		if strings.Contains(err.Error(), "InvalidInstanceID.NotFound") {
+			log.Info("AWS instance not found")
+			return false
+		}
+		// For other errors, be conservative and assume instance exists
+		log.Error(err, "Failed to describe instance, assuming it exists")
+		return true
+	}
+
+	if instance == nil {
+		log.Info("AWS instance does not exist")
+		return false
+	}
+
+	// Check instance state - consider running, pending, stopping as valid
+	// terminated, shutting-down as invalid
+	validStates := []string{"running", "pending", "stopping", "stopped"}
+	for _, validState := range validStates {
+		if instance.State == validState {
+			log.Info("AWS instance exists and is in valid state", "state", instance.State)
+			return true
+		}
+	}
+
+	log.Info("AWS instance exists but is in invalid state", "state", instance.State)
+	return false
+}
+
+// verifyENIAttachmentState verifies the ENI attachment state in AWS
+func (r *NodeENIReconciler) verifyENIAttachmentState(ctx context.Context, attachment networkingv1alpha1.ENIAttachment) bool {
+	log := r.Log.WithValues("eniID", attachment.ENIID, "instanceID", attachment.InstanceID)
+
+	eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
+	if err != nil {
+		if strings.Contains(err.Error(), "InvalidNetworkInterfaceID.NotFound") {
+			log.Info("ENI not found in AWS")
+			return false
+		}
+		// For other errors, be conservative
+		log.Error(err, "Failed to describe ENI, assuming attachment is valid")
+		return true
+	}
+
+	if eni == nil {
+		log.Info("ENI does not exist")
+		return false
+	}
+
+	// Check if ENI is attached
+	if eni.Attachment == nil {
+		log.Info("ENI is not attached to any instance")
+		return false
+	}
+
+	// Check attachment status
+	if eni.Status != awsutil.EC2v2NetworkInterfaceStatusInUse {
+		log.Info("ENI is not in 'in-use' status", "status", eni.Status)
+		return false
+	}
+
+	log.Info("ENI attachment state is valid", "status", eni.Status, "attachedTo", eni.Attachment.InstanceID)
+	return true
+}
+
+// verifyENIInstanceMapping verifies that the ENI is attached to the expected instance
+func (r *NodeENIReconciler) verifyENIInstanceMapping(ctx context.Context, attachment networkingv1alpha1.ENIAttachment) bool {
+	log := r.Log.WithValues("eniID", attachment.ENIID, "expectedInstance", attachment.InstanceID)
+
+	eni, err := r.AWS.DescribeENI(ctx, attachment.ENIID)
+	if err != nil {
+		// For errors, be conservative
+		log.Error(err, "Failed to describe ENI for instance mapping verification")
+		return true
+	}
+
+	if eni == nil || eni.Attachment == nil {
+		log.Info("ENI or attachment does not exist")
+		return false
+	}
+
+	if eni.Attachment.InstanceID != attachment.InstanceID {
+		log.Info("ENI is attached to different instance",
+			"expectedInstance", attachment.InstanceID,
+			"actualInstance", eni.Attachment.InstanceID)
+		return false
+	}
+
+	log.Info("ENI instance mapping is correct")
+	return true
 }
 
 // handleStaleAttachment handles a stale attachment

@@ -71,8 +71,8 @@ func (r *NodeENIReconciler) workerFunc(
 				// Channel closed, exit worker
 				return
 			}
-			// Clean up the attachment with context timeout
-			success := r.cleanupENIAttachment(ctx, nodeENI, att)
+			// Clean up the attachment with coordinated execution
+			success := r.cleanupENIAttachmentCoordinated(ctx, nodeENI, att)
 			select {
 			case resultChan <- success:
 			case <-ctx.Done():

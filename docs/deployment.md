@@ -269,3 +269,30 @@ For development and testing, beta images are automatically built from sandbox br
 - **Branch-specific tags**: `beta-{branch-name}` (e.g., `beta-sandbox-testv0.1`)
 - **Latest beta**: `beta-latest` always points to the most recent beta build
 - **Commit-specific tags**: `beta-{branch-name}.{commit-sha}` for precise version tracking
+
+## Configuration Options
+
+The AWS Multi-ENI Controller can be configured through various methods depending on your deployment approach:
+
+### Helm Chart Configuration
+
+When using Helm, you can customize the deployment through a `values.yaml` file. Key configuration options include:
+
+- **namespace**: Target namespace for deployment (default: `eni-controller-system`)
+- **awsRegion**: AWS region for ENI operations (default: `us-west-2`)
+- **nodeSelector**: Node selection criteria for pod placement
+- **image.repository**: Container image repository
+- **image.tag**: Container image tag
+- **resources**: CPU and memory resource limits/requests
+
+### Environment Variables
+
+The controller supports the following environment variables:
+
+- **AWS_REGION**: AWS region for API calls (default: `us-west-2`)
+- **MAX_CONCURRENT_ENI_CLEANUP**: Number of concurrent ENI cleanup operations (default: `3`)
+- **MAX_CONCURRENT_RECONCILES**: Number of concurrent NodeENI reconciles (default: `5`)
+
+### NodeENI Custom Resource Configuration
+
+Configure individual ENI attachments through NodeENI custom resources. See the [Configuration Guide](configuration.md) for detailed examples and options.

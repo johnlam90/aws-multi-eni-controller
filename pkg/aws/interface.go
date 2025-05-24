@@ -45,6 +45,13 @@ type SecurityGroupResolver interface {
 	GetSecurityGroupIDByName(ctx context.Context, securityGroupName string) (string, error)
 }
 
+// InstanceDescriber defines the interface for EC2 instance description operations
+type InstanceDescriber interface {
+	// DescribeInstance describes an EC2 instance
+	// Returns nil, nil if the instance doesn't exist
+	DescribeInstance(ctx context.Context, instanceID string) (*EC2Instance, error)
+}
+
 // EC2Interface defines the combined interface for all EC2 operations using AWS SDK v2
 // This is a facade that combines all the specialized interfaces
 type EC2Interface interface {
@@ -52,4 +59,5 @@ type EC2Interface interface {
 	ENIDescriber
 	SubnetResolver
 	SecurityGroupResolver
+	InstanceDescriber
 }
