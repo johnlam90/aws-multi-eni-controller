@@ -26,6 +26,148 @@ spec:
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
       hostNetwork: true
+      {{- if .Values.eniManager.dpdk.enabled }}
+      initContainers:
+      - name: dpdk-setup
+        image: alpine:3.19
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          echo "Setting up DPDK environment..."
+          # Install required packages
+          apk --no-cache add kmod pciutils python3 build-base linux-headers git
+
+          # Check if we're running on Amazon Linux 2
+          if [ -f /etc/os-release ] && grep -q "Amazon Linux 2" /etc/os-release; then
+            echo "Running on Amazon Linux 2, installing kernel modules"
+            # Install kernel modules on the host
+            nsenter -t 1 -m -u -i -n -p -- yum install -y kernel-modules-extra || echo "Failed to install kernel-modules-extra"
+          fi
+
+          # Function to check if a kernel module is loaded
+          check_module_loaded() {
+            local module=$1
+            if nsenter -t 1 -m -u -i -n -p -- lsmod | grep -q $module; then
+              echo "Module $module is loaded"
+              return 0
+            else
+              echo "Module $module is NOT loaded"
+              return 1
+            fi
+          }
+
+          # Function to check if module files exist
+          check_module_files() {
+            local module=$1
+            local kernel_ver=$(nsenter -t 1 -m -u -i -n -p -- uname -r)
+
+            echo "Checking for module $module in kernel $kernel_ver"
+
+            # List all vfio modules to help with debugging
+            echo "Available vfio modules:"
+            find /lib/modules -name "vfio*" || echo "No vfio modules found in container"
+
+            # Check if the module exists in the host's kernel modules
+            if nsenter -t 1 -m -u -i -n -p -- find /lib/modules/${kernel_ver} -name "${module}.ko" | grep -q .; then
+              echo "Module $module found in host kernel modules"
+              return 0
+            else
+              echo "WARNING: Module $module not found in host kernel modules"
+              return 1
+            fi
+          }
+
+          # Check if vfio-pci is already loaded
+          if check_module_loaded "vfio_pci"; then
+            echo "vfio-pci module is already loaded"
+          else
+            echo "Loading vfio and vfio-pci modules"
+
+            # Check if modules exist before trying to load them
+            check_module_files "vfio"
+            check_module_files "vfio-pci"
+
+            # Try to load the modules
+            nsenter -t 1 -m -u -i -n -p -- modprobe vfio || echo "Failed to load vfio module"
+            nsenter -t 1 -m -u -i -n -p -- modprobe vfio-pci || echo "Failed to load vfio-pci module"
+
+            # Verify modules were loaded
+            check_module_loaded "vfio" || echo "WARNING: vfio module could not be loaded"
+            check_module_loaded "vfio_pci" || echo "WARNING: vfio-pci module could not be loaded"
+          fi
+
+          # Enable unsafe NOIOMMU mode
+          nsenter -t 1 -m -u -i -n -p -- sh -c 'echo 1 > /sys/module/vfio/parameters/enable_unsafe_noiommu_mode' || echo "Failed to enable unsafe NOIOMMU mode"
+
+          # Copy DPDK binding script to host
+          mkdir -p /host/usr/bin
+          cp -f /opt/dpdk/dpdk-devbind.py /host/usr/bin/
+          chmod 755 /host/usr/bin/dpdk-devbind.py
+
+          # Create module load configuration for persistence across reboots
+          mkdir -p /host/etc/modules-load.d
+          echo "vfio" > /host/etc/modules-load.d/dpdk.conf
+          echo "vfio-pci" >> /host/etc/modules-load.d/dpdk.conf
+          chmod 644 /host/etc/modules-load.d/dpdk.conf
+
+          # Create modprobe configuration for persistence across reboots
+          mkdir -p /host/etc/modprobe.d
+          echo "options vfio enable_unsafe_noiommu_mode=1" > /host/etc/modprobe.d/dpdk.conf
+          chmod 644 /host/etc/modprobe.d/dpdk.conf
+
+          # Check if vfio-pci has Write Combining support
+          if grep -q "write-combining" /sys/kernel/debug/x86/pat_memtype_list 2>/dev/null; then
+            echo "Write Combining is already enabled"
+          else
+            echo "Write Combining is not enabled, attempting to patch vfio-pci"
+
+            # Use the pre-packaged patch script
+            cd /opt/dpdk/scripts
+
+            # Run the patch script to enable Write Combining
+            nsenter -t 1 -m -u -i -n -p -- /opt/dpdk/scripts/get-vfio-with-wc.sh || echo "Failed to patch vfio-pci for Write Combining"
+          fi
+
+          # Final verification of DPDK environment
+          echo "Verifying DPDK environment setup..."
+
+          # Check if modules are loaded
+          if check_module_loaded "vfio" && check_module_loaded "vfio_pci"; then
+            echo "SUCCESS: DPDK kernel modules are properly loaded"
+          else
+            echo "WARNING: DPDK kernel modules are not properly loaded"
+            echo "Current loaded modules:"
+            nsenter -t 1 -m -u -i -n -p -- lsmod | grep -E 'vfio|Module'
+
+            # Check kernel module paths
+            echo "Checking kernel module paths:"
+            kernel_ver=$(nsenter -t 1 -m -u -i -n -p -- uname -r)
+            echo "Kernel version: $kernel_ver"
+            echo "Module paths in container:"
+            find /lib/modules -type d | sort
+            echo "VFIO modules in container:"
+            find /lib/modules -name "vfio*" | sort
+
+            # Check if modprobe can find the modules
+            echo "Checking modprobe configuration:"
+            nsenter -t 1 -m -u -i -n -p -- modprobe --show-depends vfio || echo "modprobe cannot find vfio dependencies"
+            nsenter -t 1 -m -u -i -n -p -- modprobe --show-depends vfio-pci || echo "modprobe cannot find vfio-pci dependencies"
+          fi
+
+          echo "DPDK setup completed."
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-sys
+          mountPath: /sys
+        - name: host-root
+          mountPath: /host
+        - name: dpdk-tools
+          mountPath: /opt/dpdk
+        - name: host-modules
+          mountPath: /lib/modules
+          readOnly: true
+      {{- end }}
       containers:
       - name: eni-manager
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -104,6 +246,12 @@ spec:
         hostPath:
           path: /run
       {{- if .Values.eniManager.dpdk.enabled }}
+      - name: host-root
+        hostPath:
+          path: /
+      - name: host-modules
+        hostPath:
+          path: /lib/modules
       - name: dpdk-tools
         configMap:
           name: dpdk-tools

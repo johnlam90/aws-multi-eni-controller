@@ -194,11 +194,11 @@ spec:
         # Primary interface will be auto-detected
         resources:
           limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
             cpu: 100m
             memory: 128Mi
-          requests:
-            cpu: 50m
-            memory: 64Mi
         volumeMounts:
         - name: host-sys
           mountPath: /host/sys

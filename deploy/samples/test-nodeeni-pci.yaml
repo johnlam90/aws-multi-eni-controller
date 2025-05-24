@@ -1,0 +1,41 @@
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: test-nodeeni-dpdk-pci-1
+spec:
+  deleteOnTermination: true
+  description: Test NodeENI with DPDK using PCI address
+  deviceIndex: 2
+  dpdkDriver: vfio-pci
+  dpdkPCIAddress: "0000:00:07.0"
+  dpdkResourceName: intel.com/sriov
+  enableDPDK: true
+  mtu: 9001
+  nodeSelector:
+    ng: multi-eni
+  securityGroupIDs:
+  - sg-0e4680d35b5053f29
+  subnetIDs:
+  - subnet-08c2ddc07218f1105
+
+---
+
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeENI
+metadata:
+  name: test-nodeeni-dpdk-pci-2
+spec:
+  deleteOnTermination: true
+  description: Test NodeENI with DPDK using PCI address
+  deviceIndex: 3
+  dpdkDriver: vfio-pci
+  dpdkPCIAddress: "0000:00:08.0"
+  dpdkResourceName: intel.com/sriov
+  enableDPDK: true
+  mtu: 9001
+  nodeSelector:
+    ng: multi-eni
+  securityGroupNames:
+  - multus-test-sg
+  subnetNames:
+  - multus-test-subnet-2
