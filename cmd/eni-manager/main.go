@@ -3313,6 +3313,39 @@ func (m *SRIOVConfigManager) verifyDevicePluginRunning() bool {
 	return false
 }
 
+// findSRIOVResourcesForNodeENI finds SR-IOV resources associated with a specific NodeENI
+func findSRIOVResourcesForNodeENI(nodeENIName string, cfg *config.ENIManagerConfig) ([]string, error) {
+	if cfg.SRIOVDPConfigPath == "" {
+		return nil, fmt.Errorf("SR-IOV config path not configured")
+	}
+
+	// Check if config file exists
+	if _, err := os.Stat(cfg.SRIOVDPConfigPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("SR-IOV config file does not exist")
+	}
+
+	// Load the current SR-IOV configuration
+	config, err := loadOrCreateSRIOVConfig(cfg.SRIOVDPConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load SR-IOV config: %v", err)
+	}
+
+	var foundResources []string
+
+	// Search through all resources to find ones that might be associated with this NodeENI
+	// Since we don't have a direct mapping for non-DPDK resources, we'll look for resource names
+	// that contain the NodeENI name or check if any resources exist (indicating potential cleanup needed)
+	for _, resource := range config.ResourceList {
+		// For now, we'll be conservative and assume any existing resources might need cleanup
+		// when a NodeENI is deleted. This ensures we don't miss any resources.
+		if len(resource.Selectors) > 0 && len(resource.Selectors[0].Devices) > 0 {
+			foundResources = append(foundResources, resource.ResourceName)
+		}
+	}
+
+	return foundResources, nil
+}
+
 // cleanupSRIOVConfigForNodeENI removes SR-IOV configuration for a deleted NodeENI
 func cleanupSRIOVConfigForNodeENI(nodeENIName string, cfg *config.ENIManagerConfig) error {
 	log.Printf("Cleaning up SR-IOV configuration for deleted NodeENI: %s", nodeENIName)
@@ -3325,19 +3358,29 @@ func cleanupSRIOVConfigForNodeENI(nodeENIName string, cfg *config.ENIManagerConf
 		}
 	}
 
-	// For now, always attempt cleanup if we have a valid SR-IOV config path
-	// This ensures we clean up any potential SR-IOV resources, even non-DPDK ones
-	shouldCleanup := len(dpdkInterfacesToCleanup) > 0 || cfg.SRIOVDPConfigPath != ""
+	// Also check for non-DPDK SR-IOV resources in the configuration file
+	var nonDpdkResourcesToCleanup []string
+	if cfg.SRIOVDPConfigPath != "" {
+		if resources, err := findSRIOVResourcesForNodeENI(nodeENIName, cfg); err == nil {
+			nonDpdkResourcesToCleanup = resources
+		}
+	}
 
-	if !shouldCleanup {
-		log.Printf("No DPDK interfaces found and no SR-IOV config path configured for NodeENI %s", nodeENIName)
+	totalResourcesToCleanup := len(dpdkInterfacesToCleanup) + len(nonDpdkResourcesToCleanup)
+
+	if totalResourcesToCleanup == 0 && cfg.SRIOVDPConfigPath == "" {
+		log.Printf("No DPDK interfaces, no SR-IOV resources, and no SR-IOV config path configured for NodeENI %s", nodeENIName)
 		return nil
 	}
 
 	if len(dpdkInterfacesToCleanup) > 0 {
 		log.Printf("Found %d DPDK interfaces to cleanup for NodeENI %s", len(dpdkInterfacesToCleanup), nodeENIName)
-	} else {
-		log.Printf("No DPDK interfaces found, but will attempt SR-IOV device plugin restart for NodeENI %s", nodeENIName)
+	}
+	if len(nonDpdkResourcesToCleanup) > 0 {
+		log.Printf("Found %d non-DPDK SR-IOV resources to cleanup for NodeENI %s", len(nonDpdkResourcesToCleanup), nodeENIName)
+	}
+	if totalResourcesToCleanup == 0 {
+		log.Printf("No specific resources found, but will force SR-IOV device plugin restart for deleted NodeENI %s to ensure cleanup", nodeENIName)
 	}
 
 	manager := NewSRIOVConfigManager(cfg.SRIOVDPConfigPath)
@@ -3364,15 +3407,17 @@ func cleanupSRIOVConfigForNodeENI(nodeENIName string, cfg *config.ENIManagerConf
 		delete(cfg.DPDKBoundInterfaces, pciAddr)
 	}
 
-	// Restart the SR-IOV device plugin only if we actually modified something or found DPDK interfaces
-	// This ensures any SR-IOV resources (DPDK or non-DPDK) are properly cleaned up
-	shouldRestart := configModified || len(dpdkInterfacesToCleanup) > 0
+	// Always restart the SR-IOV device plugin when a NodeENI is deleted if SR-IOV is configured
+	// This ensures any SR-IOV resources (DPDK or non-DPDK) are properly cleaned up from node capacity
+	shouldRestart := configModified || len(dpdkInterfacesToCleanup) > 0 || len(nonDpdkResourcesToCleanup) > 0 || (totalResourcesToCleanup == 0 && cfg.SRIOVDPConfigPath != "")
 
 	if shouldRestart {
 		if configModified {
 			log.Printf("SR-IOV configuration was modified for NodeENI %s, restarting device plugin", nodeENIName)
+		} else if len(dpdkInterfacesToCleanup) > 0 || len(nonDpdkResourcesToCleanup) > 0 {
+			log.Printf("Found SR-IOV resources for deleted NodeENI %s, restarting device plugin to update node capacity", nodeENIName)
 		} else {
-			log.Printf("Forcing SR-IOV device plugin restart for deleted NodeENI %s to ensure resource cleanup", nodeENIName)
+			log.Printf("Forcing SR-IOV device plugin restart for deleted NodeENI %s to ensure any stale resources are cleaned up", nodeENIName)
 		}
 
 		// Set up Kubernetes client for the manager if not already set
