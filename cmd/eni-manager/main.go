@@ -3088,66 +3088,317 @@ func (m *SRIOVConfigManager) restartDevicePlugin() error {
 	return nil
 }
 
-// restartDevicePluginWithVerification restarts the SR-IOV device plugin with verification and retry logic
+// SRIOVRestartConfig holds configuration for SR-IOV device plugin restart behavior
+type SRIOVRestartConfig struct {
+	MaxRetries             int           `json:"maxRetries"`             // Maximum number of restart attempts
+	BaseWaitTime           time.Duration `json:"baseWaitTime"`           // Base wait time after restart
+	MaxWaitTime            time.Duration `json:"maxWaitTime"`            // Maximum wait time for verification
+	RetryBackoffMultiplier float64       `json:"retryBackoffMultiplier"` // Exponential backoff multiplier
+	PodReadinessTimeout    time.Duration `json:"podReadinessTimeout"`    // Timeout for pod readiness check
+	ResourceVerifyTimeout  time.Duration `json:"resourceVerifyTimeout"`  // Timeout for resource verification
+	StaleResourceCleanup   bool          `json:"staleResourceCleanup"`   // Whether to verify stale resource cleanup
+}
+
+// getDefaultSRIOVRestartConfig returns default configuration for SR-IOV restart behavior
+func getDefaultSRIOVRestartConfig() SRIOVRestartConfig {
+	return SRIOVRestartConfig{
+		MaxRetries:             3,
+		BaseWaitTime:           60 * time.Second,  // Default 60 seconds as requested
+		MaxWaitTime:            180 * time.Second, // Maximum 3 minutes total wait
+		RetryBackoffMultiplier: 1.5,               // Exponential backoff
+		PodReadinessTimeout:    120 * time.Second, // 2 minutes for pod readiness
+		ResourceVerifyTimeout:  90 * time.Second,  // 90 seconds for resource verification
+		StaleResourceCleanup:   true,              // Verify stale resource cleanup
+	}
+}
+
+// restartDevicePluginWithVerification restarts the SR-IOV device plugin with enhanced verification and retry logic
 func (m *SRIOVConfigManager) restartDevicePluginWithVerification() error {
-	log.Printf("Starting enhanced SR-IOV device plugin restart with verification")
+	return m.restartDevicePluginWithConfig(getDefaultSRIOVRestartConfig())
+}
+
+// restartDevicePluginWithConfig restarts the SR-IOV device plugin with custom configuration
+func (m *SRIOVConfigManager) restartDevicePluginWithConfig(config SRIOVRestartConfig) error {
+	log.Printf("Starting enhanced SR-IOV device plugin restart with verification (maxRetries=%d, baseWait=%v)",
+		config.MaxRetries, config.BaseWaitTime)
 
 	if m.k8sClient == nil {
 		return fmt.Errorf("Kubernetes client not available for device plugin restart with verification")
 	}
 
-	// Get expected DPDK resources before restart
+	// Get current node resources before restart for comparison
+	preRestartResources, err := m.getCurrentNodeResources()
+	if err != nil {
+		log.Printf("Warning: Failed to get current node resources: %v", err)
+	} else {
+		log.Printf("Pre-restart node resources: %v", preRestartResources)
+	}
+
+	// Get expected resources from configuration
 	expectedResources, err := m.getExpectedDPDKResources()
 	if err != nil {
 		log.Printf("Warning: Failed to get expected DPDK resources: %v", err)
 		// Continue with restart anyway
+	} else {
+		log.Printf("Expected resources after restart: %v", expectedResources)
 	}
 
-	maxRetries := 3
-	baseDelay := 10 * time.Second
+	// Identify stale resources that should be removed
+	staleResources := m.identifyStaleResources(preRestartResources, expectedResources)
+	if len(staleResources) > 0 {
+		log.Printf("Stale resources that should be removed: %v", staleResources)
+	}
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		log.Printf("SR-IOV device plugin restart attempt %d/%d", attempt, maxRetries)
+	for attempt := 1; attempt <= config.MaxRetries; attempt++ {
+		log.Printf("SR-IOV device plugin restart attempt %d/%d", attempt, config.MaxRetries)
 
 		// Perform the restart
 		if err := m.restartDevicePlugin(); err != nil {
 			log.Printf("Restart attempt %d failed: %v", attempt, err)
-			if attempt == maxRetries {
+			if attempt == config.MaxRetries {
 				return fmt.Errorf("all restart attempts failed, last error: %v", err)
 			}
+
+			// Exponential backoff before retry
+			backoffDelay := time.Duration(float64(config.BaseWaitTime) *
+				(config.RetryBackoffMultiplier * float64(attempt-1)))
+			if backoffDelay > config.MaxWaitTime {
+				backoffDelay = config.MaxWaitTime
+			}
+			log.Printf("Waiting %v before retry attempt %d (exponential backoff)", backoffDelay, attempt+1)
+			time.Sleep(backoffDelay)
 			continue
 		}
 
-		// Wait for device plugin to initialize
-		initDelay := time.Duration(attempt) * baseDelay
-		log.Printf("Waiting %v for SR-IOV device plugin to initialize (attempt %d)", initDelay, attempt)
-		time.Sleep(initDelay)
-
-		// Verify resources are properly advertised
-		if len(expectedResources) > 0 {
-			if m.verifyDPDKResourcesAdvertised(expectedResources) {
-				log.Printf("SR-IOV device plugin restart successful - all expected resources are advertised")
-				return nil
+		// Wait for device plugin pods to be ready
+		log.Printf("Waiting for SR-IOV device plugin pods to be ready (timeout: %v)", config.PodReadinessTimeout)
+		if !m.waitForDevicePluginPodsReady(config.PodReadinessTimeout) {
+			log.Printf("Device plugin pods not ready after attempt %d, will retry", attempt)
+			if attempt < config.MaxRetries {
+				continue
 			}
-			log.Printf("Resources not yet advertised after attempt %d, will retry", attempt)
-		} else {
-			// If we don't have expected resources, just verify the plugin is running
-			if m.verifyDevicePluginRunning() {
-				log.Printf("SR-IOV device plugin restart successful - plugin is running")
-				return nil
-			}
-			log.Printf("Device plugin not running properly after attempt %d, will retry", attempt)
+			return fmt.Errorf("device plugin pods not ready after %d attempts", config.MaxRetries)
 		}
 
-		// If not the last attempt, wait before retrying
-		if attempt < maxRetries {
-			retryDelay := time.Duration(attempt) * 5 * time.Second
-			log.Printf("Waiting %v before retry attempt %d", retryDelay, attempt+1)
-			time.Sleep(retryDelay)
+		// Wait for the base time to allow plugin to scan and update resources
+		log.Printf("Waiting %v for SR-IOV device plugin to scan devices and update node resources", config.BaseWaitTime)
+		time.Sleep(config.BaseWaitTime)
+
+		// Verify expected resources are properly advertised
+		if len(expectedResources) > 0 {
+			log.Printf("Verifying expected resources are advertised (timeout: %v)", config.ResourceVerifyTimeout)
+			if !m.verifyResourcesWithTimeout(expectedResources, config.ResourceVerifyTimeout) {
+				log.Printf("Expected resources not properly advertised after attempt %d", attempt)
+				if attempt < config.MaxRetries {
+					continue
+				}
+				return fmt.Errorf("expected resources not advertised after %d attempts", config.MaxRetries)
+			}
+			log.Printf("✓ All expected resources are properly advertised")
+		}
+
+		// Verify stale resources are removed if cleanup is enabled
+		if config.StaleResourceCleanup && len(staleResources) > 0 {
+			log.Printf("Verifying stale resources are removed: %v", staleResources)
+			if !m.verifyStaleResourcesRemoved(staleResources, config.ResourceVerifyTimeout) {
+				log.Printf("Stale resources still present after attempt %d", attempt)
+				if attempt < config.MaxRetries {
+					continue
+				}
+				log.Printf("Warning: Some stale resources may still be present after %d attempts", config.MaxRetries)
+				// Don't fail for stale resources, just warn
+			} else {
+				log.Printf("✓ All stale resources have been removed")
+			}
+		}
+
+		// Final verification that device plugin is running properly
+		if !m.verifyDevicePluginRunning() {
+			log.Printf("Device plugin not running properly after attempt %d", attempt)
+			if attempt < config.MaxRetries {
+				continue
+			}
+			return fmt.Errorf("device plugin not running properly after %d attempts", config.MaxRetries)
+		}
+
+		log.Printf("✓ SR-IOV device plugin restart successful after attempt %d", attempt)
+		return nil
+	}
+
+	return fmt.Errorf("failed to verify SR-IOV device plugin restart after %d attempts", config.MaxRetries)
+}
+
+// getCurrentNodeResources gets the current node's SR-IOV resources
+func (m *SRIOVConfigManager) getCurrentNodeResources() (map[string]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		return nil, fmt.Errorf("NODE_NAME environment variable not set")
+	}
+
+	node, err := m.k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node %s: %v", nodeName, err)
+	}
+
+	resources := make(map[string]string)
+	for resourceName, quantity := range node.Status.Capacity {
+		resourceStr := string(resourceName)
+		// Only include SR-IOV related resources
+		if strings.Contains(resourceStr, "intel.com/") || strings.Contains(resourceStr, "sriov") {
+			resources[resourceStr] = quantity.String()
 		}
 	}
 
-	return fmt.Errorf("failed to verify SR-IOV device plugin restart after %d attempts", maxRetries)
+	return resources, nil
+}
+
+// identifyStaleResources identifies resources that should be removed
+func (m *SRIOVConfigManager) identifyStaleResources(currentResources map[string]string, expectedResources []string) []string {
+	expectedSet := make(map[string]bool)
+	for _, resource := range expectedResources {
+		expectedSet[resource] = true
+	}
+
+	var staleResources []string
+	for resource := range currentResources {
+		if !expectedSet[resource] {
+			// This resource exists but is not expected, so it's stale
+			staleResources = append(staleResources, resource)
+		}
+	}
+
+	return staleResources
+}
+
+// waitForDevicePluginPodsReady waits for SR-IOV device plugin pods to be ready
+func (m *SRIOVConfigManager) waitForDevicePluginPodsReady(timeout time.Duration) bool {
+	if m.k8sClient == nil {
+		log.Printf("Warning: Kubernetes client not available for pod readiness check")
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	labelSelectors := []string{
+		"app=sriov-device-plugin",
+		"app=sriovdp",
+		"name=sriov-device-plugin",
+	}
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Timeout waiting for SR-IOV device plugin pods to be ready")
+			return false
+		case <-ticker.C:
+			for _, selector := range labelSelectors {
+				pods, err := m.k8sClient.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
+					LabelSelector: selector,
+				})
+				if err != nil {
+					log.Printf("Warning: Failed to list pods with selector %s: %v", selector, err)
+					continue
+				}
+
+				if len(pods.Items) == 0 {
+					continue
+				}
+
+				allReady := true
+				for _, pod := range pods.Items {
+					if pod.Status.Phase != corev1.PodRunning {
+						allReady = false
+						break
+					}
+
+					// Check if all containers are ready
+					for _, condition := range pod.Status.Conditions {
+						if condition.Type == corev1.PodReady && condition.Status != corev1.ConditionTrue {
+							allReady = false
+							break
+						}
+					}
+					if !allReady {
+						break
+					}
+				}
+
+				if allReady {
+					log.Printf("✓ All SR-IOV device plugin pods are ready (%d pods with selector %s)", len(pods.Items), selector)
+					return true
+				}
+
+				log.Printf("Waiting for SR-IOV device plugin pods to be ready (%d pods found with selector %s)", len(pods.Items), selector)
+			}
+		}
+	}
+}
+
+// verifyResourcesWithTimeout verifies that expected resources are advertised within timeout
+func (m *SRIOVConfigManager) verifyResourcesWithTimeout(expectedResources []string, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Timeout waiting for expected resources to be advertised")
+			return false
+		case <-ticker.C:
+			if m.verifyDPDKResourcesAdvertised(expectedResources) {
+				return true
+			}
+			log.Printf("Still waiting for expected resources to be advertised...")
+		}
+	}
+}
+
+// verifyStaleResourcesRemoved verifies that stale resources are removed within timeout
+func (m *SRIOVConfigManager) verifyStaleResourcesRemoved(staleResources []string, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Timeout waiting for stale resources to be removed")
+			return false
+		case <-ticker.C:
+			currentResources, err := m.getCurrentNodeResources()
+			if err != nil {
+				log.Printf("Warning: Failed to get current node resources: %v", err)
+				continue
+			}
+
+			allRemoved := true
+			for _, staleResource := range staleResources {
+				if _, exists := currentResources[staleResource]; exists {
+					log.Printf("Stale resource %s still present", staleResource)
+					allRemoved = false
+				}
+			}
+
+			if allRemoved {
+				log.Printf("✓ All stale resources have been removed")
+				return true
+			}
+
+			log.Printf("Still waiting for stale resources to be removed...")
+		}
+	}
 }
 
 // getExpectedDPDKResources gets the list of DPDK resources that should be advertised
