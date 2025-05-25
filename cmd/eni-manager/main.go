@@ -173,7 +173,9 @@ func performInitialNodeENIUpdate(ctx context.Context, clientset *kubernetes.Clie
 	} else {
 		// Also check for non-DPDK SR-IOV configuration updates during startup
 		log.Printf("Performing initial non-DPDK SR-IOV configuration check")
-		updateSRIOVConfigForAllInterfacesWithStartup(nodeName, cfg, nodeENIs, true)
+		// Reset tracking state on startup to ensure fresh evaluation
+		resetSRIOVConfigTracking()
+		updateSRIOVConfigForAllInterfaces(nodeName, cfg, nodeENIs)
 	}
 
 	return true
@@ -262,6 +264,12 @@ func startNodeENIUpdaterLoop(ctx context.Context, clientset *kubernetes.Clientse
 				}
 				if deletedCount == 0 {
 					log.Printf("No deleted NodeENI resources detected")
+				} else {
+					// Reset SR-IOV configuration tracking when NodeENI resources are deleted
+					// This ensures that when new NodeENI resources are created with the same configuration,
+					// the SR-IOV device plugin will be restarted properly
+					log.Printf("Resetting SR-IOV configuration tracking due to %d deleted NodeENI resources", deletedCount)
+					resetSRIOVConfigTracking()
 				}
 			} else {
 				log.Printf("Previous NodeENI tracking not initialized yet, skipping deletion check")
@@ -3025,6 +3033,14 @@ func (m *SRIOVConfigManager) restartDevicePlugin() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Get the current node name for node-specific pod filtering
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		return fmt.Errorf("NODE_NAME environment variable not set - cannot determine which node's SR-IOV device plugin to restart")
+	}
+
+	log.Printf("Restricting SR-IOV device plugin restart to current node: %s", nodeName)
+
 	// Try multiple common SR-IOV device plugin label selectors
 	labelSelectors := []string{
 		"app=sriov-device-plugin",  // Most common
@@ -3036,37 +3052,44 @@ func (m *SRIOVConfigManager) restartDevicePlugin() error {
 	var deletedPods int
 
 	for _, labelSelector := range labelSelectors {
-		log.Printf("Searching for SR-IOV device plugin pods with label selector: %s", labelSelector)
+		log.Printf("Searching for SR-IOV device plugin pods on node %s with label selector: %s", nodeName, labelSelector)
 
-		// List pods in kube-system namespace with the label selector
+		// List pods in kube-system namespace with BOTH label selector AND node filtering
 		pods, err := m.k8sClient.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
 			LabelSelector: labelSelector,
+			FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName), // CRITICAL: Node isolation
 		})
 		if err != nil {
-			lastErr = fmt.Errorf("failed to list pods with selector %s: %v", labelSelector, err)
+			lastErr = fmt.Errorf("failed to list pods with selector %s on node %s: %v", labelSelector, nodeName, err)
 			log.Printf("Warning: %v", lastErr)
 			continue
 		}
 
 		if len(pods.Items) == 0 {
-			log.Printf("No pods found with label selector: %s", labelSelector)
+			log.Printf("No pods found with label selector %s on node %s", labelSelector, nodeName)
 			continue
 		}
 
-		log.Printf("Found %d SR-IOV device plugin pods with selector %s", len(pods.Items), labelSelector)
+		log.Printf("Found %d SR-IOV device plugin pods on node %s with selector %s", len(pods.Items), nodeName, labelSelector)
 
-		// Delete each pod to trigger restart
+		// Delete each pod to trigger restart (now guaranteed to be on current node only)
 		for _, pod := range pods.Items {
-			log.Printf("Deleting SR-IOV device plugin pod: %s", pod.Name)
+			// Double-check node affinity as additional safety measure
+			if pod.Spec.NodeName != nodeName {
+				log.Printf("Warning: Pod %s is not on expected node %s (actual: %s), skipping", pod.Name, nodeName, pod.Spec.NodeName)
+				continue
+			}
+
+			log.Printf("Deleting SR-IOV device plugin pod %s on node %s", pod.Name, nodeName)
 
 			err := m.k8sClient.CoreV1().Pods("kube-system").Delete(ctx, pod.Name, metav1.DeleteOptions{
 				GracePeriodSeconds: &[]int64{0}[0], // Force immediate deletion
 			})
 			if err != nil {
-				log.Printf("Warning: Failed to delete pod %s: %v", pod.Name, err)
+				log.Printf("Warning: Failed to delete pod %s on node %s: %v", pod.Name, nodeName, err)
 				lastErr = err
 			} else {
-				log.Printf("Successfully deleted SR-IOV device plugin pod: %s", pod.Name)
+				log.Printf("Successfully deleted SR-IOV device plugin pod %s on node %s", pod.Name, nodeName)
 				deletedPods++
 			}
 		}
@@ -3283,6 +3306,15 @@ func (m *SRIOVConfigManager) waitForDevicePluginPodsReady(timeout time.Duration)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	// Get the current node name for node-specific pod filtering
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		log.Printf("Warning: NODE_NAME environment variable not set - checking all nodes for pod readiness")
+		// Fall back to cluster-wide check if node name is not available
+	} else {
+		log.Printf("Checking SR-IOV device plugin pod readiness on node: %s", nodeName)
+	}
+
 	labelSelectors := []string{
 		"app=sriov-device-plugin",
 		"app=sriovdp",
@@ -3299,9 +3331,16 @@ func (m *SRIOVConfigManager) waitForDevicePluginPodsReady(timeout time.Duration)
 			return false
 		case <-ticker.C:
 			for _, selector := range labelSelectors {
-				pods, err := m.k8sClient.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
+				listOptions := metav1.ListOptions{
 					LabelSelector: selector,
-				})
+				}
+
+				// Add node filtering if node name is available
+				if nodeName != "" {
+					listOptions.FieldSelector = fmt.Sprintf("spec.nodeName=%s", nodeName)
+				}
+
+				pods, err := m.k8sClient.CoreV1().Pods("kube-system").List(ctx, listOptions)
 				if err != nil {
 					log.Printf("Warning: Failed to list pods with selector %s: %v", selector, err)
 					continue
@@ -3313,6 +3352,12 @@ func (m *SRIOVConfigManager) waitForDevicePluginPodsReady(timeout time.Duration)
 
 				allReady := true
 				for _, pod := range pods.Items {
+					// Additional node check if node name is available
+					if nodeName != "" && pod.Spec.NodeName != nodeName {
+						log.Printf("Warning: Pod %s is not on expected node %s (actual: %s), skipping readiness check", pod.Name, nodeName, pod.Spec.NodeName)
+						continue
+					}
+
 					if pod.Status.Phase != corev1.PodRunning {
 						allReady = false
 						break
@@ -3331,11 +3376,19 @@ func (m *SRIOVConfigManager) waitForDevicePluginPodsReady(timeout time.Duration)
 				}
 
 				if allReady {
-					log.Printf("✓ All SR-IOV device plugin pods are ready (%d pods with selector %s)", len(pods.Items), selector)
+					if nodeName != "" {
+						log.Printf("✓ All SR-IOV device plugin pods are ready on node %s (%d pods with selector %s)", nodeName, len(pods.Items), selector)
+					} else {
+						log.Printf("✓ All SR-IOV device plugin pods are ready (%d pods with selector %s)", len(pods.Items), selector)
+					}
 					return true
 				}
 
-				log.Printf("Waiting for SR-IOV device plugin pods to be ready (%d pods found with selector %s)", len(pods.Items), selector)
+				if nodeName != "" {
+					log.Printf("Waiting for SR-IOV device plugin pods to be ready on node %s (%d pods found with selector %s)", nodeName, len(pods.Items), selector)
+				} else {
+					log.Printf("Waiting for SR-IOV device plugin pods to be ready (%d pods found with selector %s)", len(pods.Items), selector)
+				}
 			}
 		}
 	}
@@ -4637,6 +4690,41 @@ type ModernSRIOVDPConfig struct {
 var processedSRIOVConfigs = make(map[string]string)
 var sriovConfigMutex sync.Mutex
 
+// Track the last configuration file modification time to detect external changes
+var lastConfigModTime time.Time
+var configModTimeMutex sync.Mutex
+
+// resetSRIOVConfigTracking resets the SR-IOV configuration tracking state
+func resetSRIOVConfigTracking() {
+	sriovConfigMutex.Lock()
+	defer sriovConfigMutex.Unlock()
+
+	// Clear the processed configurations map
+	processedSRIOVConfigs = make(map[string]string)
+	log.Printf("Reset SR-IOV configuration tracking state")
+}
+
+// shouldForceRestart determines if we should force a restart regardless of configuration changes
+func shouldForceRestart(cfg *config.ENIManagerConfig) bool {
+	configModTimeMutex.Lock()
+	defer configModTimeMutex.Unlock()
+
+	// Check if the configuration file has been modified externally
+	if cfg.SRIOVDPConfigPath != "" {
+		if stat, err := os.Stat(cfg.SRIOVDPConfigPath); err == nil {
+			currentModTime := stat.ModTime()
+			if !lastConfigModTime.IsZero() && currentModTime.After(lastConfigModTime) {
+				log.Printf("SR-IOV config file modified externally, forcing restart")
+				lastConfigModTime = currentModTime
+				return true
+			}
+			lastConfigModTime = currentModTime
+		}
+	}
+
+	return false
+}
+
 // updateModernSRIOVDevicePluginConfig updates the SR-IOV device plugin config using the modern format
 func updateModernSRIOVDevicePluginConfig(pciAddress, driver, resourceName string, cfg *config.ENIManagerConfig) error {
 	if cfg.SRIOVDPConfigPath == "" {
@@ -4646,17 +4734,20 @@ func updateModernSRIOVDevicePluginConfig(pciAddress, driver, resourceName string
 	// Create a unique key for this configuration
 	configKey := fmt.Sprintf("%s:%s:%s", pciAddress, driver, resourceName)
 
-	// Check if we've already processed this exact configuration
+	// Check if we should force a restart due to external changes
+	forceRestart := shouldForceRestart(cfg)
+
+	// Check if we've already processed this exact configuration (unless forcing restart)
 	sriovConfigMutex.Lock()
 	lastProcessed, exists := processedSRIOVConfigs[configKey]
 	sriovConfigMutex.Unlock()
 
-	if exists && lastProcessed == configKey {
+	if !forceRestart && exists && lastProcessed == configKey {
 		log.Printf("SR-IOV configuration already processed for PCI %s with resource %s - skipping", pciAddress, resourceName)
 		return nil
 	}
 
-	log.Printf("Updating modern SR-IOV device plugin config for PCI %s with resource %s", pciAddress, resourceName)
+	log.Printf("Updating modern SR-IOV device plugin config for PCI %s with resource %s (force=%v)", pciAddress, resourceName, forceRestart)
 
 	resourcePrefix, resourceShortName, err := parseResourceName(resourceName)
 	if err != nil {
@@ -4690,7 +4781,10 @@ func updateModernSRIOVDevicePluginConfig(pciAddress, driver, resourceName string
 		return err
 	}
 
-	if !configChanged {
+	// Force restart if requested or if configuration changed
+	shouldRestart := forceRestart || configChanged
+
+	if !shouldRestart {
 		log.Printf("SR-IOV configuration unchanged for resource %s/%s (PCI: %s) - skipping device plugin restart",
 			resourcePrefix, resourceShortName, pciAddress)
 
@@ -4702,13 +4796,18 @@ func updateModernSRIOVDevicePluginConfig(pciAddress, driver, resourceName string
 		return nil
 	}
 
-	log.Printf("SR-IOV configuration changed for resource %s/%s (PCI: %s) - restarting device plugin",
+	if forceRestart {
+		log.Printf("Force restarting SR-IOV device plugin for resource %s/%s (PCI: %s) due to external changes",
+			resourcePrefix, resourceShortName, pciAddress)
+	} else {
+		log.Printf("SR-IOV configuration changed for resource %s/%s (PCI: %s) - restarting device plugin",
+			resourcePrefix, resourceShortName, pciAddress)
+	}
+
+	log.Printf("Successfully updated modern SR-IOV config for resource %s/%s (PCI: %s) - restarting device plugin",
 		resourcePrefix, resourceShortName, pciAddress)
 
-	log.Printf("Successfully updated modern SR-IOV config for resource %s/%s (PCI: %s) - configuration changed",
-		resourcePrefix, resourceShortName, pciAddress)
-
-	// Restart the SR-IOV device plugin only when configuration actually changed
+	// Restart the SR-IOV device plugin
 	if err := manager.restartDevicePlugin(); err != nil {
 		log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
 		// Don't fail the operation for restart failures
