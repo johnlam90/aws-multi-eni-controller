@@ -1,0 +1,247 @@
+# Performance Testing Values for AWS Multi-ENI Controller
+# Optimized for scale testing with 10 nodes × 10 ENIs (100 total ENIs)
+
+# Image configuration
+image:
+  repository: ghcr.io/johnlam90/aws-multi-eni-controller
+  tag: v1.3.2
+  pullPolicy: IfNotPresent
+
+# Namespace to deploy the controller
+namespace: eni-controller-system
+
+# AWS Region configuration
+awsRegion: us-east-1
+
+# Controller configuration - Optimized for scale
+controller:
+  # Increased concurrent operations for better throughput
+  maxConcurrentENICleanup: 8        # Increased from default 3
+  maxConcurrentReconciles: 15       # Increased from default 5
+  
+  # Enable leader election for HA
+  enableLeaderElection: true
+  
+  # Metrics configuration
+  metricsAddr: ":8080"
+  
+  # Increased grace period for cleanup operations
+  terminationGracePeriodSeconds: 30
+
+# ENI Manager configuration
+eniManager:
+  # Default MTU (0 to use NodeENI resource settings)
+  defaultMTU: 0
+  
+  # Reduced check interval for faster response
+  checkInterval: 15s                # Reduced from default 30s
+  
+  # Enable debug logging for performance analysis
+  debug: true
+  
+  # Pattern to match ENI interfaces
+  eniPattern: "^(eth|ens|eni|en)[0-9]+"
+  
+  # Interfaces to ignore
+  ignoreInterfaces: "tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0"
+  
+  # Use netlink for efficient interface monitoring
+  useNetlink: true
+  
+  # DPDK configuration
+  dpdk:
+    enabled: true
+    driver: "vfio-pci"
+    bindingScript: "/opt/dpdk/dpdk-devbind.py"
+    sriovDPConfigPath: "/etc/pcidp/config.json"
+    resourceNames: ""
+
+# Resource configuration - Increased for scale testing
+resources:
+  controller:
+    limits:
+      cpu: 1000m                    # Increased from 500m
+      memory: 1Gi                   # Increased from 512Mi
+    requests:
+      cpu: 200m                     # Increased from 100m
+      memory: 256Mi                 # Increased from 128Mi
+  manager:
+    limits:
+      cpu: 800m                     # Increased from 500m
+      memory: 1Gi                   # Increased from 512Mi
+    requests:
+      cpu: 150m                     # Increased from 100m
+      memory: 256Mi                 # Increased from 128Mi
+
+# Node selector for the ENI manager daemonset
+nodeSelector:
+  ng: multi-eni
+
+# Security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 2000
+
+# Service account configuration
+serviceAccount:
+  create: true
+  name: "eni-controller"
+  annotations: {}
+
+# RBAC configuration
+rbac:
+  create: true
+
+# Pod annotations for monitoring
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+# Pod labels
+podLabels:
+  performance-test: "enabled"
+
+# Tolerations for performance testing nodes
+tolerations:
+  - key: "performance-test"
+    operator: "Equal"
+    value: "true"
+    effect: "NoSchedule"
+
+# Affinity rules for optimal placement
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app
+            operator: In
+            values:
+            - eni-controller
+        topologyKey: kubernetes.io/hostname
+
+# Enable metrics for performance monitoring
+metrics:
+  enabled: true
+  port: 8080
+  service:
+    type: ClusterIP
+    port: 8080
+
+# Log level for performance analysis
+logLevel: info
+
+# Performance testing specific environment variables
+env:
+  # Circuit breaker configuration for AWS API resilience
+  - name: CIRCUIT_BREAKER_ENABLED
+    value: "true"
+  - name: CIRCUIT_BREAKER_FAILURE_THRESHOLD
+    value: "5"
+  - name: CIRCUIT_BREAKER_SUCCESS_THRESHOLD
+    value: "3"
+  - name: CIRCUIT_BREAKER_TIMEOUT
+    value: "30s"
+  
+  # AWS API rate limiting
+  - name: AWS_API_RATE_LIMIT
+    value: "20"
+  - name: AWS_API_BURST_LIMIT
+    value: "40"
+  
+  # Performance monitoring
+  - name: ENABLE_PERFORMANCE_METRICS
+    value: "true"
+  - name: METRICS_COLLECTION_INTERVAL
+    value: "10s"
+
+# Additional configuration for scale testing
+scaleTest:
+  # Enable performance optimizations
+  enableOptimizations: true
+  
+  # Batch size for bulk operations
+  batchSize: 10
+  
+  # Retry configuration
+  maxRetries: 5
+  retryBackoff: "exponential"
+  
+  # Monitoring configuration
+  monitoring:
+    enabled: true
+    interval: "30s"
+    retention: "24h"
+  
+  # Resource limits for testing
+  limits:
+    maxENIsPerNode: 15
+    maxTotalENIs: 150
+    maxConcurrentOperations: 20
+
+# Horizontal Pod Autoscaler configuration for controller
+hpa:
+  enabled: false  # Disabled for consistent performance testing
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Pod Disruption Budget for high availability
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# Network policies for security (optional)
+networkPolicy:
+  enabled: false
+  ingress: []
+  egress: []
+
+# Service monitor for Prometheus (if using Prometheus Operator)
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+  annotations: {}
+
+# Grafana dashboard configuration
+grafana:
+  dashboards:
+    enabled: false
+    labels:
+      grafana_dashboard: "1"
+    annotations: {}
+
+# Performance test specific configurations
+performanceTest:
+  # Test parameters
+  nodeCount: 10
+  eniPerNode: 10
+  testDuration: "30m"
+  
+  # Monitoring endpoints
+  metricsEndpoint: "http://eni-controller-metrics:8080/metrics"
+  
+  # Expected performance thresholds
+  thresholds:
+    eniCreationTime: "30s"
+    eniAttachmentTime: "15s"
+    reconciliationTime: "5m"
+    successRate: 95.0
+    errorRate: 5.0
+  
+  # Resource monitoring
+  resourceMonitoring:
+    enabled: true
+    interval: "10s"
+    metrics:
+      - cpu
+      - memory
+      - network
+      - disk

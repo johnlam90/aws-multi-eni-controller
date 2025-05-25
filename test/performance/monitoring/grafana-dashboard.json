@@ -1,0 +1,294 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "AWS Multi-ENI Controller Performance Dashboard",
+    "tags": ["aws", "eni", "kubernetes", "performance"],
+    "style": "dark",
+    "timezone": "browser",
+    "refresh": "30s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "ENI Operations Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(eni_operations_total[5m])",
+            "legendFormat": "{{operation}} - {{status}}"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "Operations/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": 2,
+        "title": "ENI Operation Duration",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(eni_operation_duration_seconds_bucket[5m]))",
+            "legendFormat": "95th percentile"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(eni_operation_duration_seconds_bucket[5m]))",
+            "legendFormat": "50th percentile"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "Duration (seconds)"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 0
+        }
+      },
+      {
+        "id": 3,
+        "title": "AWS API Call Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(aws_api_calls_total[5m])",
+            "legendFormat": "{{service}} - {{operation}} - {{status}}"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "API Calls/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 8
+        }
+      },
+      {
+        "id": 4,
+        "title": "AWS API Call Duration",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(aws_api_call_duration_seconds_bucket[5m]))",
+            "legendFormat": "95th percentile"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(aws_api_call_duration_seconds_bucket[5m]))",
+            "legendFormat": "50th percentile"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "Duration (seconds)"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 8
+        }
+      },
+      {
+        "id": 5,
+        "title": "Controller Resource Usage",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(container_cpu_usage_seconds_total{pod=~\"eni-controller.*\"}[5m])",
+            "legendFormat": "CPU Usage"
+          },
+          {
+            "expr": "container_memory_usage_bytes{pod=~\"eni-controller.*\"} / 1024 / 1024",
+            "legendFormat": "Memory Usage (MB)"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "CPU Cores / Memory MB"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 16
+        }
+      },
+      {
+        "id": 6,
+        "title": "Error Rate",
+        "type": "singlestat",
+        "targets": [
+          {
+            "expr": "rate(eni_operation_errors_total[5m]) / rate(eni_operations_total[5m]) * 100",
+            "legendFormat": "Error Rate %"
+          }
+        ],
+        "valueName": "current",
+        "format": "percent",
+        "thresholds": "1,5",
+        "colorBackground": true,
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 12,
+          "y": 16
+        }
+      },
+      {
+        "id": 7,
+        "title": "Circuit Breaker State",
+        "type": "singlestat",
+        "targets": [
+          {
+            "expr": "circuit_breaker_state",
+            "legendFormat": "State"
+          }
+        ],
+        "valueName": "current",
+        "valueMaps": [
+          {
+            "value": "0",
+            "text": "CLOSED"
+          },
+          {
+            "value": "1",
+            "text": "OPEN"
+          },
+          {
+            "value": "2",
+            "text": "HALF_OPEN"
+          }
+        ],
+        "colorBackground": true,
+        "gridPos": {
+          "h": 4,
+          "w": 6,
+          "x": 18,
+          "y": 16
+        }
+      },
+      {
+        "id": 8,
+        "title": "ENI Attachments",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "eni_attachments_total",
+            "legendFormat": "Total Attachments"
+          },
+          {
+            "expr": "eni_detachments_total",
+            "legendFormat": "Total Detachments"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "Count"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 24
+        }
+      },
+      {
+        "id": 9,
+        "title": "Coordination Conflicts",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(coordination_conflicts_total[5m])",
+            "legendFormat": "Conflicts/sec"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "Conflicts/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 24
+        }
+      },
+      {
+        "id": 10,
+        "title": "AWS Throttling Events",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(aws_throttling_events_total[5m])",
+            "legendFormat": "Throttling Events/sec"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "Events/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 24,
+          "x": 0,
+          "y": 32
+        }
+      }
+    ],
+    "templating": {
+      "list": [
+        {
+          "name": "namespace",
+          "type": "query",
+          "query": "label_values(eni_operations_total, namespace)",
+          "current": {
+            "value": "eni-controller-system"
+          }
+        },
+        {
+          "name": "node",
+          "type": "query",
+          "query": "label_values(eni_operations_total{namespace=\"$namespace\"}, node)",
+          "current": {
+            "value": "All"
+          },
+          "includeAll": true
+        }
+      ]
+    },
+    "annotations": {
+      "list": [
+        {
+          "name": "Test Events",
+          "datasource": "prometheus",
+          "expr": "changes(eni_operations_total[1m]) > 0",
+          "titleFormat": "ENI Operation",
+          "textFormat": "{{operation}} on {{node}}"
+        }
+      ]
+    }
+  }
+}
