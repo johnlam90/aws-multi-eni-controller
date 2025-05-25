@@ -5,6 +5,30 @@ All notable changes to the AWS Multi-ENI Controller will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.3.3] - 2025-01-27
+
+### Added
+- **Cloud-Native SR-IOV Device Plugin Restart**: Implemented native Kubernetes API-based restart functionality for SR-IOV device plugins
+- **Enhanced RBAC Permissions**: Added comprehensive pod management permissions for SR-IOV device plugin operations
+- **Multiple SR-IOV Plugin Support**: Support for various SR-IOV device plugin naming conventions and deployment patterns
+- **Performance Testing Framework**: Added comprehensive performance testing suite for enterprise-scale deployments
+- **Timeout Protection**: Enhanced error handling with configurable timeouts for SR-IOV operations
+
+### Changed
+- **Replaced kubectl Dependency**: Eliminated external kubectl binary dependency in favor of native Kubernetes client-go APIs
+- **Improved SR-IOV Integration**: Enhanced reliability and error handling for DPDK binding/unbinding operations
+- **Enhanced Device Detection**: Improved DPDK device detection and status reporting in ENI manager
+- **Optimized Concurrent Operations**: Better handling of concurrent ENI operations and reconciliation
+
+### Fixed
+- **SR-IOV Device Plugin Restart Reliability**: Fixed issues with SR-IOV device plugin restart when DPDK binding changes occur
+- **DPDK Status Reporting**: Improved accuracy of DPDK binding status in NodeENI resources
+- **Race Condition Handling**: Enhanced protection against race conditions in concurrent operations
+
+### Security
+- **Principle of Least Privilege**: Refined RBAC permissions to follow security best practices
+- **Enhanced Pod Security**: Improved security context and capabilities management for privileged operations
+
 ## [v1.3.2] - 2025-05-23
 
 ### Added

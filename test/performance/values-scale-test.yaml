@@ -4,7 +4,7 @@
 # Image configuration
 image:
   repository: ghcr.io/johnlam90/aws-multi-eni-controller
-  tag: v1.3.2
+  tag: v1.3.3
   pullPolicy: IfNotPresent
 
 # Namespace to deploy the controller
@@ -18,13 +18,13 @@ controller:
   # Increased concurrent operations for better throughput
   maxConcurrentENICleanup: 8        # Increased from default 3
   maxConcurrentReconciles: 15       # Increased from default 5
-  
+
   # Enable leader election for HA
   enableLeaderElection: true
-  
+
   # Metrics configuration
   metricsAddr: ":8080"
-  
+
   # Increased grace period for cleanup operations
   terminationGracePeriodSeconds: 30
 
@@ -32,22 +32,22 @@ controller:
 eniManager:
   # Default MTU (0 to use NodeENI resource settings)
   defaultMTU: 0
-  
+
   # Reduced check interval for faster response
   checkInterval: 15s                # Reduced from default 30s
-  
+
   # Enable debug logging for performance analysis
   debug: true
-  
+
   # Pattern to match ENI interfaces
   eniPattern: "^(eth|ens|eni|en)[0-9]+"
-  
+
   # Interfaces to ignore
   ignoreInterfaces: "tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0"
-  
+
   # Use netlink for efficient interface monitoring
   useNetlink: true
-  
+
   # DPDK configuration
   dpdk:
     enabled: true
@@ -146,13 +146,13 @@ env:
     value: "3"
   - name: CIRCUIT_BREAKER_TIMEOUT
     value: "30s"
-  
+
   # AWS API rate limiting
   - name: AWS_API_RATE_LIMIT
     value: "20"
   - name: AWS_API_BURST_LIMIT
     value: "40"
-  
+
   # Performance monitoring
   - name: ENABLE_PERFORMANCE_METRICS
     value: "true"
@@ -163,20 +163,20 @@ env:
 scaleTest:
   # Enable performance optimizations
   enableOptimizations: true
-  
+
   # Batch size for bulk operations
   batchSize: 10
-  
+
   # Retry configuration
   maxRetries: 5
   retryBackoff: "exponential"
-  
+
   # Monitoring configuration
   monitoring:
     enabled: true
     interval: "30s"
     retention: "24h"
-  
+
   # Resource limits for testing
   limits:
     maxENIsPerNode: 15
@@ -224,10 +224,10 @@ performanceTest:
   nodeCount: 10
   eniPerNode: 10
   testDuration: "30m"
-  
+
   # Monitoring endpoints
   metricsEndpoint: "http://eni-controller-metrics:8080/metrics"
-  
+
   # Expected performance thresholds
   thresholds:
     eniCreationTime: "30s"
@@ -235,7 +235,7 @@ performanceTest:
     reconciliationTime: "5m"
     successRate: 95.0
     errorRate: 5.0
-  
+
   # Resource monitoring
   resourceMonitoring:
     enabled: true

@@ -177,11 +177,11 @@
             <h3>Install with Helm (Recommended)</h3>
             <pre>
 # Install the latest version
-helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.2 \
+helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.3 \
   --namespace eni-controller-system --create-namespace
 
 # With custom values
-helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.0 \
+helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.3 \
   --namespace eni-controller-system --create-namespace \
   --set awsRegion=us-east-1 \
   --set nodeSelector.ng=multi-eni</pre>
