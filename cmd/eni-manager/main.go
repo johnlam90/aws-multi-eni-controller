@@ -4337,10 +4337,27 @@ type ModernSRIOVDPConfig struct {
 	ResourceList []ModernSRIOVResource `json:"resourceList"`
 }
 
+// Track processed SR-IOV configurations to avoid unnecessary restarts
+var processedSRIOVConfigs = make(map[string]string)
+var sriovConfigMutex sync.Mutex
+
 // updateModernSRIOVDevicePluginConfig updates the SR-IOV device plugin config using the modern format
 func updateModernSRIOVDevicePluginConfig(pciAddress, driver, resourceName string, cfg *config.ENIManagerConfig) error {
 	if cfg.SRIOVDPConfigPath == "" {
 		return fmt.Errorf("SR-IOV device plugin config path not configured")
+	}
+
+	// Create a unique key for this configuration
+	configKey := fmt.Sprintf("%s:%s:%s", pciAddress, driver, resourceName)
+
+	// Check if we've already processed this exact configuration
+	sriovConfigMutex.Lock()
+	lastProcessed, exists := processedSRIOVConfigs[configKey]
+	sriovConfigMutex.Unlock()
+
+	if exists && lastProcessed == configKey {
+		log.Printf("SR-IOV configuration already processed for PCI %s with resource %s - skipping", pciAddress, resourceName)
+		return nil
 	}
 
 	log.Printf("Updating modern SR-IOV device plugin config for PCI %s with resource %s", pciAddress, resourceName)
@@ -4372,34 +4389,41 @@ func updateModernSRIOVDevicePluginConfig(pciAddress, driver, resourceName string
 	// Check if configuration actually changed
 	configChanged := !sriovConfigsEqual(originalConfig, currentConfig)
 
-	if !configChanged {
-		log.Printf("SR-IOV configuration unchanged for resource %s/%s (PCI: %s) - checking if device plugin restart is needed",
-			resourcePrefix, resourceShortName, pciAddress)
-
-		// For now, be more aggressive and restart even when config appears unchanged
-		// This ensures the device plugin picks up any changes that might not be detected
-		log.Printf("Forcing SR-IOV device plugin restart for resource %s/%s (PCI: %s) to ensure proper resource advertisement",
-			resourcePrefix, resourceShortName, pciAddress)
-	} else {
-		log.Printf("SR-IOV configuration changed for resource %s/%s (PCI: %s) - restarting device plugin",
-			resourcePrefix, resourceShortName, pciAddress)
-	}
-
-	// Save the updated configuration
+	// Save the updated configuration first
 	if err := saveSRIOVConfig(cfg.SRIOVDPConfigPath, currentConfig); err != nil {
 		return err
 	}
 
+	if !configChanged {
+		log.Printf("SR-IOV configuration unchanged for resource %s/%s (PCI: %s) - skipping device plugin restart",
+			resourcePrefix, resourceShortName, pciAddress)
+
+		// Still update the tracking to avoid repeated processing
+		sriovConfigMutex.Lock()
+		processedSRIOVConfigs[configKey] = configKey
+		sriovConfigMutex.Unlock()
+
+		return nil
+	}
+
+	log.Printf("SR-IOV configuration changed for resource %s/%s (PCI: %s) - restarting device plugin",
+		resourcePrefix, resourceShortName, pciAddress)
+
 	log.Printf("Successfully updated modern SR-IOV config for resource %s/%s (PCI: %s) - configuration changed",
 		resourcePrefix, resourceShortName, pciAddress)
 
-	// Restart the SR-IOV device plugin only when configuration changed
+	// Restart the SR-IOV device plugin only when configuration actually changed
 	if err := manager.restartDevicePlugin(); err != nil {
 		log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
 		// Don't fail the operation for restart failures
 	} else {
 		log.Printf("Successfully restarted SR-IOV device plugin due to configuration change")
 	}
+
+	// Update the tracking after successful processing
+	sriovConfigMutex.Lock()
+	processedSRIOVConfigs[configKey] = configKey
+	sriovConfigMutex.Unlock()
 
 	return nil
 }
