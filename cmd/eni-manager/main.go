@@ -34,6 +34,7 @@ import (
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/mapping"
 	vnetlink "github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -159,6 +160,11 @@ func performInitialNodeENIUpdate(ctx context.Context, clientset *kubernetes.Clie
 
 	// Do an initial update for MTU
 	updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
+
+	// Add a startup delay to allow system to stabilize
+	startupDelay := 15 * time.Second
+	log.Printf("Waiting %v for system to stabilize before DPDK/SR-IOV operations", startupDelay)
+	time.Sleep(startupDelay)
 
 	// Do an initial update for DPDK binding with startup-specific logic
 	if cfg.EnableDPDK {
@@ -642,7 +648,7 @@ func hasExistingDPDKBinding(nodeENI networkingv1alpha1.NodeENI, nodeName string,
 	return false
 }
 
-// forceRestartSRIOVDevicePlugin forces a restart of the SR-IOV device plugin during startup
+// forceRestartSRIOVDevicePlugin forces a restart of the SR-IOV device plugin during startup with verification
 func forceRestartSRIOVDevicePlugin(cfg *config.ENIManagerConfig) {
 	if cfg.SRIOVDPConfigPath == "" {
 		log.Printf("STARTUP: SR-IOV device plugin config path not configured, skipping forced restart")
@@ -651,11 +657,19 @@ func forceRestartSRIOVDevicePlugin(cfg *config.ENIManagerConfig) {
 
 	manager := NewSRIOVConfigManager(cfg.SRIOVDPConfigPath)
 
-	log.Printf("STARTUP: Forcing SR-IOV device plugin restart to refresh device inventory after pod restart")
-	if err := manager.restartDevicePlugin(); err != nil {
-		log.Printf("STARTUP: Warning - Failed to force restart SR-IOV device plugin: %v", err)
+	log.Printf("STARTUP: Forcing SR-IOV device plugin restart with verification to refresh device inventory after pod restart")
+
+	// Use enhanced restart with verification and retry logic
+	if err := manager.restartDevicePluginWithVerification(); err != nil {
+		log.Printf("STARTUP: Warning - Failed to force restart SR-IOV device plugin with verification: %v", err)
+		// Fall back to basic restart as last resort
+		if basicErr := manager.restartDevicePlugin(); basicErr != nil {
+			log.Printf("STARTUP: Warning - Basic restart also failed: %v", basicErr)
+		} else {
+			log.Printf("STARTUP: Basic restart succeeded as fallback")
+		}
 	} else {
-		log.Printf("STARTUP: Successfully forced restart of SR-IOV device plugin")
+		log.Printf("STARTUP: Successfully forced restart of SR-IOV device plugin with verification")
 	}
 }
 
@@ -2989,6 +3003,231 @@ func (m *SRIOVConfigManager) restartDevicePlugin() error {
 	return nil
 }
 
+// restartDevicePluginWithVerification restarts the SR-IOV device plugin with verification and retry logic
+func (m *SRIOVConfigManager) restartDevicePluginWithVerification() error {
+	log.Printf("Starting enhanced SR-IOV device plugin restart with verification")
+
+	if m.k8sClient == nil {
+		return fmt.Errorf("Kubernetes client not available for device plugin restart with verification")
+	}
+
+	// Get expected DPDK resources before restart
+	expectedResources, err := m.getExpectedDPDKResources()
+	if err != nil {
+		log.Printf("Warning: Failed to get expected DPDK resources: %v", err)
+		// Continue with restart anyway
+	}
+
+	maxRetries := 3
+	baseDelay := 10 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		log.Printf("SR-IOV device plugin restart attempt %d/%d", attempt, maxRetries)
+
+		// Perform the restart
+		if err := m.restartDevicePlugin(); err != nil {
+			log.Printf("Restart attempt %d failed: %v", attempt, err)
+			if attempt == maxRetries {
+				return fmt.Errorf("all restart attempts failed, last error: %v", err)
+			}
+			continue
+		}
+
+		// Wait for device plugin to initialize
+		initDelay := time.Duration(attempt) * baseDelay
+		log.Printf("Waiting %v for SR-IOV device plugin to initialize (attempt %d)", initDelay, attempt)
+		time.Sleep(initDelay)
+
+		// Verify resources are properly advertised
+		if len(expectedResources) > 0 {
+			if m.verifyDPDKResourcesAdvertised(expectedResources) {
+				log.Printf("SR-IOV device plugin restart successful - all expected resources are advertised")
+				return nil
+			}
+			log.Printf("Resources not yet advertised after attempt %d, will retry", attempt)
+		} else {
+			// If we don't have expected resources, just verify the plugin is running
+			if m.verifyDevicePluginRunning() {
+				log.Printf("SR-IOV device plugin restart successful - plugin is running")
+				return nil
+			}
+			log.Printf("Device plugin not running properly after attempt %d, will retry", attempt)
+		}
+
+		// If not the last attempt, wait before retrying
+		if attempt < maxRetries {
+			retryDelay := time.Duration(attempt) * 5 * time.Second
+			log.Printf("Waiting %v before retry attempt %d", retryDelay, attempt+1)
+			time.Sleep(retryDelay)
+		}
+	}
+
+	return fmt.Errorf("failed to verify SR-IOV device plugin restart after %d attempts", maxRetries)
+}
+
+// getExpectedDPDKResources gets the list of DPDK resources that should be advertised
+func (m *SRIOVConfigManager) getExpectedDPDKResources() ([]string, error) {
+	// Load the SR-IOV configuration to see what resources should be advertised
+	config, err := loadOrCreateSRIOVConfig(m.configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load SR-IOV config: %v", err)
+	}
+
+	var expectedResources []string
+	for _, resource := range config.ResourceList {
+		// Check if resource has any selectors with PCI addresses
+		hasDevices := false
+		for _, selector := range resource.Selectors {
+			if len(selector.PCIAddresses) > 0 {
+				hasDevices = true
+				break
+			}
+		}
+		if hasDevices {
+			// Construct full resource name with prefix
+			fullResourceName := resource.ResourceName
+			if resource.ResourcePrefix != "" {
+				fullResourceName = resource.ResourcePrefix + "/" + resource.ResourceName
+			}
+			expectedResources = append(expectedResources, fullResourceName)
+		}
+	}
+
+	log.Printf("Expected DPDK resources from config: %v", expectedResources)
+	return expectedResources, nil
+}
+
+// verifyDPDKResourcesAdvertised verifies that the expected DPDK resources are advertised by the node
+func (m *SRIOVConfigManager) verifyDPDKResourcesAdvertised(expectedResources []string) bool {
+	if len(expectedResources) == 0 {
+		log.Printf("No expected resources to verify")
+		return true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get the current node name
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		log.Printf("Warning: NODE_NAME not set, cannot verify node resources")
+		return false
+	}
+
+	// Get the node object
+	node, err := m.k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		log.Printf("Warning: Failed to get node %s: %v", nodeName, err)
+		return false
+	}
+
+	log.Printf("Verifying DPDK resources on node %s", nodeName)
+	log.Printf("Node capacity: %v", node.Status.Capacity)
+	log.Printf("Node allocatable: %v", node.Status.Allocatable)
+
+	// Check each expected resource
+	allResourcesFound := true
+	for _, resourceName := range expectedResources {
+		// Check if resource exists in capacity
+		capacityQuantity, hasCapacity := node.Status.Capacity[corev1.ResourceName(resourceName)]
+		allocatableQuantity, hasAllocatable := node.Status.Allocatable[corev1.ResourceName(resourceName)]
+
+		if !hasCapacity {
+			log.Printf("Resource %s not found in node capacity", resourceName)
+			allResourcesFound = false
+			continue
+		}
+
+		if !hasAllocatable {
+			log.Printf("Resource %s not found in node allocatable", resourceName)
+			allResourcesFound = false
+			continue
+		}
+
+		capacityValue := capacityQuantity.Value()
+		allocatableValue := allocatableQuantity.Value()
+
+		log.Printf("Resource %s - Capacity: %d, Allocatable: %d", resourceName, capacityValue, allocatableValue)
+
+		// Check if allocatable matches capacity (indicating proper resource discovery)
+		if capacityValue > 0 && allocatableValue != capacityValue {
+			log.Printf("Resource %s has mismatched capacity (%d) and allocatable (%d)",
+				resourceName, capacityValue, allocatableValue)
+			allResourcesFound = false
+		} else if capacityValue == 0 {
+			log.Printf("Resource %s has zero capacity", resourceName)
+			allResourcesFound = false
+		}
+	}
+
+	if allResourcesFound {
+		log.Printf("All expected DPDK resources are properly advertised")
+	} else {
+		log.Printf("Some expected DPDK resources are not properly advertised")
+	}
+
+	return allResourcesFound
+}
+
+// verifyDevicePluginRunning verifies that the SR-IOV device plugin is running
+func (m *SRIOVConfigManager) verifyDevicePluginRunning() bool {
+	if m.k8sClient == nil {
+		log.Printf("Warning: Kubernetes client not available for device plugin verification")
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Try multiple common SR-IOV device plugin label selectors
+	labelSelectors := []string{
+		"app=sriov-device-plugin",  // Most common
+		"app=sriovdp",              // Alternative naming
+		"name=sriov-device-plugin", // Another common pattern
+	}
+
+	for _, labelSelector := range labelSelectors {
+		// List pods in kube-system namespace with the label selector
+		pods, err := m.k8sClient.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
+			LabelSelector: labelSelector,
+		})
+		if err != nil {
+			log.Printf("Warning: Failed to list pods with selector %s: %v", labelSelector, err)
+			continue
+		}
+
+		if len(pods.Items) == 0 {
+			continue
+		}
+
+		// Check if any pods are running
+		runningPods := 0
+		for _, pod := range pods.Items {
+			if pod.Status.Phase == corev1.PodRunning {
+				// Check if all containers are ready
+				allReady := true
+				for _, condition := range pod.Status.Conditions {
+					if condition.Type == corev1.PodReady && condition.Status != corev1.ConditionTrue {
+						allReady = false
+						break
+					}
+				}
+				if allReady {
+					runningPods++
+				}
+			}
+		}
+
+		log.Printf("Found %d running SR-IOV device plugin pods with selector %s", runningPods, labelSelector)
+		if runningPods > 0 {
+			return true
+		}
+	}
+
+	log.Printf("No running SR-IOV device plugin pods found")
+	return false
+}
+
 // cleanupSRIOVConfigForNodeENI removes SR-IOV configuration for a deleted NodeENI
 func cleanupSRIOVConfigForNodeENI(nodeENIName string, cfg *config.ENIManagerConfig) error {
 	log.Printf("Cleaning up SR-IOV configuration for deleted NodeENI: %s", nodeENIName)
@@ -3479,7 +3718,7 @@ func createInterfaceMapping(eniID, ifaceName string) mapping.InterfaceMapping {
 
 // saveInterfaceMapping saves an interface mapping to the persistent store
 func saveInterfaceMapping(mapping mapping.InterfaceMapping) {
-	if globalConfig.InterfaceMappingStore == nil {
+	if globalConfig == nil || globalConfig.InterfaceMappingStore == nil {
 		return
 	}
 
@@ -3493,7 +3732,7 @@ func saveInterfaceMapping(mapping mapping.InterfaceMapping) {
 
 // checkPersistentStore checks if an ENI ID is mapped in the persistent store
 func checkPersistentStore(eniID string) (string, bool) {
-	if globalConfig.InterfaceMappingStore == nil {
+	if globalConfig == nil || globalConfig.InterfaceMappingStore == nil {
 		return "", false
 	}
 
