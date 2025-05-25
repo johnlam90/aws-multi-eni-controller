@@ -1379,14 +1379,43 @@ func isPCIDeviceBoundToDPDK(pciAddress string, driver string, cfg *config.ENIMan
 	// ===================================
 	// 0000:00:05.0 'Elastic Network Adapter (ENA) ec20' if=eth0 drv=ena unused=vfio-pci *Active*
 
-	// Check if the PCI address is listed under the DPDK-compatible driver section
-	dpdkSectionRegex := regexp.MustCompile(`(?s)Network devices using DPDK-compatible driver.*?===`)
-	dpdkSection := dpdkSectionRegex.FindString(outputStr)
+	// Extract the DPDK-compatible driver section
+	// Look for the section header first
+	dpdkHeaderRegex := regexp.MustCompile(`Network devices using DPDK-compatible driver\s*\n=+`)
+	headerMatch := dpdkHeaderRegex.FindStringIndex(outputStr)
+
+	if headerMatch == nil {
+		log.Printf("No DPDK section header found in output, device %s is not bound to DPDK", pciAddress)
+		return false, nil
+	}
+
+	// Find the start of the content after the header
+	contentStart := headerMatch[1]
+
+	// Find the end of the DPDK section (next section header or end of string)
+	nextSectionRegex := regexp.MustCompile(`\n\n[A-Z][^=]*\n=+`)
+	nextSectionMatch := nextSectionRegex.FindStringIndex(outputStr[contentStart:])
+
+	var dpdkSection string
+	if nextSectionMatch != nil {
+		// Extract content up to the next section
+		dpdkSection = outputStr[contentStart : contentStart+nextSectionMatch[0]]
+	} else {
+		// Extract content to the end of the string
+		dpdkSection = outputStr[contentStart:]
+	}
+
+	// Clean up the section (remove leading/trailing whitespace and empty lines)
+	dpdkSection = strings.TrimSpace(dpdkSection)
+	log.Printf("DPDK section content: %q", dpdkSection)
 
 	// Check if the PCI address is in the DPDK section and using the specified driver
 	pciRegex := regexp.MustCompile(fmt.Sprintf(`%s.*?drv=%s`, regexp.QuoteMeta(pciAddress), regexp.QuoteMeta(driver)))
 
-	return pciRegex.MatchString(dpdkSection), nil
+	isMatched := pciRegex.MatchString(dpdkSection)
+	log.Printf("PCI device %s bound to driver %s: %v", pciAddress, driver, isMatched)
+
+	return isMatched, nil
 }
 
 // bindPCIDeviceToDPDK binds a PCI device directly to a DPDK driver
