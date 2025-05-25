@@ -192,6 +192,9 @@ func startNodeENIUpdaterLoop(ctx context.Context, clientset *kubernetes.Clientse
 	// Flag to track if we've done the initial update
 	initialUpdateDone := performInitialNodeENIUpdate(ctx, clientset, nodeName, cfg)
 
+	// Track previously seen NodeENI resources to detect deletions
+	var previousNodeENIs map[string]bool
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -213,6 +216,27 @@ func startNodeENIUpdaterLoop(ctx context.Context, clientset *kubernetes.Clientse
 				log.Printf("Error getting NodeENI resources: %v", err)
 				continue
 			}
+
+			// Detect deleted NodeENI resources and clean up SR-IOV configuration
+			currentNodeENIs := make(map[string]bool)
+			for _, nodeENI := range nodeENIs {
+				currentNodeENIs[nodeENI.Name] = true
+			}
+
+			// Check for deleted NodeENI resources
+			if previousNodeENIs != nil {
+				for nodeENIName := range previousNodeENIs {
+					if !currentNodeENIs[nodeENIName] {
+						log.Printf("Detected deleted NodeENI: %s, cleaning up SR-IOV configuration", nodeENIName)
+						if err := cleanupSRIOVConfigForNodeENI(nodeENIName, cfg); err != nil {
+							log.Printf("Warning: Failed to cleanup SR-IOV config for deleted NodeENI %s: %v", nodeENIName, err)
+						}
+					}
+				}
+			}
+
+			// Update the tracking map
+			previousNodeENIs = currentNodeENIs
 
 			// Update MTU values from NodeENI resources
 			updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
@@ -3281,6 +3305,9 @@ func cleanupSRIOVConfigForNodeENI(nodeENIName string, cfg *config.ENIManagerConf
 		log.Printf("Warning: Failed to create backup before cleanup: %v", err)
 	}
 
+	// Track if any configuration was actually modified
+	configModified := false
+
 	// Remove each interface from SR-IOV config
 	for _, pciAddr := range interfacesToCleanup {
 		boundInterface := cfg.DPDKBoundInterfaces[pciAddr]
@@ -3288,12 +3315,42 @@ func cleanupSRIOVConfigForNodeENI(nodeENIName string, cfg *config.ENIManagerConf
 			log.Printf("Warning: Failed to remove SR-IOV config for PCI %s: %v", pciAddr, err)
 		} else {
 			log.Printf("Removed SR-IOV config for PCI %s (NodeENI: %s)", pciAddr, nodeENIName)
+			configModified = true
 		}
+
+		// Remove from our tracking map
+		delete(cfg.DPDKBoundInterfaces, pciAddr)
 	}
 
-	// Restart device plugin to pick up changes
-	if err := manager.restartDevicePlugin(); err != nil {
-		log.Printf("Warning: Failed to restart SR-IOV device plugin after cleanup: %v", err)
+	// If we modified the configuration, restart the SR-IOV device plugin
+	if configModified {
+		log.Printf("SR-IOV configuration was modified for NodeENI %s, restarting device plugin", nodeENIName)
+
+		// Set up Kubernetes client for the manager if not already set
+		if manager.k8sClient == nil {
+			k8sClient, err := createK8sClientset()
+			if err != nil {
+				log.Printf("Warning: Failed to setup Kubernetes client for device plugin restart: %v", err)
+				// Try basic restart without verification
+				if basicErr := manager.restartDevicePlugin(); basicErr != nil {
+					log.Printf("Warning: Basic device plugin restart also failed: %v", basicErr)
+				}
+				return err
+			}
+			manager.k8sClient = k8sClient
+		}
+
+		// Use enhanced restart with verification
+		if err := manager.restartDevicePluginWithVerification(); err != nil {
+			log.Printf("Warning: Failed to restart SR-IOV device plugin with verification: %v", err)
+			// Fall back to basic restart
+			if basicErr := manager.restartDevicePlugin(); basicErr != nil {
+				log.Printf("Warning: Basic device plugin restart also failed: %v", basicErr)
+				return basicErr
+			}
+		} else {
+			log.Printf("Successfully restarted SR-IOV device plugin after NodeENI %s cleanup", nodeENIName)
+		}
 	}
 
 	return nil
