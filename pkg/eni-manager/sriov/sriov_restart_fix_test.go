@@ -1,4 +1,4 @@
-package main
+package sriov
 
 import (
 	"encoding/json"
