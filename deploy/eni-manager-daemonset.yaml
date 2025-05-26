@@ -160,7 +160,7 @@ spec:
           readOnly: true
       containers:
       - name: eni-manager
-        image: ghcr.io/johnlam90/aws-multi-eni-controller:v1.3.3
+        image: johnlam90/aws-multi-eni-controller:v1.3.3-fix-sriov-empty-config
         env:
         - name: COMPONENT
           value: "eni-manager"

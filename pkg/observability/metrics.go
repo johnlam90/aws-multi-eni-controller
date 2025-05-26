@@ -1,11 +1,11 @@
 package observability
 
 import (
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // Metrics holds all the Prometheus metrics for the controller
@@ -44,8 +44,21 @@ type Metrics struct {
 	AWSThrottlingEvents prometheus.Counter
 }
 
-// NewMetrics creates and registers all metrics
+var (
+	metricsInstance *Metrics
+	metricsOnce     sync.Once
+)
+
+// NewMetrics creates and registers all metrics (singleton pattern)
 func NewMetrics() *Metrics {
+	metricsOnce.Do(func() {
+		metricsInstance = createMetrics()
+	})
+	return metricsInstance
+}
+
+// createMetrics creates and registers all metrics
+func createMetrics() *Metrics {
 	m := &Metrics{
 		// ENI operation metrics
 		ENIOperationsTotal: promauto.NewCounterVec(
@@ -217,31 +230,6 @@ func NewMetrics() *Metrics {
 			},
 		),
 	}
-
-	// Register all metrics with controller-runtime metrics registry
-	metrics.Registry.MustRegister(
-		m.ENIOperationsTotal,
-		m.ENIOperationDuration,
-		m.ENIOperationErrors,
-		m.ENIAttachmentsTotal,
-		m.ENIDetachmentsTotal,
-		m.CleanupOperationsTotal,
-		m.CleanupDuration,
-		m.CleanupErrors,
-		m.StaleCleanupsTotal,
-		m.CircuitBreakerState,
-		m.CircuitBreakerOperations,
-		m.ResourceLocks,
-		m.CoordinationConflicts,
-		m.CoordinationWaitTime,
-		m.DPDKOperationsTotal,
-		m.DPDKRollbacksTotal,
-		m.DPDKBindingErrors,
-		m.AWSAPICallsTotal,
-		m.AWSAPICallDuration,
-		m.AWSAPIErrors,
-		m.AWSThrottlingEvents,
-	)
 
 	return m
 }

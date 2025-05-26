@@ -36,8 +36,11 @@ import (
 	"golang.org/x/sys/unix"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -183,113 +186,166 @@ func performInitialNodeENIUpdate(ctx context.Context, clientset *kubernetes.Clie
 
 // startNodeENIUpdaterLoop starts the main loop for updating NodeENI resources
 func startNodeENIUpdaterLoop(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, cfg *config.ENIManagerConfig) {
-	// Initial ticker with a short interval for faster startup
+	// Initialize updater state
+	updaterState := initializeUpdaterState(ctx, clientset, nodeName, cfg)
+
+	// Create tickers
 	initialTicker := time.NewTicker(5 * time.Second)
 	defer initialTicker.Stop()
 
-	// Regular ticker for ongoing updates
 	regularTicker := time.NewTicker(1 * time.Minute)
 	defer regularTicker.Stop()
 
-	// Flag to track if we've done the initial update
-	initialUpdateDone := performInitialNodeENIUpdate(ctx, clientset, nodeName, cfg)
+	// Main update loop
+	runUpdaterLoop(ctx, clientset, nodeName, cfg, updaterState, initialTicker, regularTicker)
+}
 
-	// Track previously seen NodeENI resources to detect deletions
-	// Initialize with current NodeENI resources to avoid missing deletions during startup
-	var previousNodeENIs map[string]bool
-	if initialUpdateDone {
-		// Get initial NodeENI resources for deletion tracking
-		if nodeENIs, err := getNodeENIResources(ctx, clientset); err == nil {
-			previousNodeENIs = make(map[string]bool)
-			for _, nodeENI := range nodeENIs {
-				previousNodeENIs[nodeENI.Name] = true
-			}
-			log.Printf("Initialized deletion tracking with %d NodeENI resources", len(previousNodeENIs))
-		}
+// UpdaterState holds the state for the NodeENI updater
+type UpdaterState struct {
+	InitialUpdateDone bool
+	PreviousNodeENIs  map[string]bool
+}
+
+// initializeUpdaterState initializes the state for the NodeENI updater
+func initializeUpdaterState(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, cfg *config.ENIManagerConfig) *UpdaterState {
+	state := &UpdaterState{
+		InitialUpdateDone: performInitialNodeENIUpdate(ctx, clientset, nodeName, cfg),
 	}
 
+	// Initialize deletion tracking if initial update was successful
+	if state.InitialUpdateDone {
+		state.PreviousNodeENIs = initializeDeletionTracking(ctx, clientset)
+	}
+
+	return state
+}
+
+// initializeDeletionTracking initializes the deletion tracking map
+func initializeDeletionTracking(ctx context.Context, clientset *kubernetes.Clientset) map[string]bool {
+	if nodeENIs, err := getNodeENIResources(ctx, clientset); err == nil {
+		previousNodeENIs := make(map[string]bool)
+		for _, nodeENI := range nodeENIs {
+			previousNodeENIs[nodeENI.Name] = true
+		}
+		log.Printf("Initialized deletion tracking with %d NodeENI resources", len(previousNodeENIs))
+		return previousNodeENIs
+	}
+	return nil
+}
+
+// runUpdaterLoop runs the main updater loop
+func runUpdaterLoop(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, cfg *config.ENIManagerConfig, state *UpdaterState, initialTicker, regularTicker *time.Ticker) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-initialTicker.C:
-			// Only process this if we haven't done the initial update yet
-			if !initialUpdateDone {
-				initialUpdateDone = performInitialNodeENIUpdate(ctx, clientset, nodeName, cfg)
-
-				// Stop the initial ticker once we've done the initial update
-				if initialUpdateDone {
-					initialTicker.Stop()
-
-					// Initialize deletion tracking after successful initial update
-					if nodeENIs, err := getNodeENIResources(ctx, clientset); err == nil {
-						previousNodeENIs = make(map[string]bool)
-						for _, nodeENI := range nodeENIs {
-							previousNodeENIs[nodeENI.Name] = true
-						}
-						log.Printf("Initialized deletion tracking with %d NodeENI resources", len(previousNodeENIs))
-					}
-				}
-			}
+			handleInitialUpdate(ctx, clientset, nodeName, cfg, state, initialTicker)
 		case <-regularTicker.C:
-			// Get all NodeENI resources
-			nodeENIs, err := getNodeENIResources(ctx, clientset)
-			if err != nil {
-				log.Printf("Error getting NodeENI resources: %v", err)
-				continue
-			}
-
-			// Detect deleted NodeENI resources and clean up SR-IOV configuration
-			currentNodeENIs := make(map[string]bool)
-			for _, nodeENI := range nodeENIs {
-				currentNodeENIs[nodeENI.Name] = true
-			}
-
-			log.Printf("NodeENI deletion check: found %d current NodeENIs, tracking %d previous NodeENIs",
-				len(currentNodeENIs), len(previousNodeENIs))
-
-			// Check for deleted NodeENI resources
-			if previousNodeENIs != nil {
-				deletedCount := 0
-				for nodeENIName := range previousNodeENIs {
-					if !currentNodeENIs[nodeENIName] {
-						deletedCount++
-						log.Printf("Detected deleted NodeENI: %s, cleaning up SR-IOV configuration", nodeENIName)
-						if err := cleanupSRIOVConfigForNodeENI(nodeENIName, cfg); err != nil {
-							log.Printf("Warning: Failed to cleanup SR-IOV config for deleted NodeENI %s: %v", nodeENIName, err)
-						} else {
-							log.Printf("Successfully cleaned up SR-IOV config for deleted NodeENI: %s", nodeENIName)
-						}
-					}
-				}
-				if deletedCount == 0 {
-					log.Printf("No deleted NodeENI resources detected")
-				} else {
-					// Reset SR-IOV configuration tracking when NodeENI resources are deleted
-					// This ensures that when new NodeENI resources are created with the same configuration,
-					// the SR-IOV device plugin will be restarted properly
-					log.Printf("Resetting SR-IOV configuration tracking due to %d deleted NodeENI resources", deletedCount)
-					resetSRIOVConfigTracking()
-				}
-			} else {
-				log.Printf("Previous NodeENI tracking not initialized yet, skipping deletion check")
-			}
-
-			// Update the tracking map
-			previousNodeENIs = currentNodeENIs
-
-			// Update MTU values from NodeENI resources
-			updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
-
-			// Update DPDK binding from NodeENI resources
-			if cfg.EnableDPDK {
-				updateDPDKBindingFromNodeENI(nodeName, cfg, nodeENIs)
-			}
-
-			// Update SR-IOV configuration for all interfaces
-			updateSRIOVConfigForAllInterfaces(nodeName, cfg, nodeENIs)
+			handleRegularUpdate(ctx, clientset, nodeName, cfg, state)
 		}
 	}
+}
+
+// handleInitialUpdate handles the initial update phase
+func handleInitialUpdate(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, cfg *config.ENIManagerConfig, state *UpdaterState, initialTicker *time.Ticker) {
+	// Only process this if we haven't done the initial update yet
+	if !state.InitialUpdateDone {
+		state.InitialUpdateDone = performInitialNodeENIUpdate(ctx, clientset, nodeName, cfg)
+
+		// Stop the initial ticker once we've done the initial update
+		if state.InitialUpdateDone {
+			initialTicker.Stop()
+			// Initialize deletion tracking after successful initial update
+			state.PreviousNodeENIs = initializeDeletionTracking(ctx, clientset)
+		}
+	}
+}
+
+// handleRegularUpdate handles regular update cycles
+func handleRegularUpdate(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, cfg *config.ENIManagerConfig, state *UpdaterState) {
+	// Get all NodeENI resources
+	nodeENIs, err := getNodeENIResources(ctx, clientset)
+	if err != nil {
+		log.Printf("Error getting NodeENI resources: %v", err)
+		return
+	}
+
+	// Handle deletion detection and cleanup
+	currentNodeENIs := buildCurrentNodeENIMap(nodeENIs)
+	deletedCount := handleNodeENIDeletions(state.PreviousNodeENIs, currentNodeENIs, cfg)
+
+	// Update tracking and perform regular updates
+	state.PreviousNodeENIs = currentNodeENIs
+	performRegularUpdates(ctx, clientset, nodeName, cfg, nodeENIs, deletedCount)
+}
+
+// buildCurrentNodeENIMap builds a map of current NodeENI resources
+func buildCurrentNodeENIMap(nodeENIs []networkingv1alpha1.NodeENI) map[string]bool {
+	currentNodeENIs := make(map[string]bool)
+	for _, nodeENI := range nodeENIs {
+		currentNodeENIs[nodeENI.Name] = true
+	}
+	return currentNodeENIs
+}
+
+// handleNodeENIDeletions detects and handles deleted NodeENI resources
+func handleNodeENIDeletions(previousNodeENIs, currentNodeENIs map[string]bool, cfg *config.ENIManagerConfig) int {
+	log.Printf("NodeENI deletion check: found %d current NodeENIs, tracking %d previous NodeENIs",
+		len(currentNodeENIs), len(previousNodeENIs))
+
+	if previousNodeENIs == nil {
+		log.Printf("Previous NodeENI tracking not initialized yet, skipping deletion check")
+		return 0
+	}
+
+	deletedCount := 0
+	for nodeENIName := range previousNodeENIs {
+		if !currentNodeENIs[nodeENIName] {
+			deletedCount++
+			handleSingleNodeENIDeletion(nodeENIName, cfg)
+		}
+	}
+
+	logDeletionResults(deletedCount)
+	return deletedCount
+}
+
+// handleSingleNodeENIDeletion handles the deletion of a single NodeENI resource
+func handleSingleNodeENIDeletion(nodeENIName string, cfg *config.ENIManagerConfig) {
+	log.Printf("Detected deleted NodeENI: %s, cleaning up SR-IOV configuration", nodeENIName)
+	if err := cleanupSRIOVConfigForNodeENI(nodeENIName, cfg); err != nil {
+		log.Printf("Warning: Failed to cleanup SR-IOV config for deleted NodeENI %s: %v", nodeENIName, err)
+	} else {
+		log.Printf("Successfully cleaned up SR-IOV config for deleted NodeENI: %s", nodeENIName)
+	}
+}
+
+// logDeletionResults logs the results of deletion detection
+func logDeletionResults(deletedCount int) {
+	if deletedCount == 0 {
+		log.Printf("No deleted NodeENI resources detected")
+	} else {
+		// Reset SR-IOV configuration tracking when NodeENI resources are deleted
+		// This ensures that when new NodeENI resources are created with the same configuration,
+		// the SR-IOV device plugin will be restarted properly
+		log.Printf("Resetting SR-IOV configuration tracking due to %d deleted NodeENI resources", deletedCount)
+		resetSRIOVConfigTracking()
+	}
+}
+
+// performRegularUpdates performs the regular update operations
+func performRegularUpdates(ctx context.Context, clientset *kubernetes.Clientset, nodeName string, cfg *config.ENIManagerConfig, nodeENIs []networkingv1alpha1.NodeENI, deletedCount int) {
+	// Update MTU values from NodeENI resources
+	updateMTUFromNodeENI(ctx, clientset, nodeName, cfg)
+
+	// Update DPDK binding from NodeENI resources
+	if cfg.EnableDPDK {
+		updateDPDKBindingFromNodeENI(nodeName, cfg, nodeENIs)
+	}
+
+	// Update SR-IOV configuration for all interfaces
+	updateSRIOVConfigForAllInterfaces(nodeName, cfg, nodeENIs)
 }
 
 // startMTUUpdaterLoop starts a loop to periodically check and update MTU values
@@ -3243,6 +3299,26 @@ func (m *SRIOVConfigManager) restartDevicePluginWithConfig(config SRIOVRestartCo
 		return fmt.Errorf("Kubernetes client not available for device plugin restart with verification")
 	}
 
+	// Prepare restart context
+	restartContext, err := m.prepareRestartContext()
+	if err != nil {
+		log.Printf("Warning: Failed to prepare restart context: %v", err)
+		// Continue with restart anyway
+	}
+
+	// Perform restart attempts
+	return m.performRestartAttempts(config, restartContext)
+}
+
+// RestartContext holds information needed for restart verification
+type RestartContext struct {
+	PreRestartResources map[string]string
+	ExpectedResources   []string
+	StaleResources      []string
+}
+
+// prepareRestartContext prepares the context for device plugin restart
+func (m *SRIOVConfigManager) prepareRestartContext() (*RestartContext, error) {
 	// Get current node resources before restart for comparison
 	preRestartResources, err := m.getCurrentNodeResources()
 	if err != nil {
@@ -3266,76 +3342,25 @@ func (m *SRIOVConfigManager) restartDevicePluginWithConfig(config SRIOVRestartCo
 		log.Printf("Stale resources that should be removed: %v", staleResources)
 	}
 
+	return &RestartContext{
+		PreRestartResources: preRestartResources,
+		ExpectedResources:   expectedResources,
+		StaleResources:      staleResources,
+	}, nil
+}
+
+// performRestartAttempts performs the restart attempts with verification
+func (m *SRIOVConfigManager) performRestartAttempts(config SRIOVRestartConfig, context *RestartContext) error {
 	for attempt := 1; attempt <= config.MaxRetries; attempt++ {
 		log.Printf("SR-IOV device plugin restart attempt %d/%d", attempt, config.MaxRetries)
 
-		// Perform the restart
-		if err := m.restartDevicePlugin(); err != nil {
-			log.Printf("Restart attempt %d failed: %v", attempt, err)
+		// Perform single restart attempt
+		if err := m.performSingleRestartAttempt(config, context, attempt); err != nil {
 			if attempt == config.MaxRetries {
-				return fmt.Errorf("all restart attempts failed, last error: %v", err)
+				return err
 			}
-
-			// Exponential backoff before retry
-			backoffDelay := time.Duration(float64(config.BaseWaitTime) *
-				(config.RetryBackoffMultiplier * float64(attempt-1)))
-			if backoffDelay > config.MaxWaitTime {
-				backoffDelay = config.MaxWaitTime
-			}
-			log.Printf("Waiting %v before retry attempt %d (exponential backoff)", backoffDelay, attempt+1)
-			time.Sleep(backoffDelay)
+			m.handleRestartFailure(config, attempt)
 			continue
-		}
-
-		// Wait for device plugin pods to be ready
-		log.Printf("Waiting for SR-IOV device plugin pods to be ready (timeout: %v)", config.PodReadinessTimeout)
-		if !m.waitForDevicePluginPodsReady(config.PodReadinessTimeout) {
-			log.Printf("Device plugin pods not ready after attempt %d, will retry", attempt)
-			if attempt < config.MaxRetries {
-				continue
-			}
-			return fmt.Errorf("device plugin pods not ready after %d attempts", config.MaxRetries)
-		}
-
-		// Wait for the base time to allow plugin to scan and update resources
-		log.Printf("Waiting %v for SR-IOV device plugin to scan devices and update node resources", config.BaseWaitTime)
-		time.Sleep(config.BaseWaitTime)
-
-		// Verify expected resources are properly advertised
-		if len(expectedResources) > 0 {
-			log.Printf("Verifying expected resources are advertised (timeout: %v)", config.ResourceVerifyTimeout)
-			if !m.verifyResourcesWithTimeout(expectedResources, config.ResourceVerifyTimeout) {
-				log.Printf("Expected resources not properly advertised after attempt %d", attempt)
-				if attempt < config.MaxRetries {
-					continue
-				}
-				return fmt.Errorf("expected resources not advertised after %d attempts", config.MaxRetries)
-			}
-			log.Printf("✓ All expected resources are properly advertised")
-		}
-
-		// Verify stale resources are removed if cleanup is enabled
-		if config.StaleResourceCleanup && len(staleResources) > 0 {
-			log.Printf("Verifying stale resources are removed: %v", staleResources)
-			if !m.verifyStaleResourcesRemoved(staleResources, config.ResourceVerifyTimeout) {
-				log.Printf("Stale resources still present after attempt %d", attempt)
-				if attempt < config.MaxRetries {
-					continue
-				}
-				log.Printf("Warning: Some stale resources may still be present after %d attempts", config.MaxRetries)
-				// Don't fail for stale resources, just warn
-			} else {
-				log.Printf("✓ All stale resources have been removed")
-			}
-		}
-
-		// Final verification that device plugin is running properly
-		if !m.verifyDevicePluginRunning() {
-			log.Printf("Device plugin not running properly after attempt %d", attempt)
-			if attempt < config.MaxRetries {
-				continue
-			}
-			return fmt.Errorf("device plugin not running properly after %d attempts", config.MaxRetries)
 		}
 
 		log.Printf("✓ SR-IOV device plugin restart successful after attempt %d", attempt)
@@ -3343,6 +3368,107 @@ func (m *SRIOVConfigManager) restartDevicePluginWithConfig(config SRIOVRestartCo
 	}
 
 	return fmt.Errorf("failed to verify SR-IOV device plugin restart after %d attempts", config.MaxRetries)
+}
+
+// performSingleRestartAttempt performs a single restart attempt with full verification
+func (m *SRIOVConfigManager) performSingleRestartAttempt(config SRIOVRestartConfig, context *RestartContext, attempt int) error {
+	// Perform the restart
+	if err := m.restartDevicePlugin(); err != nil {
+		return fmt.Errorf("restart attempt %d failed: %v", attempt, err)
+	}
+
+	// Wait for device plugin pods to be ready
+	if err := m.waitForPodsReady(config, attempt); err != nil {
+		return err
+	}
+
+	// Wait for the base time to allow plugin to scan and update resources
+	log.Printf("Waiting %v for SR-IOV device plugin to scan devices and update node resources", config.BaseWaitTime)
+	time.Sleep(config.BaseWaitTime)
+
+	// Verify expected resources
+	if err := m.verifyExpectedResources(config, context, attempt); err != nil {
+		return err
+	}
+
+	// Verify stale resources cleanup
+	if err := m.verifyStaleResourcesCleanup(config, context, attempt); err != nil {
+		return err
+	}
+
+	// Final verification that device plugin is running properly
+	return m.verifyDevicePluginFinalState(config, attempt)
+}
+
+// waitForPodsReady waits for device plugin pods to be ready
+func (m *SRIOVConfigManager) waitForPodsReady(config SRIOVRestartConfig, attempt int) error {
+	log.Printf("Waiting for SR-IOV device plugin pods to be ready (timeout: %v)", config.PodReadinessTimeout)
+	if !m.waitForDevicePluginPodsReady(config.PodReadinessTimeout) {
+		if attempt < config.MaxRetries {
+			return fmt.Errorf("device plugin pods not ready after attempt %d, will retry", attempt)
+		}
+		return fmt.Errorf("device plugin pods not ready after %d attempts", config.MaxRetries)
+	}
+	return nil
+}
+
+// verifyExpectedResources verifies that expected resources are properly advertised
+func (m *SRIOVConfigManager) verifyExpectedResources(config SRIOVRestartConfig, context *RestartContext, attempt int) error {
+	if len(context.ExpectedResources) == 0 {
+		return nil
+	}
+
+	log.Printf("Verifying expected resources are advertised (timeout: %v)", config.ResourceVerifyTimeout)
+	if !m.verifyResourcesWithTimeout(context.ExpectedResources, config.ResourceVerifyTimeout) {
+		if attempt < config.MaxRetries {
+			return fmt.Errorf("expected resources not properly advertised after attempt %d", attempt)
+		}
+		return fmt.Errorf("expected resources not advertised after %d attempts", config.MaxRetries)
+	}
+	log.Printf("✓ All expected resources are properly advertised")
+	return nil
+}
+
+// verifyStaleResourcesCleanup verifies that stale resources are removed if cleanup is enabled
+func (m *SRIOVConfigManager) verifyStaleResourcesCleanup(config SRIOVRestartConfig, context *RestartContext, attempt int) error {
+	if !config.StaleResourceCleanup || len(context.StaleResources) == 0 {
+		return nil
+	}
+
+	log.Printf("Verifying stale resources are removed: %v", context.StaleResources)
+	if !m.verifyStaleResourcesRemoved(context.StaleResources, config.ResourceVerifyTimeout) {
+		if attempt < config.MaxRetries {
+			return fmt.Errorf("stale resources still present after attempt %d", attempt)
+		}
+		log.Printf("Warning: Some stale resources may still be present after %d attempts", config.MaxRetries)
+		// Don't fail for stale resources, just warn
+	} else {
+		log.Printf("✓ All stale resources have been removed")
+	}
+	return nil
+}
+
+// verifyDevicePluginFinalState performs final verification that device plugin is running properly
+func (m *SRIOVConfigManager) verifyDevicePluginFinalState(config SRIOVRestartConfig, attempt int) error {
+	if !m.verifyDevicePluginRunning() {
+		if attempt < config.MaxRetries {
+			return fmt.Errorf("device plugin not running properly after attempt %d", attempt)
+		}
+		return fmt.Errorf("device plugin not running properly after %d attempts", config.MaxRetries)
+	}
+	return nil
+}
+
+// handleRestartFailure handles failure between restart attempts
+func (m *SRIOVConfigManager) handleRestartFailure(config SRIOVRestartConfig, attempt int) {
+	// Exponential backoff before retry
+	backoffDelay := time.Duration(float64(config.BaseWaitTime) *
+		(config.RetryBackoffMultiplier * float64(attempt-1)))
+	if backoffDelay > config.MaxWaitTime {
+		backoffDelay = config.MaxWaitTime
+	}
+	log.Printf("Waiting %v before retry attempt %d (exponential backoff)", backoffDelay, attempt+1)
+	time.Sleep(backoffDelay)
 }
 
 // getCurrentNodeResources gets the current node's SR-IOV resources
@@ -3442,20 +3568,8 @@ func (m *SRIOVConfigManager) waitForDevicePluginPodsReady(timeout time.Duration)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Get the current node name for node-specific pod filtering
-	nodeName := os.Getenv("NODE_NAME")
-	if nodeName == "" {
-		log.Printf("Warning: NODE_NAME environment variable not set - checking all nodes for pod readiness")
-		// Fall back to cluster-wide check if node name is not available
-	} else {
-		log.Printf("Checking SR-IOV device plugin pod readiness on node: %s", nodeName)
-	}
-
-	labelSelectors := []string{
-		"app=sriov-device-plugin",
-		"app=sriovdp",
-		"name=sriov-device-plugin",
-	}
+	nodeName := m.getNodeNameForPodCheck()
+	labelSelectors := m.getLabelSelectors()
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -3466,66 +3580,122 @@ func (m *SRIOVConfigManager) waitForDevicePluginPodsReady(timeout time.Duration)
 			log.Printf("Timeout waiting for SR-IOV device plugin pods to be ready")
 			return false
 		case <-ticker.C:
-			for _, selector := range labelSelectors {
-				listOptions := metav1.ListOptions{
-					LabelSelector: selector,
-				}
-
-				// Add node filtering if node name is available
-				if nodeName != "" {
-					listOptions.FieldSelector = fmt.Sprintf("spec.nodeName=%s", nodeName)
-				}
-
-				pods, err := m.k8sClient.CoreV1().Pods("kube-system").List(ctx, listOptions)
-				if err != nil {
-					log.Printf("Warning: Failed to list pods with selector %s: %v", selector, err)
-					continue
-				}
-
-				if len(pods.Items) == 0 {
-					continue
-				}
-
-				allReady := true
-				for _, pod := range pods.Items {
-					// Additional node check if node name is available
-					if nodeName != "" && pod.Spec.NodeName != nodeName {
-						log.Printf("Warning: Pod %s is not on expected node %s (actual: %s), skipping readiness check", pod.Name, nodeName, pod.Spec.NodeName)
-						continue
-					}
-
-					if pod.Status.Phase != corev1.PodRunning {
-						allReady = false
-						break
-					}
-
-					// Check if all containers are ready
-					for _, condition := range pod.Status.Conditions {
-						if condition.Type == corev1.PodReady && condition.Status != corev1.ConditionTrue {
-							allReady = false
-							break
-						}
-					}
-					if !allReady {
-						break
-					}
-				}
-
-				if allReady {
-					if nodeName != "" {
-						log.Printf("✓ All SR-IOV device plugin pods are ready on node %s (%d pods with selector %s)", nodeName, len(pods.Items), selector)
-					} else {
-						log.Printf("✓ All SR-IOV device plugin pods are ready (%d pods with selector %s)", len(pods.Items), selector)
-					}
-					return true
-				}
-
-				if nodeName != "" {
-					log.Printf("Waiting for SR-IOV device plugin pods to be ready on node %s (%d pods found with selector %s)", nodeName, len(pods.Items), selector)
-				} else {
-					log.Printf("Waiting for SR-IOV device plugin pods to be ready (%d pods found with selector %s)", len(pods.Items), selector)
-				}
+			if m.checkPodsReadiness(ctx, labelSelectors, nodeName) {
+				return true
 			}
+		}
+	}
+}
+
+// getNodeNameForPodCheck gets the node name for pod filtering
+func (m *SRIOVConfigManager) getNodeNameForPodCheck() string {
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		log.Printf("Warning: NODE_NAME environment variable not set - checking all nodes for pod readiness")
+	} else {
+		log.Printf("Checking SR-IOV device plugin pod readiness on node: %s", nodeName)
+	}
+	return nodeName
+}
+
+// getLabelSelectors returns the list of label selectors for SR-IOV device plugin pods
+func (m *SRIOVConfigManager) getLabelSelectors() []string {
+	return []string{
+		"app=sriov-device-plugin",
+		"app=sriovdp",
+		"name=sriov-device-plugin",
+	}
+}
+
+// checkPodsReadiness checks if pods are ready for all selectors
+func (m *SRIOVConfigManager) checkPodsReadiness(ctx context.Context, labelSelectors []string, nodeName string) bool {
+	for _, selector := range labelSelectors {
+		if m.checkSelectorPodsReadiness(ctx, selector, nodeName) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkSelectorPodsReadiness checks if pods are ready for a specific selector
+func (m *SRIOVConfigManager) checkSelectorPodsReadiness(ctx context.Context, selector, nodeName string) bool {
+	listOptions := m.buildListOptions(selector, nodeName)
+
+	pods, err := m.k8sClient.CoreV1().Pods("kube-system").List(ctx, listOptions)
+	if err != nil {
+		log.Printf("Warning: Failed to list pods with selector %s: %v", selector, err)
+		return false
+	}
+
+	if len(pods.Items) == 0 {
+		return false
+	}
+
+	allReady := m.areAllPodsReady(pods.Items, nodeName)
+	m.logPodReadinessStatus(allReady, nodeName, len(pods.Items), selector)
+
+	return allReady
+}
+
+// buildListOptions builds the list options for pod queries
+func (m *SRIOVConfigManager) buildListOptions(selector, nodeName string) metav1.ListOptions {
+	listOptions := metav1.ListOptions{
+		LabelSelector: selector,
+	}
+
+	// Add node filtering if node name is available
+	if nodeName != "" {
+		listOptions.FieldSelector = fmt.Sprintf("spec.nodeName=%s", nodeName)
+	}
+
+	return listOptions
+}
+
+// areAllPodsReady checks if all pods in the list are ready
+func (m *SRIOVConfigManager) areAllPodsReady(pods []corev1.Pod, nodeName string) bool {
+	for _, pod := range pods {
+		if !m.isPodReady(pod, nodeName) {
+			return false
+		}
+	}
+	return true
+}
+
+// isPodReady checks if a single pod is ready
+func (m *SRIOVConfigManager) isPodReady(pod corev1.Pod, nodeName string) bool {
+	// Additional node check if node name is available
+	if nodeName != "" && pod.Spec.NodeName != nodeName {
+		log.Printf("Warning: Pod %s is not on expected node %s (actual: %s), skipping readiness check", pod.Name, nodeName, pod.Spec.NodeName)
+		return true // Skip this pod, don't fail the check
+	}
+
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+
+	// Check if all containers are ready
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady && condition.Status != corev1.ConditionTrue {
+			return false
+		}
+	}
+
+	return true
+}
+
+// logPodReadinessStatus logs the pod readiness status
+func (m *SRIOVConfigManager) logPodReadinessStatus(allReady bool, nodeName string, podCount int, selector string) {
+	if allReady {
+		if nodeName != "" {
+			log.Printf("✓ All SR-IOV device plugin pods are ready on node %s (%d pods with selector %s)", nodeName, podCount, selector)
+		} else {
+			log.Printf("✓ All SR-IOV device plugin pods are ready (%d pods with selector %s)", podCount, selector)
+		}
+	} else {
+		if nodeName != "" {
+			log.Printf("Waiting for SR-IOV device plugin pods to be ready on node %s (%d pods found with selector %s)", nodeName, podCount, selector)
+		} else {
+			log.Printf("Waiting for SR-IOV device plugin pods to be ready (%d pods found with selector %s)", podCount, selector)
 		}
 	}
 }
@@ -3591,7 +3761,21 @@ func (m *SRIOVConfigManager) verifyStaleResourcesRemoved(staleResources []string
 }
 
 // getExpectedDPDKResources gets the list of DPDK resources that should be advertised
+// This function now checks for active NodeENI resources to determine the correct expected state
 func (m *SRIOVConfigManager) getExpectedDPDKResources() ([]string, error) {
+	// First, check if we have any active NodeENI resources that require DPDK
+	// If no NodeENI resources exist, then no DPDK resources should be expected
+	activeNodeENIs, err := m.getActiveNodeENIResources()
+	if err != nil {
+		log.Printf("Warning: Failed to get active NodeENI resources: %v", err)
+		// Fall back to config file check if we can't access Kubernetes
+	} else if len(activeNodeENIs) == 0 {
+		log.Printf("No active NodeENI resources found - no DPDK resources should be expected")
+		return []string{}, nil
+	} else {
+		log.Printf("Found %d active NodeENI resources", len(activeNodeENIs))
+	}
+
 	// Load the SR-IOV configuration to see what resources should be advertised
 	config, err := loadOrCreateSRIOVConfig(m.configPath)
 	if err != nil {
@@ -3609,17 +3793,84 @@ func (m *SRIOVConfigManager) getExpectedDPDKResources() ([]string, error) {
 			}
 		}
 		if hasDevices {
-			// Construct full resource name with prefix
-			fullResourceName := resource.ResourceName
-			if resource.ResourcePrefix != "" {
-				fullResourceName = resource.ResourcePrefix + "/" + resource.ResourceName
+			// Only include this resource if we have active NodeENI resources
+			// or if we couldn't check NodeENI status (fallback mode)
+			if len(activeNodeENIs) > 0 || err != nil {
+				// Construct full resource name with prefix
+				fullResourceName := resource.ResourceName
+				if resource.ResourcePrefix != "" {
+					fullResourceName = resource.ResourcePrefix + "/" + resource.ResourceName
+				}
+				expectedResources = append(expectedResources, fullResourceName)
+			} else {
+				log.Printf("Skipping resource %s - no active NodeENI resources", resource.ResourceName)
 			}
-			expectedResources = append(expectedResources, fullResourceName)
 		}
 	}
 
-	log.Printf("Expected DPDK resources from config: %v", expectedResources)
+	log.Printf("Expected DPDK resources from config (filtered by active NodeENI): %v", expectedResources)
 	return expectedResources, nil
+}
+
+// getActiveNodeENIResources gets the list of active NodeENI resources for the current node
+func (m *SRIOVConfigManager) getActiveNodeENIResources() ([]string, error) {
+	if m.k8sClient == nil {
+		return nil, fmt.Errorf("Kubernetes client not available")
+	}
+
+	// Get the current node name
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		return nil, fmt.Errorf("NODE_NAME environment variable not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Create a dynamic client to access NodeENI custom resources
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get in-cluster config: %v", err)
+	}
+
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dynamic client: %v", err)
+	}
+
+	// Define the NodeENI resource
+	nodeENIResource := schema.GroupVersionResource{
+		Group:    "networking.aws.com",
+		Version:  "v1alpha1",
+		Resource: "nodeenis",
+	}
+
+	// List all NodeENI resources
+	nodeENIList, err := dynamicClient.Resource(nodeENIResource).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list NodeENI resources: %v", err)
+	}
+
+	var activeNodeENIs []string
+	for _, item := range nodeENIList.Items {
+		// Check if this NodeENI is for the current node
+		spec, found, err := unstructured.NestedMap(item.Object, "spec")
+		if err != nil || !found {
+			continue
+		}
+
+		targetNode, found, err := unstructured.NestedString(spec, "node")
+		if err != nil || !found {
+			continue
+		}
+
+		if targetNode == nodeName {
+			activeNodeENIs = append(activeNodeENIs, item.GetName())
+		}
+	}
+
+	log.Printf("Found %d active NodeENI resources for node %s: %v", len(activeNodeENIs), nodeName, activeNodeENIs)
+	return activeNodeENIs, nil
 }
 
 // verifyDPDKResourcesAdvertised verifies that the expected DPDK resources are advertised by the node
@@ -3790,7 +4041,28 @@ func findSRIOVResourcesForNodeENI(nodeENIName string, cfg *config.ENIManagerConf
 func cleanupSRIOVConfigForNodeENI(nodeENIName string, cfg *config.ENIManagerConfig) error {
 	log.Printf("Cleaning up SR-IOV configuration for deleted NodeENI: %s", nodeENIName)
 
-	// Find all DPDK bound interfaces for this NodeENI
+	// Gather resources to cleanup
+	dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup := gatherCleanupResources(nodeENIName, cfg)
+	totalResourcesToCleanup := len(dpdkInterfacesToCleanup) + len(nonDpdkResourcesToCleanup)
+
+	// Early return if nothing to cleanup
+	if shouldSkipCleanup(totalResourcesToCleanup, cfg, nodeENIName) {
+		return nil
+	}
+
+	// Log cleanup summary
+	logCleanupSummary(dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup, totalResourcesToCleanup, nodeENIName)
+
+	// Perform the actual cleanup
+	manager := NewSRIOVConfigManager(cfg.SRIOVDPConfigPath)
+	configModified := performSRIOVCleanup(manager, dpdkInterfacesToCleanup, nodeENIName, cfg)
+
+	// Handle device plugin restart
+	return handleDevicePluginRestart(manager, configModified, dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup, totalResourcesToCleanup, cfg, nodeENIName)
+}
+
+// gatherCleanupResources collects DPDK and non-DPDK resources that need cleanup
+func gatherCleanupResources(nodeENIName string, cfg *config.ENIManagerConfig) ([]string, []string) {
 	var dpdkInterfacesToCleanup []string
 	for pciAddr, boundInterface := range cfg.DPDKBoundInterfaces {
 		if boundInterface.NodeENIName == nodeENIName {
@@ -3798,7 +4070,6 @@ func cleanupSRIOVConfigForNodeENI(nodeENIName string, cfg *config.ENIManagerConf
 		}
 	}
 
-	// Also check for non-DPDK SR-IOV resources in the configuration file
 	var nonDpdkResourcesToCleanup []string
 	if cfg.SRIOVDPConfigPath != "" {
 		if resources, err := findSRIOVResourcesForNodeENI(nodeENIName, cfg); err == nil {
@@ -3806,13 +4077,20 @@ func cleanupSRIOVConfigForNodeENI(nodeENIName string, cfg *config.ENIManagerConf
 		}
 	}
 
-	totalResourcesToCleanup := len(dpdkInterfacesToCleanup) + len(nonDpdkResourcesToCleanup)
+	return dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup
+}
 
+// shouldSkipCleanup determines if cleanup should be skipped
+func shouldSkipCleanup(totalResourcesToCleanup int, cfg *config.ENIManagerConfig, nodeENIName string) bool {
 	if totalResourcesToCleanup == 0 && cfg.SRIOVDPConfigPath == "" {
 		log.Printf("No DPDK interfaces, no SR-IOV resources, and no SR-IOV config path configured for NodeENI %s", nodeENIName)
-		return nil
+		return true
 	}
+	return false
+}
 
+// logCleanupSummary logs information about resources to be cleaned up
+func logCleanupSummary(dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup []string, totalResourcesToCleanup int, nodeENIName string) {
 	if len(dpdkInterfacesToCleanup) > 0 {
 		log.Printf("Found %d DPDK interfaces to cleanup for NodeENI %s", len(dpdkInterfacesToCleanup), nodeENIName)
 	}
@@ -3822,71 +4100,104 @@ func cleanupSRIOVConfigForNodeENI(nodeENIName string, cfg *config.ENIManagerConf
 	if totalResourcesToCleanup == 0 {
 		log.Printf("No specific resources found, but will force SR-IOV device plugin restart for deleted NodeENI %s to ensure cleanup", nodeENIName)
 	}
+}
 
-	manager := NewSRIOVConfigManager(cfg.SRIOVDPConfigPath)
-
+// performSRIOVCleanup performs the actual SR-IOV configuration cleanup
+func performSRIOVCleanup(manager *SRIOVConfigManager, dpdkInterfacesToCleanup []string, nodeENIName string, cfg *config.ENIManagerConfig) bool {
 	// Create backup before making changes
 	if err := manager.createBackup(); err != nil {
 		log.Printf("Warning: Failed to create backup before cleanup: %v", err)
 	}
 
-	// Track if any configuration was actually modified
 	configModified := false
-
-	// Remove each DPDK interface from SR-IOV config
 	for _, pciAddr := range dpdkInterfacesToCleanup {
-		boundInterface := cfg.DPDKBoundInterfaces[pciAddr]
-		if err := removeSRIOVDevicePluginConfig(boundInterface.IfaceName, pciAddr, cfg); err != nil {
-			log.Printf("Warning: Failed to remove SR-IOV config for PCI %s: %v", pciAddr, err)
-		} else {
-			log.Printf("Removed SR-IOV config for PCI %s (NodeENI: %s)", pciAddr, nodeENIName)
+		if cleanupSingleDPDKInterface(pciAddr, nodeENIName, cfg) {
 			configModified = true
 		}
-
-		// Remove from our tracking map
-		delete(cfg.DPDKBoundInterfaces, pciAddr)
 	}
 
-	// Always restart the SR-IOV device plugin when a NodeENI is deleted if SR-IOV is configured
-	// This ensures any SR-IOV resources (DPDK or non-DPDK) are properly cleaned up from node capacity
-	shouldRestart := configModified || len(dpdkInterfacesToCleanup) > 0 || len(nonDpdkResourcesToCleanup) > 0 || (totalResourcesToCleanup == 0 && cfg.SRIOVDPConfigPath != "")
+	// Ensure the SR-IOV configuration has a minimal valid structure after cleanup
+	if err := ensureMinimalSRIOVConfig(cfg); err != nil {
+		log.Printf("Warning: Failed to ensure minimal SR-IOV config after cleanup: %v", err)
+	}
 
-	if shouldRestart {
-		if configModified {
-			log.Printf("SR-IOV configuration was modified for NodeENI %s, restarting device plugin", nodeENIName)
-		} else if len(dpdkInterfacesToCleanup) > 0 || len(nonDpdkResourcesToCleanup) > 0 {
-			log.Printf("Found SR-IOV resources for deleted NodeENI %s, restarting device plugin to update node capacity", nodeENIName)
+	return configModified
+}
+
+// cleanupSingleDPDKInterface cleans up a single DPDK interface
+func cleanupSingleDPDKInterface(pciAddr, nodeENIName string, cfg *config.ENIManagerConfig) bool {
+	boundInterface := cfg.DPDKBoundInterfaces[pciAddr]
+
+	// Try modern format first, then fall back to legacy format
+	if err := removeModernSRIOVDeviceConfig(pciAddr, cfg); err != nil {
+		log.Printf("Modern SR-IOV removal failed for PCI %s, trying legacy format: %v", pciAddr, err)
+		// Fall back to legacy format
+		if legacyErr := removeSRIOVDevicePluginConfig(boundInterface.IfaceName, pciAddr, cfg); legacyErr != nil {
+			log.Printf("Warning: Both modern and legacy SR-IOV config removal failed for PCI %s: modern=%v, legacy=%v",
+				pciAddr, err, legacyErr)
+			return false
 		} else {
-			log.Printf("Forcing SR-IOV device plugin restart for deleted NodeENI %s to ensure any stale resources are cleaned up", nodeENIName)
-		}
-
-		// Set up Kubernetes client for the manager if not already set
-		if manager.k8sClient == nil {
-			k8sClient, err := createK8sClientset()
-			if err != nil {
-				log.Printf("Warning: Failed to setup Kubernetes client for device plugin restart: %v", err)
-				// Try basic restart without verification
-				if basicErr := manager.restartDevicePlugin(); basicErr != nil {
-					log.Printf("Warning: Basic device plugin restart also failed: %v", basicErr)
-				}
-				return err
-			}
-			manager.k8sClient = k8sClient
-		}
-
-		// Use enhanced restart with verification
-		if err := manager.restartDevicePluginWithVerification(); err != nil {
-			log.Printf("Warning: Failed to restart SR-IOV device plugin with verification: %v", err)
-			// Fall back to basic restart
-			if basicErr := manager.restartDevicePlugin(); basicErr != nil {
-				log.Printf("Warning: Basic device plugin restart also failed: %v", basicErr)
-				return basicErr
-			}
-		} else {
-			log.Printf("Successfully restarted SR-IOV device plugin after NodeENI %s cleanup", nodeENIName)
+			log.Printf("Removed SR-IOV config for PCI %s using legacy format (NodeENI: %s)", pciAddr, nodeENIName)
 		}
 	} else {
+		log.Printf("Removed SR-IOV config for PCI %s using modern format (NodeENI: %s)", pciAddr, nodeENIName)
+	}
+
+	// Remove from our tracking map
+	delete(cfg.DPDKBoundInterfaces, pciAddr)
+	return true
+}
+
+// handleDevicePluginRestart handles the device plugin restart logic
+func handleDevicePluginRestart(manager *SRIOVConfigManager, configModified bool, dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup []string, totalResourcesToCleanup int, cfg *config.ENIManagerConfig, nodeENIName string) error {
+	shouldRestart := configModified || len(dpdkInterfacesToCleanup) > 0 || len(nonDpdkResourcesToCleanup) > 0 || (totalResourcesToCleanup == 0 && cfg.SRIOVDPConfigPath != "")
+
+	if !shouldRestart {
 		log.Printf("No SR-IOV device plugin restart needed for NodeENI %s", nodeENIName)
+		return nil
+	}
+
+	logRestartReason(configModified, dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup, nodeENIName)
+	return executeDevicePluginRestart(manager, nodeENIName)
+}
+
+// logRestartReason logs the reason for device plugin restart
+func logRestartReason(configModified bool, dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup []string, nodeENIName string) {
+	if configModified {
+		log.Printf("SR-IOV configuration was modified for NodeENI %s, restarting device plugin", nodeENIName)
+	} else if len(dpdkInterfacesToCleanup) > 0 || len(nonDpdkResourcesToCleanup) > 0 {
+		log.Printf("Found SR-IOV resources for deleted NodeENI %s, restarting device plugin to update node capacity", nodeENIName)
+	} else {
+		log.Printf("Forcing SR-IOV device plugin restart for deleted NodeENI %s to ensure any stale resources are cleaned up", nodeENIName)
+	}
+}
+
+// executeDevicePluginRestart executes the device plugin restart with fallback
+func executeDevicePluginRestart(manager *SRIOVConfigManager, nodeENIName string) error {
+	// Set up Kubernetes client for the manager if not already set
+	if manager.k8sClient == nil {
+		k8sClient, err := createK8sClientset()
+		if err != nil {
+			log.Printf("Warning: Failed to setup Kubernetes client for device plugin restart: %v", err)
+			// Try basic restart without verification
+			if basicErr := manager.restartDevicePlugin(); basicErr != nil {
+				log.Printf("Warning: Basic device plugin restart also failed: %v", basicErr)
+			}
+			return err
+		}
+		manager.k8sClient = k8sClient
+	}
+
+	// Use enhanced restart with verification
+	if err := manager.restartDevicePluginWithVerification(); err != nil {
+		log.Printf("Warning: Failed to restart SR-IOV device plugin with verification: %v", err)
+		// Fall back to basic restart
+		if basicErr := manager.restartDevicePlugin(); basicErr != nil {
+			log.Printf("Warning: Basic device plugin restart also failed: %v", basicErr)
+			return basicErr
+		}
+	} else {
+		log.Printf("Successfully restarted SR-IOV device plugin after NodeENI %s cleanup", nodeENIName)
 	}
 
 	return nil
@@ -5423,10 +5734,9 @@ func ensureSRIOVConfigExists(cfg *config.ENIManagerConfig) {
 		return
 	}
 
-	// Create a default empty configuration
-	defaultConfig := ModernSRIOVDPConfig{
-		ResourceList: []ModernSRIOVResource{},
-	}
+	// Create a default minimal configuration with a placeholder resource
+	// This prevents the SR-IOV device plugin from crashing when no resources are configured
+	defaultConfig := createMinimalSRIOVConfig()
 
 	configData, err := json.MarshalIndent(defaultConfig, "", "  ")
 	if err != nil {
@@ -5440,6 +5750,147 @@ func ensureSRIOVConfigExists(cfg *config.ENIManagerConfig) {
 	}
 
 	log.Printf("Created default SR-IOV device plugin config file: %s", cfg.SRIOVDPConfigPath)
+}
+
+// createMinimalSRIOVConfig creates a minimal SR-IOV configuration that prevents device plugin crashes
+func createMinimalSRIOVConfig() ModernSRIOVDPConfig {
+	return ModernSRIOVDPConfig{
+		ResourceList: []ModernSRIOVResource{
+			{
+				ResourceName:   "placeholder",
+				ResourcePrefix: "aws.com",
+				Selectors: []ModernSRIOVSelector{
+					{
+						Drivers:      []string{"ena"},
+						PCIAddresses: []string{}, // Empty PCI addresses - no actual devices
+					},
+				},
+			},
+		},
+	}
+}
+
+// ensureMinimalSRIOVConfig ensures the SR-IOV configuration has a minimal valid structure
+// This prevents the SR-IOV device plugin from crashing when all resources are removed
+func ensureMinimalSRIOVConfig(cfg *config.ENIManagerConfig) error {
+	if cfg.SRIOVDPConfigPath == "" {
+		return nil // SR-IOV not configured
+	}
+
+	// Load current configuration
+	currentConfig, err := loadOrCreateSRIOVConfig(cfg.SRIOVDPConfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to load SR-IOV config: %v", err)
+	}
+
+	// Check if the configuration is empty or has no valid resources
+	hasValidResources := false
+	for _, resource := range currentConfig.ResourceList {
+		// Check if resource has any selectors with PCI addresses
+		for _, selector := range resource.Selectors {
+			if len(selector.PCIAddresses) > 0 {
+				hasValidResources = true
+				break
+			}
+		}
+		if hasValidResources {
+			break
+		}
+	}
+
+	// If no valid resources exist, ensure we have a minimal configuration
+	if !hasValidResources {
+		log.Printf("No valid SR-IOV resources found, ensuring minimal configuration to prevent device plugin crashes")
+		minimalConfig := createMinimalSRIOVConfig()
+
+		if err := saveSRIOVConfig(cfg.SRIOVDPConfigPath, minimalConfig); err != nil {
+			return fmt.Errorf("failed to save minimal SR-IOV config: %v", err)
+		}
+
+		log.Printf("Successfully ensured minimal SR-IOV configuration")
+	} else {
+		log.Printf("SR-IOV configuration has valid resources, no minimal config needed")
+	}
+
+	return nil
+}
+
+// removeModernSRIOVDeviceConfig removes a PCI device from the modern SR-IOV configuration
+func removeModernSRIOVDeviceConfig(pciAddress string, cfg *config.ENIManagerConfig) error {
+	if cfg.SRIOVDPConfigPath == "" {
+		return fmt.Errorf("SR-IOV device plugin config path not configured")
+	}
+
+	// Load current configuration
+	currentConfig, err := loadOrCreateSRIOVConfig(cfg.SRIOVDPConfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to load SR-IOV config: %v", err)
+	}
+
+	// Track if any configuration was modified
+	configModified := false
+
+	// Remove the PCI address from all resources
+	for i := range currentConfig.ResourceList {
+		resource := &currentConfig.ResourceList[i]
+
+		// Remove PCI address from all selectors
+		for j := range resource.Selectors {
+			selector := &resource.Selectors[j]
+
+			// Filter out the PCI address
+			var newPCIAddresses []string
+			for _, addr := range selector.PCIAddresses {
+				if addr != pciAddress {
+					newPCIAddresses = append(newPCIAddresses, addr)
+				} else {
+					configModified = true
+					log.Printf("Removing PCI address %s from resource %s/%s",
+						pciAddress, resource.ResourcePrefix, resource.ResourceName)
+				}
+			}
+			selector.PCIAddresses = newPCIAddresses
+		}
+	}
+
+	// Remove empty selectors and resources
+	var newResourceList []ModernSRIOVResource
+	for _, resource := range currentConfig.ResourceList {
+		// Remove empty selectors
+		var newSelectors []ModernSRIOVSelector
+		for _, selector := range resource.Selectors {
+			if len(selector.PCIAddresses) > 0 {
+				newSelectors = append(newSelectors, selector)
+			} else {
+				configModified = true
+				log.Printf("Removing empty selector from resource %s/%s",
+					resource.ResourcePrefix, resource.ResourceName)
+			}
+		}
+
+		// Only keep resources that have selectors
+		if len(newSelectors) > 0 {
+			resource.Selectors = newSelectors
+			newResourceList = append(newResourceList, resource)
+		} else {
+			configModified = true
+			log.Printf("Removing empty resource %s/%s",
+				resource.ResourcePrefix, resource.ResourceName)
+		}
+	}
+	currentConfig.ResourceList = newResourceList
+
+	// If configuration was modified, save it
+	if configModified {
+		if err := saveSRIOVConfig(cfg.SRIOVDPConfigPath, currentConfig); err != nil {
+			return fmt.Errorf("failed to save updated SR-IOV config: %v", err)
+		}
+		log.Printf("Successfully removed PCI address %s from SR-IOV configuration", pciAddress)
+	} else {
+		log.Printf("PCI address %s not found in SR-IOV configuration", pciAddress)
+	}
+
+	return nil
 }
 
 // updateSRIOVConfigForAllInterfaces updates SR-IOV configuration for all interfaces based on NodeENI resources
