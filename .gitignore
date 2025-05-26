@@ -15,9 +15,7 @@ coverage.txt
 *.out
 *.test
 
-# Go build artifacts
-eni-manager
-manager
+
 
 # AWS CLI distribution (if present)
 aws/dist/

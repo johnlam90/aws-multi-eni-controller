@@ -44,6 +44,8 @@ type ControllerConfig struct {
 
 // ENIManagerConfig holds configuration for the ENI manager
 type ENIManagerConfig struct {
+	// Node name for this ENI manager instance
+	NodeName string
 	// Interval between interface checks
 	CheckInterval time.Duration
 	// Primary interface name to ignore (if empty, will auto-detect)
