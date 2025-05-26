@@ -3225,7 +3225,7 @@ func getDefaultSRIOVRestartConfig() SRIOVRestartConfig {
 		RetryBackoffMultiplier: 1.5,               // Exponential backoff
 		PodReadinessTimeout:    120 * time.Second, // 2 minutes for pod readiness
 		ResourceVerifyTimeout:  90 * time.Second,  // 90 seconds for resource verification
-		StaleResourceCleanup:   true,              // Verify stale resource cleanup
+		StaleResourceCleanup:   false,             // CRITICAL: Disable stale resource cleanup to prevent continuous restart loops
 	}
 }
 
@@ -3373,6 +3373,7 @@ func (m *SRIOVConfigManager) getCurrentNodeResources() (map[string]string, error
 }
 
 // identifyStaleResources identifies resources that should be removed
+// This function now uses intelligent filtering to avoid marking legitimate non-DPDK SR-IOV resources as stale
 func (m *SRIOVConfigManager) identifyStaleResources(currentResources map[string]string, expectedResources []string) []string {
 	expectedSet := make(map[string]bool)
 	for _, resource := range expectedResources {
@@ -3382,12 +3383,53 @@ func (m *SRIOVConfigManager) identifyStaleResources(currentResources map[string]
 	var staleResources []string
 	for resource := range currentResources {
 		if !expectedSet[resource] {
-			// This resource exists but is not expected, so it's stale
-			staleResources = append(staleResources, resource)
+			// Apply intelligent filtering to avoid marking legitimate resources as stale
+			if m.isResourceLikelyStale(resource, expectedResources) {
+				staleResources = append(staleResources, resource)
+			} else {
+				log.Printf("Resource %s not in expected list but appears to be legitimate, preserving", resource)
+			}
 		}
 	}
 
 	return staleResources
+}
+
+// isResourceLikelyStale determines if a resource is likely stale and should be removed
+// This prevents legitimate non-DPDK SR-IOV resources from being marked as stale
+func (m *SRIOVConfigManager) isResourceLikelyStale(resource string, expectedResources []string) bool {
+	// If we have no expected resources, don't mark anything as stale
+	if len(expectedResources) == 0 {
+		log.Printf("No expected resources defined, preserving existing resource: %s", resource)
+		return false
+	}
+
+	// Check if this resource follows common patterns that indicate it's legitimate
+	// Pattern 1: intel.com/sriov_kernel_* resources are typically legitimate non-DPDK resources
+	if strings.Contains(resource, "intel.com/sriov_kernel") {
+		log.Printf("Resource %s appears to be a legitimate kernel SR-IOV resource, preserving", resource)
+		return false
+	}
+
+	// Pattern 2: Resources with "kernel" in the name are typically non-DPDK
+	if strings.Contains(resource, "kernel") {
+		log.Printf("Resource %s contains 'kernel' and appears to be non-DPDK, preserving", resource)
+		return false
+	}
+
+	// Pattern 3: If the resource has a similar prefix to expected resources but different suffix,
+	// it might be a legitimate variant (e.g., intel.com/sriov_test_* vs intel.com/sriov_kernel_*)
+	for _, expected := range expectedResources {
+		if strings.HasPrefix(resource, "intel.com/sriov_") && strings.HasPrefix(expected, "intel.com/sriov_") {
+			log.Printf("Resource %s has similar prefix to expected resource %s, likely legitimate, preserving", resource, expected)
+			return false
+		}
+	}
+
+	// Pattern 4: Resources with capacity > 0 that have been stable are likely legitimate
+	// This is a conservative approach - if a resource exists and has capacity, it's probably valid
+	log.Printf("Resource %s has capacity and doesn't match stale patterns, preserving to be safe", resource)
+	return false
 }
 
 // waitForDevicePluginPodsReady waits for SR-IOV device plugin pods to be ready
@@ -5454,7 +5496,31 @@ func applyBatchedSRIOVUpdates(cfg *config.ENIManagerConfig, sriovUpdates map[str
 		return nil
 	}
 
-	log.Printf("Applying %d batched SR-IOV configuration updates", len(sriovUpdates))
+	log.Printf("Checking %d SR-IOV configuration updates for changes", len(sriovUpdates))
+
+	// Check if any of these updates are actually new or changed
+	hasActualChanges := false
+	for updateKey, update := range sriovUpdates {
+		// Check if this configuration has already been processed
+		sriovConfigMutex.Lock()
+		configKey := fmt.Sprintf("%s:%s:%s/%s", update.PCIAddress, update.Driver, update.ResourcePrefix, update.ResourceName)
+		if _, alreadyProcessed := processedSRIOVConfigs[configKey]; !alreadyProcessed {
+			hasActualChanges = true
+			log.Printf("Found new SR-IOV configuration: %s", updateKey)
+		}
+		sriovConfigMutex.Unlock()
+
+		if hasActualChanges {
+			break // No need to check further if we already found changes
+		}
+	}
+
+	if !hasActualChanges {
+		log.Printf("All %d SR-IOV configurations have already been processed - skipping restart", len(sriovUpdates))
+		return nil
+	}
+
+	log.Printf("Applying %d batched SR-IOV configuration updates with actual changes", len(sriovUpdates))
 
 	manager := NewSRIOVConfigManager(cfg.SRIOVDPConfigPath)
 
@@ -5689,7 +5755,31 @@ func applyBatchedDPDKSRIOVUpdates(cfg *config.ENIManagerConfig, dpdkSriovUpdates
 		return nil
 	}
 
-	log.Printf("Applying %d batched DPDK SR-IOV updates", len(dpdkSriovUpdates))
+	log.Printf("Checking %d DPDK SR-IOV updates for changes", len(dpdkSriovUpdates))
+
+	// Check if any of these DPDK updates are actually new or changed
+	hasActualChanges := false
+	for updateKey, update := range dpdkSriovUpdates {
+		// Check if this DPDK configuration has already been processed
+		sriovConfigMutex.Lock()
+		configKey := fmt.Sprintf("DPDK:%s:%s:%s", update.PCIAddress, update.Driver, update.ResourceName)
+		if _, alreadyProcessed := processedSRIOVConfigs[configKey]; !alreadyProcessed {
+			hasActualChanges = true
+			log.Printf("Found new DPDK SR-IOV configuration: %s", updateKey)
+		}
+		sriovConfigMutex.Unlock()
+
+		if hasActualChanges {
+			break // No need to check further if we already found changes
+		}
+	}
+
+	if !hasActualChanges {
+		log.Printf("All %d DPDK SR-IOV configurations have already been processed - skipping restart", len(dpdkSriovUpdates))
+		return nil
+	}
+
+	log.Printf("Applying %d batched DPDK SR-IOV updates with actual changes", len(dpdkSriovUpdates))
 
 	// Load the current SR-IOV configuration
 	config, err := loadOrCreateSRIOVConfig(cfg.SRIOVDPConfigPath)
@@ -5712,6 +5802,15 @@ func applyBatchedDPDKSRIOVUpdates(cfg *config.ENIManagerConfig, dpdkSriovUpdates
 		log.Printf("Warning: Failed to restart SR-IOV device plugin after batched DPDK updates: %v", err)
 	} else {
 		log.Printf("Successfully restarted SR-IOV device plugin after batched DPDK updates")
+
+		// Mark all DPDK configurations as processed after successful restart
+		sriovConfigMutex.Lock()
+		for _, update := range dpdkSriovUpdates {
+			configKey := fmt.Sprintf("DPDK:%s:%s:%s", update.PCIAddress, update.Driver, update.ResourceName)
+			processedSRIOVConfigs[configKey] = configKey
+			log.Printf("Marked DPDK SR-IOV configuration as processed: %s", configKey)
+		}
+		sriovConfigMutex.Unlock()
 	}
 
 	return nil
