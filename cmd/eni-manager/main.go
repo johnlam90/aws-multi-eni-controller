@@ -3840,7 +3840,7 @@ func (m *SRIOVConfigManager) getActiveNodeENIResources() ([]string, error) {
 
 	// Define the NodeENI resource
 	nodeENIResource := schema.GroupVersionResource{
-		Group:    "networking.aws.com",
+		Group:    "networking.k8s.aws",
 		Version:  "v1alpha1",
 		Resource: "nodeenis",
 	}
@@ -5320,12 +5320,16 @@ func updateSRIOVResourceConfig(config *ModernSRIOVDPConfig, pciAddress, driver, 
 		resource := &config.ResourceList[i]
 		if resource.ResourceName == resourceShortName && resource.ResourcePrefix == resourcePrefix {
 			updateExistingResource(resource, pciAddress, driver)
+			// Update placeholder to exclude this PCI address
+			updatePlaceholderToExcludePCI(config, pciAddress)
 			return
 		}
 	}
 
 	// Create new resource if not found
 	createNewResource(config, pciAddress, driver, resourcePrefix, resourceShortName)
+	// Update placeholder to exclude this PCI address
+	updatePlaceholderToExcludePCI(config, pciAddress)
 }
 
 // updateExistingResource updates an existing SR-IOV resource
@@ -5364,6 +5368,187 @@ func createNewResource(config *ModernSRIOVDPConfig, pciAddress, driver, resource
 		},
 	}
 	config.ResourceList = append(config.ResourceList, newResource)
+}
+
+// updatePlaceholderToExcludePCI updates the placeholder resource to exclude specific PCI addresses
+// This prevents conflicts between the placeholder resource and specific PCI address-based resources
+func updatePlaceholderToExcludePCI(config *ModernSRIOVDPConfig, excludePCIAddress string) {
+	// Find the placeholder resource
+	for i := range config.ResourceList {
+		resource := &config.ResourceList[i]
+		if resource.ResourceName == "placeholder" && resource.ResourcePrefix == "aws.com" {
+			// Get all PCI addresses that should be excluded
+			excludedPCIs := getAllAllocatedPCIAddresses(config, excludePCIAddress)
+
+			// Update the placeholder to use a more specific selector that excludes allocated PCIs
+			updatePlaceholderSelectors(resource, excludedPCIs)
+			log.Printf("Updated placeholder resource to exclude %d allocated PCI addresses", len(excludedPCIs))
+			return
+		}
+	}
+
+	log.Printf("Placeholder resource not found, skipping PCI exclusion update")
+}
+
+// getAllAllocatedPCIAddresses gets all PCI addresses that are allocated to specific resources
+func getAllAllocatedPCIAddresses(config *ModernSRIOVDPConfig, newPCIAddress string) []string {
+	allocatedPCIs := make(map[string]bool)
+
+	// Add the new PCI address
+	allocatedPCIs[newPCIAddress] = true
+
+	// Collect all PCI addresses from non-placeholder resources
+	for _, resource := range config.ResourceList {
+		// Skip the placeholder resource
+		if resource.ResourceName == "placeholder" && resource.ResourcePrefix == "aws.com" {
+			continue
+		}
+
+		// Collect PCI addresses from this resource
+		for _, selector := range resource.Selectors {
+			for _, pciAddr := range selector.PCIAddresses {
+				allocatedPCIs[pciAddr] = true
+			}
+		}
+	}
+
+	// Convert map to slice
+	var result []string
+	for pciAddr := range allocatedPCIs {
+		result = append(result, pciAddr)
+	}
+
+	return result
+}
+
+// updatePlaceholderSelectors updates the placeholder resource selectors to exclude specific PCI addresses
+func updatePlaceholderSelectors(resource *ModernSRIOVResource, excludedPCIs []string) {
+	if len(excludedPCIs) == 0 {
+		// No exclusions needed, use the original broad selector
+		resource.Selectors = []ModernSRIOVSelector{
+			{
+				Drivers: []string{"ena"},
+				Vendors: []string{"1d0f"},
+				Devices: []string{"ec20"},
+			},
+		}
+		return
+	}
+
+	// Get all available ENA PCI devices
+	allENAPCIs, err := getAllENAPCIDevices()
+	if err != nil {
+		log.Printf("Warning: Failed to get all ENA PCI devices: %v", err)
+		// Fallback: create an empty selector to avoid conflicts
+		resource.Selectors = []ModernSRIOVSelector{
+			{
+				Drivers:      []string{"ena"},
+				PCIAddresses: []string{}, // Empty to avoid conflicts
+			},
+		}
+		return
+	}
+
+	// Filter out excluded PCI addresses
+	var availablePCIs []string
+	excludedMap := make(map[string]bool)
+	for _, pci := range excludedPCIs {
+		excludedMap[pci] = true
+	}
+
+	for _, pci := range allENAPCIs {
+		if !excludedMap[pci] {
+			availablePCIs = append(availablePCIs, pci)
+		}
+	}
+
+	// Update the selector with available PCI addresses
+	resource.Selectors = []ModernSRIOVSelector{
+		{
+			Drivers:      []string{"ena"},
+			PCIAddresses: availablePCIs,
+		},
+	}
+
+	log.Printf("Updated placeholder resource with %d available PCI addresses (excluded %d)",
+		len(availablePCIs), len(excludedPCIs))
+}
+
+// getAllENAPCIDevices gets all ENA PCI device addresses on the system
+func getAllENAPCIDevices() ([]string, error) {
+	var enaPCIs []string
+
+	// List all PCI devices
+	pciDevices, err := listPCIDevices()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list PCI devices: %v", err)
+	}
+
+	// Filter for ENA devices (vendor 1d0f, device ec20)
+	for _, pciAddr := range pciDevices {
+		if isENADevice(pciAddr) {
+			enaPCIs = append(enaPCIs, pciAddr)
+		}
+	}
+
+	log.Printf("Found %d ENA PCI devices on the system", len(enaPCIs))
+	return enaPCIs, nil
+}
+
+// isENADevice checks if a PCI device is an ENA device
+func isENADevice(pciAddress string) bool {
+	// Read vendor ID
+	vendorPath := fmt.Sprintf("/sys/bus/pci/devices/%s/vendor", pciAddress)
+	vendorData, err := os.ReadFile(vendorPath)
+	if err != nil {
+		return false
+	}
+	vendor := strings.TrimSpace(string(vendorData))
+
+	// Read device ID
+	devicePath := fmt.Sprintf("/sys/bus/pci/devices/%s/device", pciAddress)
+	deviceData, err := os.ReadFile(devicePath)
+	if err != nil {
+		return false
+	}
+	device := strings.TrimSpace(string(deviceData))
+
+	// Check if it's an ENA device (vendor 1d0f, device ec20)
+	return vendor == "0x1d0f" && device == "0xec20"
+}
+
+// ensurePlaceholderResourceNoConflicts ensures the placeholder resource doesn't conflict with specific PCI allocations
+func ensurePlaceholderResourceNoConflicts(config *ModernSRIOVDPConfig) {
+	// Get all allocated PCI addresses from specific resources
+	var allAllocatedPCIs []string
+	for _, resource := range config.ResourceList {
+		// Skip the placeholder resource
+		if resource.ResourceName == "placeholder" && resource.ResourcePrefix == "aws.com" {
+			continue
+		}
+
+		// Collect PCI addresses from this resource
+		for _, selector := range resource.Selectors {
+			allAllocatedPCIs = append(allAllocatedPCIs, selector.PCIAddresses...)
+		}
+	}
+
+	if len(allAllocatedPCIs) == 0 {
+		log.Printf("No specific PCI allocations found, placeholder resource can use broad selector")
+		return
+	}
+
+	// Find and update the placeholder resource
+	for i := range config.ResourceList {
+		resource := &config.ResourceList[i]
+		if resource.ResourceName == "placeholder" && resource.ResourcePrefix == "aws.com" {
+			log.Printf("Updating placeholder resource to exclude %d allocated PCI addresses", len(allAllocatedPCIs))
+			updatePlaceholderSelectors(resource, allAllocatedPCIs)
+			return
+		}
+	}
+
+	log.Printf("Placeholder resource not found, no conflict resolution needed")
 }
 
 // saveSRIOVConfig saves the SR-IOV configuration to file
@@ -5760,7 +5945,10 @@ func createMinimalSRIOVConfig() ModernSRIOVDPConfig {
 				ResourcePrefix: "aws.com",
 				Selectors: []ModernSRIOVSelector{
 					{
-						Drivers:      []string{"ena"},
+						Drivers: []string{"ena"},
+						// Use vendor/device IDs instead of driver to avoid conflicts with PCI address-based resources
+						Vendors:      []string{"1d0f"},
+						Devices:      []string{"ec20"},
 						PCIAddresses: []string{}, // Empty PCI addresses - no actual devices
 					},
 				},
@@ -5802,13 +5990,22 @@ func ensureMinimalSRIOVConfig(cfg *config.ENIManagerConfig) error {
 		log.Printf("No valid SR-IOV resources found, ensuring minimal configuration to prevent device plugin crashes")
 		minimalConfig := createMinimalSRIOVConfig()
 
+		// Ensure the placeholder doesn't conflict with any existing specific resources
+		ensurePlaceholderResourceNoConflicts(&minimalConfig)
+
 		if err := saveSRIOVConfig(cfg.SRIOVDPConfigPath, minimalConfig); err != nil {
 			return fmt.Errorf("failed to save minimal SR-IOV config: %v", err)
 		}
 
 		log.Printf("Successfully ensured minimal SR-IOV configuration")
 	} else {
-		log.Printf("SR-IOV configuration has valid resources, no minimal config needed")
+		log.Printf("SR-IOV configuration has valid resources, ensuring no conflicts")
+		// Even if we have valid resources, ensure placeholder doesn't conflict
+		ensurePlaceholderResourceNoConflicts(&currentConfig)
+
+		if err := saveSRIOVConfig(cfg.SRIOVDPConfigPath, currentConfig); err != nil {
+			return fmt.Errorf("failed to save updated SR-IOV config: %v", err)
+		}
 	}
 
 	return nil
@@ -5996,6 +6193,9 @@ func applyBatchedSRIOVUpdates(cfg *config.ENIManagerConfig, sriovUpdates map[str
 		updateSRIOVResourceConfig(&currentConfig, update.PCIAddress, update.Driver,
 			update.ResourcePrefix, update.ResourceName)
 	}
+
+	// After all updates, ensure placeholder resource is properly configured to avoid conflicts
+	ensurePlaceholderResourceNoConflicts(&currentConfig)
 
 	// Check if configuration actually changed
 	configChanged := !sriovConfigsEqual(originalConfig, currentConfig)
