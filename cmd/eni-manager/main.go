@@ -4136,9 +4136,8 @@ func cleanupSingleDPDKInterface(pciAddr, nodeENIName string, cfg *config.ENIMana
 			log.Printf("Warning: Both modern and legacy SR-IOV config removal failed for PCI %s: modern=%v, legacy=%v",
 				pciAddr, err, legacyErr)
 			return false
-		} else {
-			log.Printf("Removed SR-IOV config for PCI %s using legacy format (NodeENI: %s)", pciAddr, nodeENIName)
 		}
+		log.Printf("Removed SR-IOV config for PCI %s using legacy format (NodeENI: %s)", pciAddr, nodeENIName)
 	} else {
 		log.Printf("Removed SR-IOV config for PCI %s using modern format (NodeENI: %s)", pciAddr, nodeENIName)
 	}
