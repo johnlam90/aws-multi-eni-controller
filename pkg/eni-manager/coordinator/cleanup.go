@@ -53,10 +53,17 @@ func (m *Manager) logCleanupSummary(dpdkInterfacesToCleanup, nonDpdkResourcesToC
 // performSRIOVCleanup performs the actual SR-IOV configuration cleanup
 func (m *Manager) performSRIOVCleanup(dpdkInterfacesToCleanup []string, nodeENIName string) bool {
 	configModified := false
+
+	// Clean up DPDK interfaces
 	for _, pciAddr := range dpdkInterfacesToCleanup {
 		if m.cleanupSingleDPDKInterface(pciAddr, nodeENIName) {
 			configModified = true
 		}
+	}
+
+	// Clean up non-DPDK SR-IOV resources
+	if m.cleanupNonDPDKSRIOVResources(nodeENIName) {
+		configModified = true
 	}
 
 	// Ensure the SR-IOV configuration has a minimal valid structure after cleanup
@@ -95,6 +102,40 @@ func (m *Manager) cleanupSingleDPDKInterface(pciAddr, nodeENIName string) bool {
 	}
 
 	return true
+}
+
+// cleanupNonDPDKSRIOVResources cleans up non-DPDK SR-IOV resources for a NodeENI
+func (m *Manager) cleanupNonDPDKSRIOVResources(nodeENIName string) bool {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	resources, exists := m.nodeENISRIOVResources[nodeENIName]
+	if !exists || len(resources) == 0 {
+		log.Printf("No non-DPDK SR-IOV resources to cleanup for NodeENI: %s", nodeENIName)
+		return false
+	}
+
+	configModified := false
+	log.Printf("Cleaning up %d non-DPDK SR-IOV resources for NodeENI: %s", len(resources), nodeENIName)
+
+	for _, resource := range resources {
+		log.Printf("Removing non-DPDK SR-IOV resource: NodeENI=%s, Resource=%s/%s, PCI=%s",
+			nodeENIName, resource.ResourcePrefix, resource.ResourceName, resource.PCIAddress)
+
+		// Remove the PCI address from SR-IOV configuration
+		if err := m.sriovManager.RemoveResource(resource.PCIAddress); err != nil {
+			log.Printf("Warning: Failed to remove SR-IOV resource for PCI %s: %v", resource.PCIAddress, err)
+		} else {
+			log.Printf("Successfully removed SR-IOV resource for PCI %s (NodeENI: %s)", resource.PCIAddress, nodeENIName)
+			configModified = true
+		}
+	}
+
+	// Remove the tracking for this NodeENI
+	delete(m.nodeENISRIOVResources, nodeENIName)
+	log.Printf("Removed tracking for NodeENI %s SR-IOV resources", nodeENIName)
+
+	return configModified
 }
 
 // handleDevicePluginRestart handles the device plugin restart logic
@@ -145,10 +186,25 @@ func (m *Manager) executeDevicePluginRestart(nodeENIName string) error {
 
 // findSRIOVResourcesForNodeENI finds SR-IOV resources associated with a NodeENI
 func (m *Manager) findSRIOVResourcesForNodeENI(nodeENIName string) ([]string, error) {
-	// This is a simplified implementation
-	// In a real scenario, you'd need to track which SR-IOV resources belong to which NodeENI
-	// For now, we'll return an empty list
-	return []string{}, nil
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	resources, exists := m.nodeENISRIOVResources[nodeENIName]
+	if !exists || len(resources) == 0 {
+		log.Printf("No tracked SR-IOV resources found for NodeENI: %s", nodeENIName)
+		return []string{}, nil
+	}
+
+	var pciAddresses []string
+	for _, resource := range resources {
+		pciAddresses = append(pciAddresses, resource.PCIAddress)
+		log.Printf("Found tracked SR-IOV resource for cleanup: NodeENI=%s, Resource=%s/%s, PCI=%s",
+			nodeENIName, resource.ResourcePrefix, resource.ResourceName, resource.PCIAddress)
+	}
+
+	log.Printf("Found %d SR-IOV resources to cleanup for NodeENI %s: %v",
+		len(pciAddresses), nodeENIName, pciAddresses)
+	return pciAddresses, nil
 }
 
 // removeModernSRIOVDeviceConfig removes a device from modern SR-IOV configuration

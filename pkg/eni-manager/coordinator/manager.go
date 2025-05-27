@@ -18,6 +18,15 @@ import (
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/sriov"
 )
 
+// SRIOVResourceInfo tracks SR-IOV resource information for cleanup
+type SRIOVResourceInfo struct {
+	PCIAddress     string
+	ResourceName   string
+	ResourcePrefix string
+	Driver         string
+	NodeENIName    string
+}
+
 // Manager coordinates all ENI management operations
 type Manager struct {
 	config           *config.ENIManagerConfig
@@ -31,7 +40,11 @@ type Manager struct {
 	previousNodeENIs      map[string]bool   // Track previous NodeENI names for deletion detection
 	lastNodeENIStates     map[string]string // Track NodeENI resource versions to detect changes
 	lastSRIOVConfigHash   string            // Track SR-IOV configuration hash to detect changes
-	mutex                 sync.RWMutex
+
+	// Resource tracking for cleanup
+	nodeENISRIOVResources map[string][]SRIOVResourceInfo // Track SR-IOV resources by NodeENI name
+
+	mutex sync.RWMutex
 }
 
 // NewManager creates a new coordinator manager
@@ -61,6 +74,7 @@ func NewManager(cfg *config.ENIManagerConfig) (*Manager, error) {
 		previousNodeENIs:      make(map[string]bool),
 		lastNodeENIStates:     make(map[string]string),
 		lastSRIOVConfigHash:   "",
+		nodeENISRIOVResources: make(map[string][]SRIOVResourceInfo),
 	}, nil
 }
 
@@ -298,6 +312,15 @@ func (m *Manager) updateSRIOVConfiguration(ctx context.Context, nodeENIs []netwo
 			}
 			updates = append(updates, update)
 
+			// Track this resource for cleanup purposes
+			m.trackSRIOVResource(nodeENI.Name, SRIOVResourceInfo{
+				PCIAddress:     iface.PCIAddress,
+				ResourceName:   resourceName,
+				ResourcePrefix: resourcePrefix,
+				Driver:         "ena",
+				NodeENIName:    nodeENI.Name,
+			})
+
 			log.Printf("Creating SR-IOV update for non-DPDK interface %s: %s/%s at PCI %s",
 				iface.Name, resourcePrefix, resourceName, iface.PCIAddress)
 		}
@@ -354,6 +377,35 @@ func (m *Manager) parseResourceName(resourceName string) (string, string) {
 // ParseResourceNameForTest exposes parseResourceName for testing purposes
 func (m *Manager) ParseResourceNameForTest(resourceName string) (string, string) {
 	return m.parseResourceName(resourceName)
+}
+
+// trackSRIOVResource tracks an SR-IOV resource for cleanup purposes
+func (m *Manager) trackSRIOVResource(nodeENIName string, resourceInfo SRIOVResourceInfo) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	// Initialize the slice if it doesn't exist
+	if m.nodeENISRIOVResources[nodeENIName] == nil {
+		m.nodeENISRIOVResources[nodeENIName] = make([]SRIOVResourceInfo, 0)
+	}
+
+	// Check if this resource is already tracked to avoid duplicates
+	for i, existing := range m.nodeENISRIOVResources[nodeENIName] {
+		if existing.PCIAddress == resourceInfo.PCIAddress &&
+			existing.ResourceName == resourceInfo.ResourceName &&
+			existing.ResourcePrefix == resourceInfo.ResourcePrefix {
+			// Resource already tracked, update it
+			m.nodeENISRIOVResources[nodeENIName][i].Driver = resourceInfo.Driver
+			log.Printf("Updated tracked SR-IOV resource for NodeENI %s: %s/%s at PCI %s",
+				nodeENIName, resourceInfo.ResourcePrefix, resourceInfo.ResourceName, resourceInfo.PCIAddress)
+			return
+		}
+	}
+
+	// Add new resource
+	m.nodeENISRIOVResources[nodeENIName] = append(m.nodeENISRIOVResources[nodeENIName], resourceInfo)
+	log.Printf("Tracking new SR-IOV resource for NodeENI %s: %s/%s at PCI %s",
+		nodeENIName, resourceInfo.ResourcePrefix, resourceInfo.ResourceName, resourceInfo.PCIAddress)
 }
 
 func (m *Manager) findNodeENIForInterface(iface network.InterfaceInfo, nodeENIs []networkingv1alpha1.NodeENI) *networkingv1alpha1.NodeENI {
