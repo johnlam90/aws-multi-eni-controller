@@ -2,8 +2,8 @@ apiVersion: v2
 name: aws-multi-eni-controller
 description: A Helm chart for AWS Multi-ENI Controller
 type: application
-version: "1.3.3"
-appVersion: "v1.3.3"
+version: "1.3.4"
+appVersion: "v1.3.4"
 home: https://github.com/johnlam90/aws-multi-eni-controller
 sources:
   - https://github.com/johnlam90/aws-multi-eni-controller
@@ -20,7 +20,8 @@ keywords:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/changes: |
-    - Update version to v1.3.3
+    - Update version to v1.3.4
+    - Complete modular architecture refactoring from monolithic design
     - Implement cloud-native SR-IOV device plugin restart functionality
     - Replace kubectl dependency with native Kubernetes API calls
     - Add comprehensive RBAC permissions for pod management
@@ -28,3 +29,5 @@ annotations:
     - Support multiple SR-IOV device plugin naming conventions
     - Add timeout protection and improved error handling
     - Add performance testing framework for enterprise-scale deployments
+    - Refactor ENI Manager from 6700+ lines to modular packages
+    - Improve code maintainability and testability

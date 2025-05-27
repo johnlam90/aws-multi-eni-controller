@@ -196,16 +196,26 @@ func (m *Manager) RemoveResource(pciAddress string) error {
 
 // ApplyBatchUpdates applies multiple resource updates in a single operation
 func (m *Manager) ApplyBatchUpdates(updates []ResourceUpdate) error {
+	changed, err := m.ApplyBatchUpdatesWithChangeDetection(updates)
+	_ = changed // Ignore the change detection result for backward compatibility
+	return err
+}
+
+// ApplyBatchUpdatesWithChangeDetection applies multiple resource updates and returns whether the config changed
+func (m *Manager) ApplyBatchUpdatesWithChangeDetection(updates []ResourceUpdate) (bool, error) {
 	if len(updates) == 0 {
-		return nil
+		return false, nil
 	}
 
-	log.Printf("Applying %d batched SR-IOV updates", len(updates))
+	log.Printf("Applying %d batched SR-IOV updates with change detection", len(updates))
 
 	config, err := m.LoadOrCreateConfig()
 	if err != nil {
-		return fmt.Errorf("failed to load SR-IOV config: %v", err)
+		return false, fmt.Errorf("failed to load SR-IOV config: %v", err)
 	}
+
+	// Create a deep copy of the original config for comparison
+	originalConfig := m.deepCopyConfig(config)
 
 	// Apply all updates
 	for _, update := range updates {
@@ -222,8 +232,20 @@ func (m *Manager) ApplyBatchUpdates(updates []ResourceUpdate) error {
 	// Cleanup and validate configuration
 	m.cleanupConfig(config)
 
-	// Save updated configuration
-	return m.SaveConfig(config)
+	// Check if configuration actually changed
+	configChanged := !m.configsEqual(originalConfig, config)
+
+	if configChanged {
+		log.Printf("SR-IOV configuration changed, saving updated config")
+		// Save updated configuration
+		if err := m.SaveConfig(config); err != nil {
+			return false, err
+		}
+	} else {
+		log.Printf("SR-IOV configuration unchanged, no save needed")
+	}
+
+	return configChanged, nil
 }
 
 // RestartDevicePlugin restarts the SR-IOV device plugin
@@ -495,4 +517,146 @@ func (m *Manager) restartDevicePluginPods(k8sClient kubernetes.Interface) error 
 
 	log.Printf("Successfully initiated restart of %d SR-IOV device plugin pods", deletedPods)
 	return nil
+}
+
+// deepCopyConfig creates a deep copy of the SR-IOV configuration
+func (m *Manager) deepCopyConfig(config *ModernSRIOVDPConfig) *ModernSRIOVDPConfig {
+	if config == nil {
+		return nil
+	}
+
+	copy := &ModernSRIOVDPConfig{
+		ResourceList: make([]ModernSRIOVResource, len(config.ResourceList)),
+	}
+
+	for i, resource := range config.ResourceList {
+		copy.ResourceList[i] = ModernSRIOVResource{
+			ResourceName:   resource.ResourceName,
+			ResourcePrefix: resource.ResourcePrefix,
+			Selectors:      make([]ModernSRIOVSelector, len(resource.Selectors)),
+		}
+
+		for j, selector := range resource.Selectors {
+			copy.ResourceList[i].Selectors[j] = ModernSRIOVSelector{
+				Drivers:      append([]string(nil), selector.Drivers...),
+				PCIAddresses: append([]string(nil), selector.PCIAddresses...),
+			}
+		}
+	}
+
+	return copy
+}
+
+// configsEqual compares two SR-IOV configurations for equality
+func (m *Manager) configsEqual(config1, config2 *ModernSRIOVDPConfig) bool {
+	if config1 == nil && config2 == nil {
+		return true
+	}
+	if config1 == nil || config2 == nil {
+		return false
+	}
+
+	if len(config1.ResourceList) != len(config2.ResourceList) {
+		return false
+	}
+
+	// Create maps for easier comparison
+	resources1 := make(map[string]ModernSRIOVResource)
+	resources2 := make(map[string]ModernSRIOVResource)
+
+	for _, resource := range config1.ResourceList {
+		key := resource.ResourcePrefix + "/" + resource.ResourceName
+		resources1[key] = resource
+	}
+
+	for _, resource := range config2.ResourceList {
+		key := resource.ResourcePrefix + "/" + resource.ResourceName
+		resources2[key] = resource
+	}
+
+	// Compare resources
+	for key, resource1 := range resources1 {
+		resource2, exists := resources2[key]
+		if !exists {
+			return false
+		}
+
+		if !m.resourcesEqual(resource1, resource2) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// resourcesEqual compares two SR-IOV resources for equality
+func (m *Manager) resourcesEqual(resource1, resource2 ModernSRIOVResource) bool {
+	if resource1.ResourceName != resource2.ResourceName ||
+		resource1.ResourcePrefix != resource2.ResourcePrefix {
+		return false
+	}
+
+	if len(resource1.Selectors) != len(resource2.Selectors) {
+		return false
+	}
+
+	for i, selector1 := range resource1.Selectors {
+		if i >= len(resource2.Selectors) {
+			return false
+		}
+		selector2 := resource2.Selectors[i]
+
+		if !m.selectorsEqual(selector1, selector2) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// selectorsEqual compares two SR-IOV selectors for equality
+func (m *Manager) selectorsEqual(selector1, selector2 ModernSRIOVSelector) bool {
+	// Compare drivers
+	if len(selector1.Drivers) != len(selector2.Drivers) {
+		return false
+	}
+
+	drivers1 := make(map[string]bool)
+	drivers2 := make(map[string]bool)
+
+	for _, driver := range selector1.Drivers {
+		drivers1[driver] = true
+	}
+	for _, driver := range selector2.Drivers {
+		drivers2[driver] = true
+	}
+
+	for driver := range drivers1 {
+		if !drivers2[driver] {
+			return false
+		}
+	}
+
+	// Compare PCI addresses
+	if len(selector1.PCIAddresses) != len(selector2.PCIAddresses) {
+		return false
+	}
+
+	pciAddrs1 := make(map[string]bool)
+	pciAddrs2 := make(map[string]bool)
+
+	for _, addr := range selector1.PCIAddresses {
+		pciAddrs1[addr] = true
+	}
+	for _, addr := range selector2.PCIAddresses {
+		pciAddrs2[addr] = true
+	}
+
+	for addr := range pciAddrs1 {
+		if !pciAddrs2[addr] {
+			return false
+		}
+	}
+
+	return true
 }

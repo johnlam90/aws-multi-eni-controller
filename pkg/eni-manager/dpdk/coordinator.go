@@ -19,14 +19,19 @@ type Coordinator struct {
 	sriovManager *sriov.Manager
 	config       *config.ENIManagerConfig
 	sriovMutex   sync.Mutex
+
+	// State tracking for change detection
+	lastNodeENIStates map[string]string // Track NodeENI resource versions
+	stateMutex        sync.RWMutex
 }
 
 // NewCoordinator creates a new DPDK coordinator
 func NewCoordinator(cfg *config.ENIManagerConfig) *Coordinator {
 	return &Coordinator{
-		manager:      NewManager(cfg),
-		sriovManager: sriov.NewManager(cfg.SRIOVDPConfigPath),
-		config:       cfg,
+		manager:           NewManager(cfg),
+		sriovManager:      sriov.NewManager(cfg.SRIOVDPConfigPath),
+		config:            cfg,
+		lastNodeENIStates: make(map[string]string),
 	}
 }
 
@@ -41,6 +46,14 @@ type SRIOVUpdate struct {
 // ProcessNodeENIBindings processes DPDK bindings for all NodeENI resources
 func (c *Coordinator) ProcessNodeENIBindings(ctx context.Context, nodeName string, nodeENIs []networkingv1alpha1.NodeENI) error {
 	log.Printf("Processing DPDK bindings for node %s with %d NodeENI resources", nodeName, len(nodeENIs))
+
+	// Check if any NodeENI has actually changed to avoid unnecessary processing
+	if !c.hasNodeENIChanges(nodeENIs) {
+		log.Printf("No NodeENI changes detected for DPDK processing, skipping")
+		return nil
+	}
+
+	log.Printf("NodeENI changes detected, processing DPDK bindings")
 
 	// Collect all DPDK SR-IOV updates
 	dpdkSriovUpdates := make(map[string]SRIOVUpdate)
@@ -59,6 +72,9 @@ func (c *Coordinator) ProcessNodeENIBindings(ctx context.Context, nodeName strin
 			return fmt.Errorf("failed to apply batched DPDK SR-IOV updates: %v", err)
 		}
 	}
+
+	// Update the NodeENI state tracking
+	c.updateNodeENIStates(nodeENIs)
 
 	return nil
 }
@@ -333,17 +349,23 @@ func (c *Coordinator) applyBatchedSRIOVUpdates(dpdkSriovUpdates map[string]SRIOV
 		})
 	}
 
-	// Apply the updates using the SR-IOV manager
-	if err := c.sriovManager.ApplyBatchUpdates(updates); err != nil {
+	// Apply the updates using the SR-IOV manager with change detection
+	configChanged, err := c.sriovManager.ApplyBatchUpdatesWithChangeDetection(updates)
+	if err != nil {
 		return fmt.Errorf("failed to apply SR-IOV updates: %v", err)
 	}
 
-	// Restart the device plugin to pick up the changes
-	if err := c.sriovManager.RestartDevicePlugin(); err != nil {
-		log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
-		// Don't fail the operation for restart failures
+	// Only restart the device plugin if configuration actually changed
+	if configChanged {
+		log.Printf("DPDK SR-IOV configuration changed, restarting device plugin")
+		if err := c.sriovManager.RestartDevicePlugin(); err != nil {
+			log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
+			// Don't fail the operation for restart failures
+		} else {
+			log.Printf("Successfully restarted SR-IOV device plugin after DPDK updates")
+		}
 	} else {
-		log.Printf("Successfully restarted SR-IOV device plugin after DPDK updates")
+		log.Printf("DPDK SR-IOV configuration unchanged, no device plugin restart needed")
 	}
 
 	return nil
@@ -356,4 +378,45 @@ func (c *Coordinator) updateNodeENIStatus(eniID, nodeENIName, dpdkDriver string,
 	log.Printf("Would update NodeENI %s status: ENI=%s, bound=%t, driver=%s, PCI=%s, resource=%s",
 		nodeENIName, eniID, dpdkBound, dpdkDriver, pciAddress, resourceName)
 	return nil
+}
+
+// hasNodeENIChanges checks if NodeENI resources have changed since last processing
+func (c *Coordinator) hasNodeENIChanges(nodeENIs []networkingv1alpha1.NodeENI) bool {
+	c.stateMutex.RLock()
+	defer c.stateMutex.RUnlock()
+
+	// Check if the number of NodeENIs changed
+	if len(nodeENIs) != len(c.lastNodeENIStates) {
+		log.Printf("DPDK: NodeENI count changed: %d -> %d", len(c.lastNodeENIStates), len(nodeENIs))
+		return true
+	}
+
+	// Check if any NodeENI resource version changed
+	for _, nodeENI := range nodeENIs {
+		lastResourceVersion, exists := c.lastNodeENIStates[nodeENI.Name]
+		currentResourceVersion := nodeENI.ObjectMeta.ResourceVersion
+
+		if !exists || lastResourceVersion != currentResourceVersion {
+			log.Printf("DPDK: NodeENI %s changed: %s -> %s", nodeENI.Name, lastResourceVersion, currentResourceVersion)
+			return true
+		}
+	}
+
+	return false
+}
+
+// updateNodeENIStates updates the tracked NodeENI states
+func (c *Coordinator) updateNodeENIStates(nodeENIs []networkingv1alpha1.NodeENI) {
+	c.stateMutex.Lock()
+	defer c.stateMutex.Unlock()
+
+	// Clear old states
+	c.lastNodeENIStates = make(map[string]string)
+
+	// Update with current states
+	for _, nodeENI := range nodeENIs {
+		c.lastNodeENIStates[nodeENI.Name] = nodeENI.ObjectMeta.ResourceVersion
+	}
+
+	log.Printf("DPDK: Updated NodeENI state tracking for %d resources", len(nodeENIs))
 }

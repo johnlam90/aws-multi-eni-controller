@@ -27,7 +27,9 @@ type Manager struct {
 
 	// State management
 	lastProcessedNodeENIs map[string]time.Time
-	previousNodeENIs      map[string]bool // Track previous NodeENI names for deletion detection
+	previousNodeENIs      map[string]bool   // Track previous NodeENI names for deletion detection
+	lastNodeENIStates     map[string]string // Track NodeENI resource versions to detect changes
+	lastSRIOVConfigHash   string            // Track SR-IOV configuration hash to detect changes
 	mutex                 sync.RWMutex
 }
 
@@ -56,6 +58,8 @@ func NewManager(cfg *config.ENIManagerConfig) (*Manager, error) {
 		sriovManager:          sriovMgr,
 		lastProcessedNodeENIs: make(map[string]time.Time),
 		previousNodeENIs:      make(map[string]bool),
+		lastNodeENIStates:     make(map[string]string),
+		lastSRIOVConfigHash:   "",
 	}, nil
 }
 
@@ -245,7 +249,13 @@ func (m *Manager) processDPDKBindings(ctx context.Context, nodeENIs []networking
 
 // updateSRIOVConfiguration updates SR-IOV device plugin configuration
 func (m *Manager) updateSRIOVConfiguration(ctx context.Context, nodeENIs []networkingv1alpha1.NodeENI) error {
-	log.Printf("Updating SR-IOV configuration for %d NodeENI resources", len(nodeENIs))
+	// Check if NodeENI resources have actually changed
+	if !m.hasNodeENIChanges(nodeENIs) {
+		log.Printf("No NodeENI changes detected, skipping SR-IOV configuration update")
+		return nil
+	}
+
+	log.Printf("NodeENI changes detected, updating SR-IOV configuration for %d NodeENI resources", len(nodeENIs))
 
 	// Collect SR-IOV updates
 	var updates []sriov.ResourceUpdate
@@ -288,15 +298,29 @@ func (m *Manager) updateSRIOVConfiguration(ctx context.Context, nodeENIs []netwo
 
 	// Apply batched updates
 	if len(updates) > 0 {
-		if err := m.sriovManager.ApplyBatchUpdates(updates); err != nil {
+		log.Printf("Applying %d SR-IOV configuration updates", len(updates))
+
+		// Check if updates will actually change the configuration
+		configChanged, err := m.sriovManager.ApplyBatchUpdatesWithChangeDetection(updates)
+		if err != nil {
 			return fmt.Errorf("failed to apply SR-IOV updates: %v", err)
 		}
 
-		// Restart device plugin if needed
-		if err := m.sriovManager.RestartDevicePlugin(); err != nil {
-			log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
+		// Only restart device plugin if configuration actually changed
+		if configChanged {
+			log.Printf("SR-IOV configuration changed, restarting device plugin")
+			if err := m.sriovManager.RestartDevicePlugin(); err != nil {
+				log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
+			}
+		} else {
+			log.Printf("SR-IOV configuration unchanged, no device plugin restart needed")
 		}
+	} else {
+		log.Printf("No SR-IOV configuration updates needed")
 	}
+
+	// Update the NodeENI state tracking
+	m.updateNodeENIStates(nodeENIs)
 
 	return nil
 }
@@ -388,6 +412,47 @@ func (m *Manager) handleSingleNodeENIDeletion(nodeENIName string) error {
 
 	log.Printf("Successfully cleaned up SR-IOV config for deleted NodeENI: %s", nodeENIName)
 	return nil
+}
+
+// hasNodeENIChanges checks if NodeENI resources have changed since last processing
+func (m *Manager) hasNodeENIChanges(nodeENIs []networkingv1alpha1.NodeENI) bool {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	// Check if the number of NodeENIs changed
+	if len(nodeENIs) != len(m.lastNodeENIStates) {
+		log.Printf("NodeENI count changed: %d -> %d", len(m.lastNodeENIStates), len(nodeENIs))
+		return true
+	}
+
+	// Check if any NodeENI resource version changed
+	for _, nodeENI := range nodeENIs {
+		lastResourceVersion, exists := m.lastNodeENIStates[nodeENI.Name]
+		currentResourceVersion := nodeENI.ObjectMeta.ResourceVersion
+
+		if !exists || lastResourceVersion != currentResourceVersion {
+			log.Printf("NodeENI %s changed: %s -> %s", nodeENI.Name, lastResourceVersion, currentResourceVersion)
+			return true
+		}
+	}
+
+	return false
+}
+
+// updateNodeENIStates updates the tracked NodeENI states
+func (m *Manager) updateNodeENIStates(nodeENIs []networkingv1alpha1.NodeENI) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	// Clear old states
+	m.lastNodeENIStates = make(map[string]string)
+
+	// Update with current states
+	for _, nodeENI := range nodeENIs {
+		m.lastNodeENIStates[nodeENI.Name] = nodeENI.ObjectMeta.ResourceVersion
+	}
+
+	log.Printf("Updated NodeENI state tracking for %d resources", len(nodeENIs))
 }
 
 // cleanupSRIOVConfigForNodeENI removes SR-IOV configuration for a deleted NodeENI

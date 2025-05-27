@@ -99,10 +99,15 @@ func (m *Manager) cleanupSingleDPDKInterface(pciAddr, nodeENIName string) bool {
 
 // handleDevicePluginRestart handles the device plugin restart logic
 func (m *Manager) handleDevicePluginRestart(configModified bool, dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup []string, totalResourcesToCleanup int, nodeENIName string) error {
-	shouldRestart := configModified || len(dpdkInterfacesToCleanup) > 0 || len(nonDpdkResourcesToCleanup) > 0 || (totalResourcesToCleanup == 0 && m.config.SRIOVDPConfigPath != "")
+	// Only restart if there were actual changes made to the configuration
+	shouldRestart := configModified && (len(dpdkInterfacesToCleanup) > 0 || len(nonDpdkResourcesToCleanup) > 0)
 
 	if !shouldRestart {
-		log.Printf("No SR-IOV device plugin restart needed for NodeENI %s", nodeENIName)
+		if configModified {
+			log.Printf("SR-IOV config was modified but no resources were cleaned up for NodeENI %s - no restart needed", nodeENIName)
+		} else {
+			log.Printf("No SR-IOV configuration changes for NodeENI %s - no restart needed", nodeENIName)
+		}
 		return nil
 	}
 

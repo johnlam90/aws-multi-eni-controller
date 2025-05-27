@@ -31,7 +31,7 @@ var (
 	eniPattern    = flag.String("eni-pattern", "^(eth|ens|eni|en)[0-9]+", "Regex pattern to identify ENI interfaces")
 	ignoreList    = flag.String("ignore-interfaces", "tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0", "Comma-separated list of interfaces to ignore")
 	useNetlink    = flag.Bool("use-netlink", true, "Use netlink subscription instead of polling (recommended)")
-	version       = "v1.3.0" // Updated version for refactored architecture
+	version       = "v1.3.4" // Updated version for refactored architecture
 )
 
 func main() {
@@ -143,16 +143,16 @@ func getNodeName() string {
 func detectPrimaryInterface() (string, error) {
 	// This is a simplified implementation
 	// In production, you'd want more sophisticated detection logic
-	
+
 	// Check for common primary interface names
 	commonNames := []string{"eth0", "ens5", "eni0"}
-	
+
 	for _, name := range commonNames {
 		if _, err := os.Stat(fmt.Sprintf("/sys/class/net/%s", name)); err == nil {
 			return name, nil
 		}
 	}
-	
+
 	return "", fmt.Errorf("could not detect primary interface")
 }
 

@@ -4,7 +4,7 @@
 [![Go Report Card](https://img.shields.io/badge/Go%20Report-A%2B-brightgreen?logo=go)](https://github.com/johnlam90/aws-multi-eni-controller/actions/workflows/go-report.yml)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8.svg)](https://go.dev/)
 [![Helm](https://img.shields.io/badge/Helm-v3-0F1689.svg)](https://helm.sh)
-[![Version](https://img.shields.io/badge/Version-v1.3.3-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
+[![Version](https://img.shields.io/badge/Version-v1.3.4-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-Active-brightgreen)](https://johnlam90.github.io/aws-multi-eni-controller/)
 [![OpenSSF Best Practices](https://img.shields.io/badge/OpenSSF-Best%20Practices-brightgreen)](https://www.bestpractices.dev/)
 
