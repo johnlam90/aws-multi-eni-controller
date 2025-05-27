@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -285,14 +286,20 @@ func (m *Manager) updateSRIOVConfiguration(ctx context.Context, nodeENIs []netwo
 
 		// Create SR-IOV update for non-DPDK interface
 		if iface.PCIAddress != "" {
+			// Parse resource name from NodeENI spec or use default
+			resourcePrefix, resourceName := m.parseResourceName(nodeENI.Spec.DPDKResourceName)
+
 			update := sriov.ResourceUpdate{
 				PCIAddress:     iface.PCIAddress,
 				Driver:         "ena", // Default driver for AWS ENA devices
-				ResourceName:   "sriov_net",
-				ResourcePrefix: "intel.com",
+				ResourceName:   resourceName,
+				ResourcePrefix: resourcePrefix,
 				Action:         "add",
 			}
 			updates = append(updates, update)
+
+			log.Printf("Creating SR-IOV update for non-DPDK interface %s: %s/%s at PCI %s",
+				iface.Name, resourcePrefix, resourceName, iface.PCIAddress)
 		}
 	}
 
@@ -326,6 +333,28 @@ func (m *Manager) updateSRIOVConfiguration(ctx context.Context, nodeENIs []netwo
 }
 
 // Helper methods
+
+// parseResourceName parses a resource name in the format "prefix/name" or returns defaults
+func (m *Manager) parseResourceName(resourceName string) (string, string) {
+	if resourceName == "" {
+		// Return default values if no resource name is specified
+		return "intel.com", "sriov_net"
+	}
+
+	// Split by "/" to separate prefix and name
+	parts := strings.Split(resourceName, "/")
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+
+	// If no "/" found, treat the whole string as the resource name with default prefix
+	return "intel.com", resourceName
+}
+
+// ParseResourceNameForTest exposes parseResourceName for testing purposes
+func (m *Manager) ParseResourceNameForTest(resourceName string) (string, string) {
+	return m.parseResourceName(resourceName)
+}
 
 func (m *Manager) findNodeENIForInterface(iface network.InterfaceInfo, nodeENIs []networkingv1alpha1.NodeENI) *networkingv1alpha1.NodeENI {
 	// Try to match by device index first
