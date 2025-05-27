@@ -9,21 +9,24 @@ import (
 
 	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/sriov"
 	vnetlink "github.com/vishvananda/netlink"
 )
 
 // Coordinator orchestrates DPDK binding operations for NodeENI resources
 type Coordinator struct {
-	manager    *Manager
-	config     *config.ENIManagerConfig
-	sriovMutex sync.Mutex
+	manager      *Manager
+	sriovManager *sriov.Manager
+	config       *config.ENIManagerConfig
+	sriovMutex   sync.Mutex
 }
 
 // NewCoordinator creates a new DPDK coordinator
 func NewCoordinator(cfg *config.ENIManagerConfig) *Coordinator {
 	return &Coordinator{
-		manager: NewManager(cfg),
-		config:  cfg,
+		manager:      NewManager(cfg),
+		sriovManager: sriov.NewManager(cfg.SRIOVDPConfigPath),
+		config:       cfg,
 	}
 }
 
@@ -311,11 +314,36 @@ func (c *Coordinator) applyBatchedSRIOVUpdates(dpdkSriovUpdates map[string]SRIOV
 
 	log.Printf("Applying %d batched DPDK SR-IOV updates", len(dpdkSriovUpdates))
 
-	// This would integrate with the SR-IOV configuration management
-	// For now, just log the updates
+	if len(dpdkSriovUpdates) == 0 {
+		return nil
+	}
+
+	// Convert DPDK SR-IOV updates to the format expected by the SR-IOV manager
+	var updates []sriov.ResourceUpdate
 	for resourceName, update := range dpdkSriovUpdates {
-		log.Printf("Would apply SR-IOV update: resource=%s, PCI=%s, driver=%s",
+		log.Printf("Applying SR-IOV update: resource=%s, PCI=%s, driver=%s",
 			resourceName, update.PCIAddress, update.Driver)
+
+		updates = append(updates, sriov.ResourceUpdate{
+			PCIAddress:     update.PCIAddress,
+			Driver:         update.Driver,
+			ResourceName:   update.ResourceName,
+			ResourcePrefix: update.ResourcePrefix,
+			Action:         "add",
+		})
+	}
+
+	// Apply the updates using the SR-IOV manager
+	if err := c.sriovManager.ApplyBatchUpdates(updates); err != nil {
+		return fmt.Errorf("failed to apply SR-IOV updates: %v", err)
+	}
+
+	// Restart the device plugin to pick up the changes
+	if err := c.sriovManager.RestartDevicePlugin(); err != nil {
+		log.Printf("Warning: Failed to restart SR-IOV device plugin: %v", err)
+		// Don't fail the operation for restart failures
+	} else {
+		log.Printf("Successfully restarted SR-IOV device plugin after DPDK updates")
 	}
 
 	return nil

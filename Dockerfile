@@ -20,6 +20,9 @@ RUN sed -i '/^toolchain/d' go.mod && GOTOOLCHAIN=${GOTOOLCHAIN} go mod download
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 
+# Accept SKIP_TESTS as a build argument
+ARG SKIP_TESTS=false
+
 # Run tests if not skipped (can be skipped in CI since tests are run separately)
 RUN if [ "$SKIP_TESTS" = "false" ]; then \
       echo "Running tests..." && \

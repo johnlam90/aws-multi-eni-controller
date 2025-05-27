@@ -9,7 +9,9 @@ import (
 	"time"
 
 	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -33,6 +35,11 @@ func NewClient() (*Client, error) {
 	scheme := runtime.NewScheme()
 	if err := networkingv1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("failed to add networking scheme: %v", err)
+	}
+
+	// Add core/v1 scheme for Node resources
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add core/v1 scheme: %v", err)
 	}
 
 	// Create the client
@@ -274,18 +281,32 @@ func (c *Client) isValidPCIAddress(addr string) bool {
 		addr[10] == '.'
 }
 
+// GetNode retrieves a node by name
+func (c *Client) GetNode(ctx context.Context, nodeName string) (*corev1.Node, error) {
+	var node corev1.Node
+	if err := c.client.Get(ctx, types.NamespacedName{Name: nodeName}, &node); err != nil {
+		return nil, fmt.Errorf("failed to get node %s: %v", nodeName, err)
+	}
+	return &node, nil
+}
+
 // nodeMatchesSelector checks if a node matches the given node selector
 func (c *Client) nodeMatchesSelector(nodeName string, nodeSelector map[string]string) bool {
-	// Simple implementation: check if node name matches any value in the selector
-	// In a real implementation, you'd want to fetch the node and check its labels
-	for key, value := range nodeSelector {
-		if key == "kubernetes.io/hostname" && value == nodeName {
-			return true
+	// Get the node to check its labels
+	ctx := context.Background()
+	node, err := c.GetNode(ctx, nodeName)
+	if err != nil {
+		log.Printf("Failed to get node %s for label matching: %v", nodeName, err)
+		// Fallback to simple hostname matching
+		for key, value := range nodeSelector {
+			if key == "kubernetes.io/hostname" && value == nodeName {
+				return true
+			}
 		}
-		// For simplicity, also check if the node name appears as a value
-		if value == nodeName {
-			return true
-		}
+		return false
 	}
-	return false
+
+	// Use proper Kubernetes label selector matching
+	selector := labels.SelectorFromSet(nodeSelector)
+	return selector.Matches(labels.Set(node.Labels))
 }

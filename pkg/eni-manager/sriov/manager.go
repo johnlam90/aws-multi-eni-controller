@@ -3,12 +3,18 @@
 package sriov
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 // Manager handles SR-IOV device plugin configuration
@@ -224,11 +230,21 @@ func (m *Manager) ApplyBatchUpdates(updates []ResourceUpdate) error {
 func (m *Manager) RestartDevicePlugin() error {
 	log.Printf("Restarting SR-IOV device plugin")
 
-	// This would implement the actual restart logic
-	// For now, just log the action
-	log.Printf("SR-IOV device plugin restart requested")
+	// Check NODE_NAME first before creating Kubernetes client
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		return fmt.Errorf("NODE_NAME environment variable not set - cannot determine which node's SR-IOV device plugin to restart")
+	}
 
-	return nil
+	// Create a Kubernetes client for device plugin restart
+	k8sClient, err := m.createKubernetesClient()
+	if err != nil {
+		log.Printf("Warning: Failed to create Kubernetes client for device plugin restart: %v", err)
+		return err
+	}
+
+	// Use the restart logic from the old implementation
+	return m.restartDevicePluginPods(k8sClient)
 }
 
 // Helper methods
@@ -370,4 +386,113 @@ func (m *Manager) containsString(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// createKubernetesClient creates a Kubernetes client for device plugin operations
+func (m *Manager) createKubernetesClient() (kubernetes.Interface, error) {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get in-cluster config: %v", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kubernetes client: %v", err)
+	}
+
+	return clientset, nil
+}
+
+// restartDevicePluginPods restarts the SR-IOV device plugin pods
+func (m *Manager) restartDevicePluginPods(k8sClient kubernetes.Interface) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get the current node name for node-specific pod filtering
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		return fmt.Errorf("NODE_NAME environment variable not set - cannot determine which node's SR-IOV device plugin to restart")
+	}
+
+	// Try different label selectors for SR-IOV device plugin pods
+	labelSelectors := []string{
+		"app=sriov-device-plugin",
+		"app=kube-sriov-device-plugin",
+		"name=sriov-device-plugin",
+		"component=sriov-device-plugin",
+	}
+
+	// Try different namespaces where SR-IOV device plugin might be deployed
+	namespaces := []string{
+		"kube-system",
+		"sriov-network-operator",
+		"openshift-sriov-network-operator",
+		"intel-device-plugins-operator",
+		"default",
+	}
+
+	deletedPods := 0
+	var lastErr error
+
+	for _, namespace := range namespaces {
+		for _, labelSelector := range labelSelectors {
+			listOptions := metav1.ListOptions{
+				LabelSelector: labelSelector,
+				FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
+			}
+
+			pods, err := k8sClient.CoreV1().Pods(namespace).List(ctx, listOptions)
+			if err != nil {
+				log.Printf("Warning: Failed to list pods with selector %s in namespace %s: %v", labelSelector, namespace, err)
+				lastErr = err
+				continue
+			}
+
+			if len(pods.Items) > 0 {
+				log.Printf("Found %d SR-IOV device plugin pods on node %s with selector %s in namespace %s", len(pods.Items), nodeName, labelSelector, namespace)
+
+				// Delete each pod to trigger restart
+				for _, pod := range pods.Items {
+					// Double-check node affinity as additional safety measure
+					if pod.Spec.NodeName != nodeName {
+						log.Printf("Warning: Pod %s is not on expected node %s (actual: %s), skipping", pod.Name, nodeName, pod.Spec.NodeName)
+						continue
+					}
+
+					log.Printf("Deleting SR-IOV device plugin pod %s on node %s in namespace %s", pod.Name, nodeName, namespace)
+
+					err := k8sClient.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
+						GracePeriodSeconds: &[]int64{0}[0], // Force immediate deletion
+					})
+					if err != nil {
+						log.Printf("Warning: Failed to delete pod %s on node %s: %v", pod.Name, nodeName, err)
+						lastErr = err
+					} else {
+						log.Printf("Successfully deleted SR-IOV device plugin pod %s on node %s in namespace %s", pod.Name, nodeName, namespace)
+						deletedPods++
+					}
+				}
+
+				// If we found and processed pods with this selector and namespace, break out of label selector loop
+				if len(pods.Items) > 0 {
+					break
+				}
+			}
+		}
+
+		// If we found pods in this namespace, break out of namespace loop
+		if deletedPods > 0 {
+			break
+		}
+	}
+
+	if deletedPods == 0 {
+		if lastErr != nil {
+			return fmt.Errorf("failed to restart any SR-IOV device plugin pods: %v", lastErr)
+		}
+		return fmt.Errorf("no SR-IOV device plugin pods found in any namespace")
+	}
+
+	log.Printf("Successfully initiated restart of %d SR-IOV device plugin pods", deletedPods)
+	return nil
 }

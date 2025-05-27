@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
 	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/dpdk"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/kubernetes"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/network"
@@ -24,9 +24,10 @@ type Manager struct {
 	networkManager   *network.Manager
 	dpdkCoordinator  *dpdk.Coordinator
 	sriovManager     *sriov.Manager
-	
+
 	// State management
 	lastProcessedNodeENIs map[string]time.Time
+	previousNodeENIs      map[string]bool // Track previous NodeENI names for deletion detection
 	mutex                 sync.RWMutex
 }
 
@@ -54,6 +55,7 @@ func NewManager(cfg *config.ENIManagerConfig) (*Manager, error) {
 		dpdkCoordinator:       dpdkCoord,
 		sriovManager:          sriovMgr,
 		lastProcessedNodeENIs: make(map[string]time.Time),
+		previousNodeENIs:      make(map[string]bool),
 	}, nil
 }
 
@@ -110,6 +112,22 @@ func (m *Manager) processNodeENIs(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to get NodeENI resources: %v", err)
 	}
+
+	// Create current NodeENI map for deletion detection
+	currentNodeENIs := make(map[string]bool)
+	for _, nodeENI := range nodeENIs {
+		currentNodeENIs[nodeENI.Name] = true
+	}
+
+	// Handle NodeENI deletions
+	if err := m.handleNodeENIDeletions(currentNodeENIs); err != nil {
+		log.Printf("Error handling NodeENI deletions: %v", err)
+	}
+
+	// Update previous NodeENI tracking
+	m.mutex.Lock()
+	m.previousNodeENIs = currentNodeENIs
+	m.mutex.Unlock()
 
 	if len(nodeENIs) == 0 {
 		log.Printf("No NodeENI resources found for node %s", m.config.NodeName)
@@ -320,11 +338,77 @@ func (m *Manager) GetStatus() map[string]interface{} {
 	defer m.mutex.RUnlock()
 
 	status := map[string]interface{}{
-		"node_name":              m.config.NodeName,
-		"check_interval":         m.config.CheckInterval.String(),
-		"last_processed_count":   len(m.lastProcessedNodeENIs),
-		"dpdk_bound_interfaces":  len(m.config.DPDKBoundInterfaces),
+		"node_name":             m.config.NodeName,
+		"check_interval":        m.config.CheckInterval.String(),
+		"last_processed_count":  len(m.lastProcessedNodeENIs),
+		"dpdk_bound_interfaces": len(m.config.DPDKBoundInterfaces),
 	}
 
 	return status
+}
+
+// handleNodeENIDeletions detects and handles deleted NodeENI resources
+func (m *Manager) handleNodeENIDeletions(currentNodeENIs map[string]bool) error {
+	m.mutex.RLock()
+	previousNodeENIs := m.previousNodeENIs
+	m.mutex.RUnlock()
+
+	log.Printf("NodeENI deletion check: found %d current NodeENIs, tracking %d previous NodeENIs",
+		len(currentNodeENIs), len(previousNodeENIs))
+
+	if previousNodeENIs == nil {
+		log.Printf("Previous NodeENI tracking not initialized yet, skipping deletion check")
+		return nil
+	}
+
+	deletedCount := 0
+	for nodeENIName := range previousNodeENIs {
+		if !currentNodeENIs[nodeENIName] {
+			deletedCount++
+			if err := m.handleSingleNodeENIDeletion(nodeENIName); err != nil {
+				log.Printf("Warning: Failed to handle deletion of NodeENI %s: %v", nodeENIName, err)
+			}
+		}
+	}
+
+	if deletedCount > 0 {
+		log.Printf("Processed %d deleted NodeENI resources", deletedCount)
+	}
+
+	return nil
+}
+
+// handleSingleNodeENIDeletion handles the deletion of a single NodeENI resource
+func (m *Manager) handleSingleNodeENIDeletion(nodeENIName string) error {
+	log.Printf("Detected deleted NodeENI: %s, cleaning up SR-IOV configuration", nodeENIName)
+
+	if err := m.cleanupSRIOVConfigForNodeENI(nodeENIName); err != nil {
+		return fmt.Errorf("failed to cleanup SR-IOV config for deleted NodeENI %s: %v", nodeENIName, err)
+	}
+
+	log.Printf("Successfully cleaned up SR-IOV config for deleted NodeENI: %s", nodeENIName)
+	return nil
+}
+
+// cleanupSRIOVConfigForNodeENI removes SR-IOV configuration for a deleted NodeENI
+func (m *Manager) cleanupSRIOVConfigForNodeENI(nodeENIName string) error {
+	log.Printf("Cleaning up SR-IOV configuration for deleted NodeENI: %s", nodeENIName)
+
+	// Gather resources to cleanup
+	dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup := m.gatherCleanupResources(nodeENIName)
+	totalResourcesToCleanup := len(dpdkInterfacesToCleanup) + len(nonDpdkResourcesToCleanup)
+
+	// Early return if nothing to cleanup
+	if m.shouldSkipCleanup(totalResourcesToCleanup, nodeENIName) {
+		return nil
+	}
+
+	// Log cleanup summary
+	m.logCleanupSummary(dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup, totalResourcesToCleanup, nodeENIName)
+
+	// Perform the actual cleanup
+	configModified := m.performSRIOVCleanup(dpdkInterfacesToCleanup, nodeENIName)
+
+	// Handle device plugin restart
+	return m.handleDevicePluginRestart(configModified, dpdkInterfacesToCleanup, nonDpdkResourcesToCleanup, totalResourcesToCleanup, nodeENIName)
 }
