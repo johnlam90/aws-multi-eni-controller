@@ -11,7 +11,7 @@ This document provides a comprehensive guide for migrating from the monolithic E
 cmd/eni-manager/
 └── main.go (6700+ lines)
     ├── DPDK operations
-    ├── SR-IOV management  
+    ├── SR-IOV management
     ├── Network interface operations
     ├── Kubernetes API interactions
     ├── Configuration management
@@ -225,7 +225,7 @@ spec:
     spec:
       containers:
       - name: eni-manager
-        image: ghcr.io/johnlam90/aws-multi-eni-controller:v1.3.0
+        image: ghcr.io/johnlam90/aws-multi-eni-controller:v1.3.4
         # Same configuration, same behavior
 ```
 
@@ -289,7 +289,7 @@ import "github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/network"
 ```go
 // Enhanced error information available
 if dpdkErr, ok := err.(*dpdk.DPDKError); ok {
-    log.Printf("DPDK operation %s failed for PCI %s: %v", 
+    log.Printf("DPDK operation %s failed for PCI %s: %v",
         dpdkErr.Operation, dpdkErr.PCIAddr, dpdkErr.Err)
 }
 ```

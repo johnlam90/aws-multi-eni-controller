@@ -1,13 +1,11 @@
 package integration
 
 import (
-	"context"
 	"testing"
 
 	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/coordinator"
-	"github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/network"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/sriov"
 )
 
