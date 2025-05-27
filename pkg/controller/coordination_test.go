@@ -22,6 +22,7 @@ func TestCoordinationManager_AcquireLock(t *testing.T) {
 	}
 	if lock == nil {
 		t.Error("Expected lock to be returned")
+		return
 	}
 	if lock.ResourceID != "resource1" {
 		t.Errorf("Expected resource ID 'resource1', got '%s'", lock.ResourceID)

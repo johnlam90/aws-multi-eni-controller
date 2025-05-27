@@ -15,7 +15,7 @@ type DPDKError struct {
 }
 
 func (e *DPDKError) Error() string {
-	return fmt.Sprintf("DPDK %s failed for PCI %s (driver: %s): %v", 
+	return fmt.Sprintf("DPDK %s failed for PCI %s (driver: %s): %v",
 		e.Operation, e.PCIAddr, e.Driver, e.Err)
 }
 
@@ -58,7 +58,7 @@ type BindingError struct {
 }
 
 func (e *BindingError) Error() string {
-	return fmt.Sprintf("binding failed for PCI %s to driver %s: %s: %v", 
+	return fmt.Sprintf("binding failed for PCI %s to driver %s: %s: %v",
 		e.PCIAddr, e.Driver, e.Reason, e.Err)
 }
 
@@ -78,9 +78,9 @@ func NewBindingError(pciAddr, driver, reason string, err error) *BindingError {
 
 // ValidationError represents a validation error
 type ValidationError struct {
-	Field   string
-	Value   string
-	Reason  string
+	Field  string
+	Value  string
+	Reason string
 }
 
 func (e *ValidationError) Error() string {

@@ -166,7 +166,7 @@ func TestSRIOVConfigurationGeneration(t *testing.T) {
 	for _, resource := range config.ResourceList {
 		fullResourceName := resource.ResourcePrefix + "/" + resource.ResourceName
 		expectedPCI, exists := expectedResources[fullResourceName]
-		
+
 		if !exists {
 			t.Errorf("Unexpected resource in config: %s", fullResourceName)
 			continue

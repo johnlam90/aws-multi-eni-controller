@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
 	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
 	vnetlink "github.com/vishvananda/netlink"
 )
 
@@ -32,14 +32,14 @@ func NewManager(cfg *config.ENIManagerConfig) *Manager {
 
 // InterfaceInfo represents information about a network interface
 type InterfaceInfo struct {
-	Name         string
-	Index        int
-	State        string
-	MTU          int
-	PCIAddress   string
-	MACAddress   string
-	IsAWSENI     bool
-	DeviceIndex  int
+	Name        string
+	Index       int
+	State       string
+	MTU         int
+	PCIAddress  string
+	MACAddress  string
+	IsAWSENI    bool
+	DeviceIndex int
 }
 
 // GetAllInterfaces returns information about all network interfaces
@@ -52,10 +52,10 @@ func (m *Manager) GetAllInterfaces() ([]InterfaceInfo, error) {
 	var interfaces []InterfaceInfo
 	for _, link := range links {
 		info := InterfaceInfo{
-			Name:        link.Attrs().Name,
-			Index:       link.Attrs().Index,
-			MTU:         link.Attrs().MTU,
-			MACAddress:  link.Attrs().HardwareAddr.String(),
+			Name:       link.Attrs().Name,
+			Index:      link.Attrs().Index,
+			MTU:        link.Attrs().MTU,
+			MACAddress: link.Attrs().HardwareAddr.String(),
 		}
 
 		// Get interface state
@@ -269,7 +269,7 @@ func (m *Manager) getPCIAddressForInterface(ifaceName string) (string, error) {
 func (m *Manager) getDeviceIndexForInterface(ifaceName string) (int, error) {
 	// Try to extract device index from interface name
 	// This is a simplified approach - in practice, this would use more sophisticated mapping
-	
+
 	// For eth interfaces (eth0, eth1, etc.)
 	if strings.HasPrefix(ifaceName, "eth") {
 		indexStr := strings.TrimPrefix(ifaceName, "eth")
@@ -294,7 +294,7 @@ func (m *Manager) bringUpInterfaceWithIP(ifaceName string) error {
 	cmd := exec.Command("ip", "link", "set", "dev", ifaceName, "up")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to bring up interface %s with ip command: %v, output: %s", 
+		return fmt.Errorf("failed to bring up interface %s with ip command: %v, output: %s",
 			ifaceName, err, string(output))
 	}
 
@@ -306,7 +306,7 @@ func (m *Manager) bringDownInterfaceWithIP(ifaceName string) error {
 	cmd := exec.Command("ip", "link", "set", "dev", ifaceName, "down")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to bring down interface %s with ip command: %v, output: %s", 
+		return fmt.Errorf("failed to bring down interface %s with ip command: %v, output: %s",
 			ifaceName, err, string(output))
 	}
 
@@ -318,7 +318,7 @@ func (m *Manager) setMTUWithIP(ifaceName string, mtu int) error {
 	cmd := exec.Command("ip", "link", "set", "dev", ifaceName, "mtu", strconv.Itoa(mtu))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to set MTU for interface %s with ip command: %v, output: %s", 
+		return fmt.Errorf("failed to set MTU for interface %s with ip command: %v, output: %s",
 			ifaceName, err, string(output))
 	}
 

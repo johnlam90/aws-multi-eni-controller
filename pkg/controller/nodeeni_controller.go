@@ -328,6 +328,7 @@ func (r *NodeENIReconciler) executeWithCircuitBreaker(ctx context.Context, opera
 }
 
 // executeWithEnhancedRetry executes an AWS operation with enhanced error categorization and retry logic
+// TODO: This function is currently unused but may be needed for future enhancements
 func (r *NodeENIReconciler) executeWithEnhancedRetry(ctx context.Context, operation string, fn func() error) error {
 	// Wrap the function to make it compatible with retry.RetryableFunc
 	retryableFunc := func() (bool, error) {
@@ -535,7 +536,7 @@ echo "IS_BOUND_TO_DPDK=$is_dpdk"
 	}
 
 	var stdout, stderr bytes.Buffer
-	err = exec.Stream(remotecommand.StreamOptions{
+	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdout: &stdout,
 		Stderr: &stderr,
 	})
@@ -783,6 +784,8 @@ func (r *NodeENIReconciler) verifyDPDKUnbind(ctx context.Context, nodeENI *netwo
 
 // executeCommand executes a command in an ENI Manager pod
 func (r *NodeENIReconciler) executeCommand(ctx context.Context, clientset *kubernetes.Clientset, podName string, cmd []string, operation string) error {
+	// TODO: Use ctx for timeout and cancellation in future enhancements
+	_ = ctx
 	k8sConfig, err := rest.InClusterConfig()
 	if err != nil {
 		return fmt.Errorf("failed to create in-cluster config: %v", err)
@@ -807,7 +810,7 @@ func (r *NodeENIReconciler) executeCommand(ctx context.Context, clientset *kuber
 	}
 
 	var stdout, stderr bytes.Buffer
-	err = exec.Stream(remotecommand.StreamOptions{
+	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdout: &stdout,
 		Stderr: &stderr,
 	})

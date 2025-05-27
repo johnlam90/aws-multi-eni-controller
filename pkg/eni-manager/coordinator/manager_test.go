@@ -52,11 +52,11 @@ func TestParseResourceName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			prefix, name := manager.parseResourceName(tt.input)
-			
+
 			if prefix != tt.expectedPrefix {
 				t.Errorf("parseResourceName(%q) prefix = %q, want %q", tt.input, prefix, tt.expectedPrefix)
 			}
-			
+
 			if name != tt.expectedName {
 				t.Errorf("parseResourceName(%q) name = %q, want %q", tt.input, name, tt.expectedName)
 			}

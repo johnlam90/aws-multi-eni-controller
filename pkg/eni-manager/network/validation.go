@@ -113,7 +113,7 @@ func ValidateENIPattern(pattern string) error {
 // ValidateInterfaceState validates an interface state string
 func ValidateInterfaceState(state string) error {
 	validStates := []string{"UP", "DOWN", "UNKNOWN"}
-	
+
 	state = strings.ToUpper(state)
 	for _, validState := range validStates {
 		if state == validState {
@@ -129,7 +129,7 @@ func ParseInterfaceIndex(ifaceName string) (int, error) {
 	// Extract numeric suffix from interface names like eth1, ens5, etc.
 	re := regexp.MustCompile(`(\d+)$`)
 	matches := re.FindStringSubmatch(ifaceName)
-	
+
 	if len(matches) < 2 {
 		return 0, fmt.Errorf("no numeric index found in interface name '%s'", ifaceName)
 	}

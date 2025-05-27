@@ -52,7 +52,7 @@ func IsRetryable(err error) bool {
 	if retryableErr, ok := err.(*RetryableError); ok {
 		return retryableErr.Retryable
 	}
-	
+
 	// Default: most network operations are retryable
 	return true
 }
@@ -85,7 +85,7 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, operation string,
 			break
 		}
 
-		log.Printf("Operation %s failed on attempt %d/%d: %v, retrying in %v", 
+		log.Printf("Operation %s failed on attempt %d/%d: %v, retrying in %v",
 			operation, attempt, config.MaxAttempts, err, delay)
 
 		// Wait with context cancellation support
@@ -103,14 +103,14 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, operation string,
 		}
 	}
 
-	return fmt.Errorf("operation %s failed after %d attempts, last error: %v", 
+	return fmt.Errorf("operation %s failed after %d attempts, last error: %v",
 		operation, config.MaxAttempts, lastErr)
 }
 
 // RetryInterfaceOperation retries a network interface operation
 func (m *Manager) RetryInterfaceOperation(ctx context.Context, operation string, ifaceName string, fn func() error) error {
 	config := DefaultRetryConfig()
-	
+
 	// Customize retry config for specific operations
 	switch operation {
 	case "bring_up", "bring_down":

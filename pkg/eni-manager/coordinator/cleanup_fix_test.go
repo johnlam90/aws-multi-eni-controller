@@ -29,7 +29,7 @@ func TestSRIOVResourceTracking(t *testing.T) {
 
 	// Test tracking resources
 	nodeENIName := "test-nodeeni-1"
-	
+
 	// Track some resources
 	resource1 := SRIOVResourceInfo{
 		PCIAddress:     "0000:00:07.0",
@@ -38,7 +38,7 @@ func TestSRIOVResourceTracking(t *testing.T) {
 		Driver:         "ena",
 		NodeENIName:    nodeENIName,
 	}
-	
+
 	resource2 := SRIOVResourceInfo{
 		PCIAddress:     "0000:00:08.0",
 		ResourceName:   "sriov_kernel_2",
@@ -177,7 +177,7 @@ func TestResourceTrackingDuplicates(t *testing.T) {
 	}
 
 	nodeENIName := "test-nodeeni-duplicates"
-	
+
 	resource := SRIOVResourceInfo{
 		PCIAddress:     "0000:00:0a.0",
 		ResourceName:   "sriov_dup_test",
