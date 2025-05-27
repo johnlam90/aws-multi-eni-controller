@@ -20,7 +20,7 @@ The AWS Multi-ENI Controller consists of two main components:
 
 1. **NodeENI Controller**: Watches for NodeENI custom resources and nodes with matching labels. When a node matches the selector in a NodeENI resource, the controller creates an ENI in the specified subnet with the specified security groups and attaches it to the node at the specified device index.
 
-2. **ENI Manager**: A DaemonSet that runs on nodes with matching labels and automatically brings up secondary interfaces when they're attached.
+2. **ENI Manager**: A DaemonSet that runs on nodes with matching labels and automatically brings up secondary interfaces when they're attached.It can also set mtu,bind dpdk interfaces and advertise sriov dpdk resources to the ec2 worker node. 
 
 ```mermaid
 flowchart TB
