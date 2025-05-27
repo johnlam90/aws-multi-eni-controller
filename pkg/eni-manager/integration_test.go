@@ -7,9 +7,13 @@ import (
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/coordinator"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/sriov"
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/test"
 )
 
 func TestIntegrationNodeENIDeletionAndSRIOVCleanup(t *testing.T) {
+	// Skip if no Kubernetes cluster available
+	test.SkipIfNoKubernetesCluster(t)
+
 	// This integration test verifies that the two critical issues have been resolved:
 	// 1. Constant restart warnings are eliminated
 	// 2. Configuration cleanup when NodeENI resources are deleted
@@ -195,6 +199,9 @@ func TestIntegrationNodeENIDeletionAndSRIOVCleanup(t *testing.T) {
 }
 
 func TestCriticalIssuesResolved(t *testing.T) {
+	// Skip if no Kubernetes cluster available
+	test.SkipIfNoKubernetesCluster(t)
+
 	t.Log("=== CRITICAL ISSUES RESOLUTION SUMMARY ===")
 
 	t.Log("🔧 ISSUE 1: Constant restart warnings")
