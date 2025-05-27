@@ -15,9 +15,7 @@ coverage.txt
 *.out
 *.test
 
-# Go build artifacts
-eni-manager
-manager
+
 
 # AWS CLI distribution (if present)
 aws/dist/
@@ -58,3 +56,5 @@ recommended-sample-improvements.yaml
 
 # Test artifacts that shouldn't be committed
 sriov-device-plugin-hostpath.yaml
+charts/aws-multi-eni-controller/values.yaml
+aws-multi-eni-controller

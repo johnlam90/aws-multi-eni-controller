@@ -3,7 +3,6 @@ package integration
 import (
 	"context"
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,7 +28,7 @@ func TestSRIOVDPDKIntegration(t *testing.T) {
 
 	// Create test environment
 	ctx := context.Background()
-	tempDir, err := ioutil.TempDir("", "sriov-integration-test")
+	tempDir, err := os.MkdirTemp("", "sriov-integration-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
@@ -82,7 +81,7 @@ func setupIntegrationTestConfig(t *testing.T, tempDir string) *config.ENIManager
 		"resourceList": []interface{}{},
 	}
 	configData, _ := json.MarshalIndent(initialConfig, "", "  ")
-	err := ioutil.WriteFile(cfg.SRIOVDPConfigPath, configData, 0644)
+	err := os.WriteFile(cfg.SRIOVDPConfigPath, configData, 0644)
 	if err != nil {
 		t.Fatalf("Failed to create initial SR-IOV config: %v", err)
 	}
@@ -145,7 +144,7 @@ func testCreateNodeENIWithDPDK(ctx context.Context, t *testing.T, runtimeClient 
 // testVerifySRIOVConfiguration verifies that SR-IOV configuration is properly created
 func testVerifySRIOVConfiguration(t *testing.T, cfg *config.ENIManagerConfig) {
 	// Read the SR-IOV configuration file
-	configData, err := ioutil.ReadFile(cfg.SRIOVDPConfigPath)
+	configData, err := os.ReadFile(cfg.SRIOVDPConfigPath)
 	if err != nil {
 		t.Fatalf("Failed to read SR-IOV config: %v", err)
 	}
@@ -269,7 +268,7 @@ func TestSRIOVConfigurationValidation(t *testing.T) {
 		t.Skip("Skipping integration test - set INTEGRATION_TEST=true to run")
 	}
 
-	tempDir, err := ioutil.TempDir("", "sriov-validation-test")
+	tempDir, err := os.MkdirTemp("", "sriov-validation-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
@@ -314,7 +313,7 @@ func TestSRIOVConfigurationValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Write test config
 			configData, _ := json.MarshalIndent(tc.config, "", "  ")
-			err := ioutil.WriteFile(configPath, configData, 0644)
+			err := os.WriteFile(configPath, configData, 0644)
 			if err != nil {
 				t.Fatalf("Failed to write test config: %v", err)
 			}

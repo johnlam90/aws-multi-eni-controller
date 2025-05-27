@@ -36,10 +36,10 @@ This chart uses the `eni-controller-system` namespace by default. To ensure prop
 
 ```bash
 # Install the latest version
-helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.2 --namespace eni-controller-system --create-namespace
+helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.4 --namespace eni-controller-system --create-namespace
 
 # Or specify a specific version
-helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.2 --namespace eni-controller-system --create-namespace
+helm install my-release oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.4 --namespace eni-controller-system --create-namespace
 ```
 
 ### Option 2: Install from GitHub Release
@@ -70,7 +70,7 @@ The following table lists the configurable parameters of the AWS Multi-ENI Contr
 | Parameter | Description | Default |
 | --------- | ----------- | ------- |
 | `image.repository` | Image repository | `ghcr.io/johnlam90/aws-multi-eni-controller` |
-| `image.tag` | Image tag | `v1.3.2` |
+| `image.tag` | Image tag | `v1.3.4` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `namespace` | Namespace to deploy the controller | `eni-controller-system` |
 | `awsRegion` | AWS Region | `us-east-1` |

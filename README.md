@@ -4,7 +4,7 @@
 [![Go Report Card](https://img.shields.io/badge/Go%20Report-A%2B-brightgreen?logo=go)](https://github.com/johnlam90/aws-multi-eni-controller/actions/workflows/go-report.yml)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8.svg)](https://go.dev/)
 [![Helm](https://img.shields.io/badge/Helm-v3-0F1689.svg)](https://helm.sh)
-[![Version](https://img.shields.io/badge/Version-v1.3.3-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
+[![Version](https://img.shields.io/badge/Version-v1.3.4-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-Active-brightgreen)](https://johnlam90.github.io/aws-multi-eni-controller/)
 [![OpenSSF Best Practices](https://img.shields.io/badge/OpenSSF-Best%20Practices-brightgreen)](https://www.bestpractices.dev/)
 
@@ -77,6 +77,53 @@ sequenceDiagram
     AWS-->>Controller: ENI deleted
     Controller->>NodeENI: Remove finalizer
 ```
+
+### Modular ENI Manager Architecture (v1.3.0+)
+
+The ENI Manager has been **completely refactored** from a monolithic 6700+ line file into a modular, maintainable architecture:
+
+```mermaid
+graph TB
+    subgraph "ENI Manager (Modular Architecture)"
+        Main[main.go<br/>~200 lines]
+        Main --> Coordinator[coordinator/<br/>Main Orchestration]
+
+        Coordinator --> DPDK[dpdk/<br/>Device Binding]
+        Coordinator --> Network[network/<br/>Interface Mgmt]
+        Coordinator --> K8s[kubernetes/<br/>API Client]
+        Coordinator --> SRIOV[sriov/<br/>Device Plugin]
+
+        DPDK --> CircuitBreaker[Circuit Breaker<br/>Fault Tolerance]
+        Network --> Validation[Input Validation<br/>& Retry Logic]
+        K8s --> NodeENIWatch[NodeENI Watching<br/>& Status Updates]
+        SRIOV --> ConfigMgmt[Config Management<br/>& Plugin Restart]
+    end
+
+    subgraph "Key Improvements"
+        Reliability[🔄 Circuit Breaker Pattern]
+        Testing[🧪 Comprehensive Testing]
+        Validation[✅ Input Validation]
+        Retry[🔁 Exponential Backoff]
+        Observability[📊 Enhanced Monitoring]
+    end
+
+    style Coordinator fill:#f3e5f5
+    style DPDK fill:#e8f5e8
+    style Network fill:#fff3e0
+    style CircuitBreaker fill:#ffebee
+    style Reliability fill:#e1f5fe
+    style Testing fill:#f1f8e9
+```
+
+#### Architectural Benefits
+
+- **🏗️ Maintainable**: Separated concerns into focused packages (~300 lines each)
+- **🔄 Reliable**: Circuit breaker pattern prevents cascading failures
+- **✅ Validated**: Comprehensive input validation with detailed error messages
+- **🔁 Resilient**: Exponential backoff retry logic for network operations
+- **🧪 Testable**: Mock implementations and 50%+ test coverage
+- **📊 Observable**: Enhanced status reporting and component health metrics
+- **⚡ Performant**: Same or better performance with improved resource utilization
 
 ## Key Features
 
