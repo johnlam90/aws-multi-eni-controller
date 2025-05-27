@@ -1,4 +1,4 @@
-package eni_manager
+package enimanager
 
 import (
 	"os"

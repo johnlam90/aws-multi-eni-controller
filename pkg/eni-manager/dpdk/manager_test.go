@@ -111,9 +111,9 @@ func TestCircuitBreakerExecute(t *testing.T) {
 }
 
 func TestDPDKErrors(t *testing.T) {
-	// Test DPDKError
+	// Test Error
 	originalErr := fmt.Errorf("original error")
-	dpdkErr := NewDPDKError("bind", "0000:00:06.0", "vfio-pci", originalErr)
+	dpdkErr := NewError("bind", "0000:00:06.0", "vfio-pci", originalErr)
 
 	if dpdkErr.Operation != "bind" {
 		t.Errorf("Expected operation 'bind', got '%s'", dpdkErr.Operation)

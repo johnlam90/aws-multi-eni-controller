@@ -96,7 +96,7 @@ func (m *Manager) bindPCIDeviceInternal(pciAddress string, driver string) error 
 	// Acquire lock for this PCI address
 	unlock, err := m.acquireLock(pciAddress)
 	if err != nil {
-		return NewDPDKError("bind", pciAddress, driver,
+		return NewError("bind", pciAddress, driver,
 			fmt.Errorf("failed to acquire lock: %v", err))
 	}
 	defer unlock()
@@ -104,7 +104,7 @@ func (m *Manager) bindPCIDeviceInternal(pciAddress string, driver string) error 
 	// Check if already bound to the correct driver
 	isBound, err := m.IsPCIDeviceBoundToDPDK(pciAddress, driver)
 	if err != nil {
-		return NewDPDKError("bind", pciAddress, driver,
+		return NewError("bind", pciAddress, driver,
 			fmt.Errorf("failed to check current binding: %v", err))
 	}
 
@@ -189,8 +189,8 @@ func (m *Manager) UnbindInterfaceFromDPDK(ifaceName string) error {
 	return nil
 }
 
-// DPDKBoundInterface represents a DPDK bound interface
-type DPDKBoundInterface struct {
+// BoundInterface represents a DPDK bound interface
+type BoundInterface struct {
 	PCIAddress    string
 	Driver        string
 	NodeENIName   string
@@ -200,10 +200,10 @@ type DPDKBoundInterface struct {
 }
 
 // GetBoundInterfaces returns a map of currently bound DPDK interfaces
-func (m *Manager) GetBoundInterfaces() map[string]DPDKBoundInterface {
-	result := make(map[string]DPDKBoundInterface)
+func (m *Manager) GetBoundInterfaces() map[string]BoundInterface {
+	result := make(map[string]BoundInterface)
 	for pciAddr, boundInterface := range m.config.DPDKBoundInterfaces {
-		result[pciAddr] = DPDKBoundInterface{
+		result[pciAddr] = BoundInterface{
 			PCIAddress:    boundInterface.PCIAddress,
 			Driver:        boundInterface.Driver,
 			NodeENIName:   boundInterface.NodeENIName,

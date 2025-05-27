@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// DPDKError represents a DPDK-specific error
-type DPDKError struct {
+// Error represents a DPDK-specific error
+type Error struct {
 	Operation string
 	PCIAddr   string
 	Driver    string
@@ -14,18 +14,18 @@ type DPDKError struct {
 	Timestamp time.Time
 }
 
-func (e *DPDKError) Error() string {
+func (e *Error) Error() string {
 	return fmt.Sprintf("DPDK %s failed for PCI %s (driver: %s): %v",
 		e.Operation, e.PCIAddr, e.Driver, e.Err)
 }
 
-func (e *DPDKError) Unwrap() error {
+func (e *Error) Unwrap() error {
 	return e.Err
 }
 
-// NewDPDKError creates a new DPDK error
-func NewDPDKError(operation, pciAddr, driver string, err error) *DPDKError {
-	return &DPDKError{
+// NewError creates a new DPDK error
+func NewError(operation, pciAddr, driver string, err error) *Error {
+	return &Error{
 		Operation: operation,
 		PCIAddr:   pciAddr,
 		Driver:    driver,
@@ -35,7 +35,7 @@ func NewDPDKError(operation, pciAddr, driver string, err error) *DPDKError {
 }
 
 // IsRetryable determines if a DPDK error is retryable
-func (e *DPDKError) IsRetryable() bool {
+func (e *Error) IsRetryable() bool {
 	// Define which operations/errors are retryable
 	switch e.Operation {
 	case "bind", "unbind":
