@@ -310,17 +310,17 @@ func (m *Manager) storeBoundInterface(pciAddress, driver, ifaceName string) erro
 }
 
 // GetManagerStatus returns the current status of the DPDK manager
-func (m *Manager) GetManagerStatus() map[string]interface{} {
-	status := map[string]interface{}{
+func (m *Manager) GetManagerStatus() map[string]any {
+	status := map[string]any{
 		"bound_interfaces_count": len(m.config.DPDKBoundInterfaces),
 		"circuit_breaker":        m.circuitBreaker.GetStats(),
 		"active_locks":           len(m.locks),
 	}
 
 	// Add bound interfaces details
-	boundInterfaces := make([]map[string]interface{}, 0, len(m.config.DPDKBoundInterfaces))
+	boundInterfaces := make([]map[string]any, 0, len(m.config.DPDKBoundInterfaces))
 	for pciAddr, boundInterface := range m.config.DPDKBoundInterfaces {
-		boundInterfaces = append(boundInterfaces, map[string]interface{}{
+		boundInterfaces = append(boundInterfaces, map[string]any{
 			"pci_address":    pciAddr,
 			"driver":         boundInterface.Driver,
 			"interface_name": boundInterface.IfaceName,

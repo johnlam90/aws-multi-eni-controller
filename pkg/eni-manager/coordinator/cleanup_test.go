@@ -4,9 +4,13 @@ import (
 	"testing"
 
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/test"
 )
 
 func TestNodeENIDeletionDetection(t *testing.T) {
+	// Skip if no Kubernetes cluster available
+	test.SkipIfNoKubernetesCluster(t)
+
 	// Create a test configuration
 	cfg := &config.ENIManagerConfig{
 		NodeName:          "test-node",
@@ -108,6 +112,9 @@ func TestNodeENIDeletionDetection(t *testing.T) {
 }
 
 func TestCleanupResourceGathering(t *testing.T) {
+	// Skip if no Kubernetes cluster available
+	test.SkipIfNoKubernetesCluster(t)
+
 	// Create a test configuration with some DPDK bound interfaces
 	cfg := &config.ENIManagerConfig{
 		NodeName:          "test-node",
@@ -241,6 +248,9 @@ func TestShouldSkipCleanup(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Skip if no Kubernetes cluster available
+			test.SkipIfNoKubernetesCluster(t)
+
 			cfg := &config.ENIManagerConfig{
 				NodeName:          "test-node",
 				SRIOVDPConfigPath: tc.sriovConfigPath,

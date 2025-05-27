@@ -80,7 +80,7 @@ func (c *Coordinator) ProcessNodeENIBindings(ctx context.Context, nodeName strin
 }
 
 // processNodeENIBinding processes DPDK binding for a single NodeENI
-func (c *Coordinator) processNodeENIBinding(ctx context.Context, nodeENI networkingv1alpha1.NodeENI, nodeName string, dpdkSriovUpdates map[string]SRIOVUpdate) error {
+func (c *Coordinator) processNodeENIBinding(ctx context.Context, nodeENI networkingv1alpha1.NodeENI, _ string, dpdkSriovUpdates map[string]SRIOVUpdate) error {
 	// Skip if DPDK is not enabled for this NodeENI
 	if !nodeENI.Spec.EnableDPDK {
 		return nil
@@ -106,7 +106,7 @@ func (c *Coordinator) processNodeENIBinding(ctx context.Context, nodeENI network
 }
 
 // processAttachmentBinding processes DPDK binding for a single attachment
-func (c *Coordinator) processAttachmentBinding(ctx context.Context, attachment networkingv1alpha1.ENIAttachment, nodeENI networkingv1alpha1.NodeENI, dpdkDriver string, dpdkSriovUpdates map[string]SRIOVUpdate) error {
+func (c *Coordinator) processAttachmentBinding(_ context.Context, attachment networkingv1alpha1.ENIAttachment, nodeENI networkingv1alpha1.NodeENI, dpdkDriver string, dpdkSriovUpdates map[string]SRIOVUpdate) error {
 	// Skip if already bound
 	if c.shouldSkipBinding(attachment, nodeENI) {
 		return nil
@@ -226,7 +226,7 @@ func (c *Coordinator) CheckForUnbinding(ctx context.Context, nodeName string, no
 
 // Helper methods
 
-func (c *Coordinator) shouldSkipBinding(attachment networkingv1alpha1.ENIAttachment, nodeENI networkingv1alpha1.NodeENI) bool {
+func (c *Coordinator) shouldSkipBinding(attachment networkingv1alpha1.ENIAttachment, _ networkingv1alpha1.NodeENI) bool {
 	// Skip if already bound to DPDK
 	if attachment.DPDKBound {
 		log.Printf("Attachment %s is already bound to DPDK, skipping", attachment.ENIID)

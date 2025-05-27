@@ -5,10 +5,14 @@ import (
 
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/eni-manager/sriov"
+	"github.com/johnlam90/aws-multi-eni-controller/pkg/test"
 )
 
 // TestSRIOVResourceTracking tests that SR-IOV resources are properly tracked and cleaned up
 func TestSRIOVResourceTracking(t *testing.T) {
+	// Skip if no Kubernetes cluster available
+	test.SkipIfNoKubernetesCluster(t)
+
 	// Create a test manager
 	cfg := &config.ENIManagerConfig{
 		NodeName:          "test-node",
@@ -86,6 +90,9 @@ func TestSRIOVResourceTracking(t *testing.T) {
 
 // TestSRIOVResourceCleanup tests the actual cleanup process
 func TestSRIOVResourceCleanup(t *testing.T) {
+	// Skip if no Kubernetes cluster available
+	test.SkipIfNoKubernetesCluster(t)
+
 	// Create a test manager with SR-IOV manager
 	cfg := &config.ENIManagerConfig{
 		NodeName:          "test-node",
@@ -160,6 +167,9 @@ func TestSRIOVResourceCleanup(t *testing.T) {
 
 // TestResourceTrackingDuplicates tests that duplicate resources are handled correctly
 func TestResourceTrackingDuplicates(t *testing.T) {
+	// Skip if no Kubernetes cluster available
+	test.SkipIfNoKubernetesCluster(t)
+
 	cfg := &config.ENIManagerConfig{
 		NodeName: "test-node",
 		DPDKBoundInterfaces: make(map[string]struct {
