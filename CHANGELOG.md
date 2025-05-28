@@ -5,6 +5,38 @@ All notable changes to the AWS Multi-ENI Controller will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.3.5] - 2025-05-28
+
+### Fixed
+
+- **SR-IOV Configuration Generation**: Fixed ENI Manager incorrectly generating SR-IOV device plugin configuration for regular ENI configurations (Case 1) when it should only do so for configurations where SR-IOV is explicitly requested via `dpdkPCIAddress` field
+- **PCI Address Mapping**: Fixed interface-to-NodeENI mapping logic to prioritize PCI address matching over device index matching for SR-IOV configurations, resolving PCI address mismatches in SR-IOV device plugin configuration
+- **Resource Name Mapping**: Resolved issue where PCI addresses were incorrectly mapped to SR-IOV resource names (e.g., PCI `0000:00:08.0` incorrectly mapped to `sriov_kernel_1` instead of `sriov_kernel_2`)
+
+### Added
+
+- **Enhanced Logging**: Added detailed logging for interface mapping decisions to help troubleshoot configuration issues
+- **Test Coverage**: Added comprehensive test coverage for interface-to-NodeENI mapping scenarios including `TestPCIAddressMapping` and `TestRegularENINoSRIOVConfiguration`
+- **Documentation**: Updated GitHub issue #22 with detailed root cause analysis and solution documentation
+
+### Changed
+
+- **Interface Mapping Logic**: Modified `findNodeENIForInterface` method to check PCI address first for SR-IOV configurations, then fall back to device index for regular ENI configurations
+- **SR-IOV Logic**: Updated `updateSRIOVConfiguration` method to only process interfaces where `dpdkPCIAddress` is explicitly specified, ensuring proper separation between regular ENI and SR-IOV functionality
+
+### Technical Details
+
+This release addresses critical issues in SR-IOV configuration generation:
+
+1. **Issue 1**: Regular ENI configurations (no DPDK fields) were incorrectly generating SR-IOV device plugin configuration
+2. **Issue 2**: PCI address mapping was using device index first, causing incorrect associations between interfaces and NodeENI resources
+
+The fixes ensure that:
+
+- Regular ENI configurations work as intended (basic ENI attachment only)
+- SR-IOV configurations correctly map PCI addresses to resource names
+- Cleaner separation of concerns between regular ENI and SR-IOV functionality
+
 ## [v1.3.4] - 2025-05-26
 
 ### Added

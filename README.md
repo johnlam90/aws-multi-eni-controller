@@ -4,7 +4,7 @@
 [![Go Report Card](https://img.shields.io/badge/Go%20Report-A%2B-brightgreen?logo=go)](https://github.com/johnlam90/aws-multi-eni-controller/actions/workflows/go-report.yml)
 [![Go](https://img.shields.io/badge/Go-1.23+-00ADD8.svg)](https://go.dev/)
 [![Helm](https://img.shields.io/badge/Helm-v3-0F1689.svg)](https://helm.sh)
-[![Version](https://img.shields.io/badge/Version-v1.3.4-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
+[![Version](https://img.shields.io/badge/Version-v1.3.5-blue.svg)](https://github.com/johnlam90/aws-multi-eni-controller/releases)
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-Active-brightgreen)](https://johnlam90.github.io/aws-multi-eni-controller/)
 [![OpenSSF Best Practices](https://img.shields.io/badge/OpenSSF-Best%20Practices-brightgreen)](https://www.bestpractices.dev/)
 
@@ -20,7 +20,7 @@ The AWS Multi-ENI Controller consists of two main components:
 
 1. **NodeENI Controller**: Watches for NodeENI custom resources and nodes with matching labels. When a node matches the selector in a NodeENI resource, the controller creates an ENI in the specified subnet with the specified security groups and attaches it to the node at the specified device index.
 
-2. **ENI Manager**: A DaemonSet that runs on nodes with matching labels and automatically brings up secondary interfaces when they're attached.It can also set mtu,bind dpdk interfaces and advertise sriov dpdk resources to the ec2 worker node. 
+2. **ENI Manager**: A DaemonSet that runs on nodes with matching labels and automatically brings up secondary interfaces when they're attached.It can also set mtu,bind dpdk interfaces and advertise sriov dpdk resources to the ec2 worker node.
 
 ```mermaid
 flowchart TB
@@ -120,11 +120,11 @@ The controller requires the following IAM permissions:
 
 ```bash
 # Install the latest version
-helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.3 \
+helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.5 \
   --namespace eni-controller-system --create-namespace
 
 # With custom values
-helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.3 \
+helm install aws-multi-eni oci://ghcr.io/johnlam90/charts/aws-multi-eni-controller --version 1.3.5 \
   --namespace eni-controller-system --create-namespace \
   --set awsRegion=us-east-1 \
   --set nodeSelector.ng=multi-eni
