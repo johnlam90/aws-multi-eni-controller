@@ -293,12 +293,21 @@ func (m *Manager) updateSRIOVConfiguration(ctx context.Context, nodeENIs []netwo
 			continue
 		}
 
-		// Skip if DPDK is enabled (DPDK coordinator handles SR-IOV for DPDK interfaces)
-		if nodeENI.Spec.EnableDPDK {
+		// Only process interfaces where dpdkPCIAddress is explicitly specified
+		// This covers Case 2 (SR-IOV without DPDK) and Case 3 (SR-IOV with DPDK)
+		// Case 1 (regular ENI) should not generate SR-IOV configuration
+		if nodeENI.Spec.DPDKPCIAddress == "" {
+			log.Printf("Skipping SR-IOV configuration for interface %s: no dpdkPCIAddress specified (regular ENI)", iface.Name)
 			continue
 		}
 
-		// Create SR-IOV update for non-DPDK interface
+		// Skip if DPDK is enabled (DPDK coordinator handles SR-IOV for DPDK interfaces)
+		if nodeENI.Spec.EnableDPDK {
+			log.Printf("Skipping SR-IOV configuration for interface %s: DPDK enabled (handled by DPDK coordinator)", iface.Name)
+			continue
+		}
+
+		// Create SR-IOV update for non-DPDK interface (Case 2: SR-IOV without DPDK)
 		if iface.PCIAddress != "" {
 			// Parse resource name from NodeENI spec or use default
 			resourcePrefix, resourceName := m.parseResourceName(nodeENI.Spec.DPDKResourceName)
@@ -321,7 +330,7 @@ func (m *Manager) updateSRIOVConfiguration(ctx context.Context, nodeENIs []netwo
 				NodeENIName:    nodeENI.Name,
 			})
 
-			log.Printf("Creating SR-IOV update for non-DPDK interface %s: %s/%s at PCI %s",
+			log.Printf("Creating SR-IOV update for non-DPDK interface %s: %s/%s at PCI %s (Case 2: SR-IOV without DPDK)",
 				iface.Name, resourcePrefix, resourceName, iface.PCIAddress)
 		}
 	}
@@ -409,25 +418,37 @@ func (m *Manager) trackSRIOVResource(nodeENIName string, resourceInfo SRIOVResou
 }
 
 func (m *Manager) findNodeENIForInterface(iface network.InterfaceInfo, nodeENIs []networkingv1alpha1.NodeENI) *networkingv1alpha1.NodeENI {
-	// Try to match by device index first
-	for _, nodeENI := range nodeENIs {
-		for _, attachment := range nodeENI.Status.Attachments {
-			if attachment.DeviceIndex == iface.DeviceIndex {
-				return &nodeENI
-			}
-		}
-	}
-
-	// Try to match by PCI address if available
+	// For SR-IOV configurations, prioritize PCI address matching over device index
+	// This ensures correct mapping when dpdkPCIAddress is explicitly specified
 	if iface.PCIAddress != "" {
 		for _, nodeENI := range nodeENIs {
 			if nodeENI.Spec.DPDKPCIAddress == iface.PCIAddress {
+				log.Printf("Matched interface %s (PCI: %s) to NodeENI %s by PCI address",
+					iface.Name, iface.PCIAddress, nodeENI.Name)
 				return &nodeENI
 			}
 		}
 	}
 
+	// Fallback to device index matching for regular ENI configurations
+	for _, nodeENI := range nodeENIs {
+		for _, attachment := range nodeENI.Status.Attachments {
+			if attachment.DeviceIndex == iface.DeviceIndex {
+				log.Printf("Matched interface %s (device index: %d) to NodeENI %s by device index",
+					iface.Name, iface.DeviceIndex, nodeENI.Name)
+				return &nodeENI
+			}
+		}
+	}
+
+	log.Printf("No matching NodeENI found for interface %s (PCI: %s, device index: %d)",
+		iface.Name, iface.PCIAddress, iface.DeviceIndex)
 	return nil
+}
+
+// FindNodeENIForInterfaceTest exposes findNodeENIForInterface for testing purposes
+func (m *Manager) FindNodeENIForInterfaceTest(iface network.InterfaceInfo, nodeENIs []networkingv1alpha1.NodeENI) *networkingv1alpha1.NodeENI {
+	return m.findNodeENIForInterface(iface, nodeENIs)
 }
 
 // updateLastProcessedTime updates the last processed time for a NodeENI

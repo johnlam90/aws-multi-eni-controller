@@ -173,7 +173,7 @@ spec:
       #   - "kubernetes"
       containers:
       - name: manager
-        image: johnlam90/aws-multi-eni-controller:v1.3.4
+        image: johnlam90/aws-multi-eni-controller:v1.3.5
         env:
         - name: COMPONENT
           value: "eni-controller"
