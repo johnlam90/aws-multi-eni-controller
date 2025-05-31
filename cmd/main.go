@@ -74,6 +74,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create the NodeSystemConfig controller
+	nodeSystemConfigReconciler, err := controller.NewNodeSystemConfigReconciler(mgr)
+	if err != nil {
+		setupLog.Error(err, "Unable to create NodeSystemConfig controller")
+		os.Exit(1)
+	}
+
+	if err = nodeSystemConfigReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Unable to set up NodeSystemConfig controller", "controller", "NodeSystemConfig")
+		os.Exit(1)
+	}
+
 	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "Problem running manager")

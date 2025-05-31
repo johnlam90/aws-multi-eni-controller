@@ -1,0 +1,63 @@
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeSystemConfig
+metadata:
+  name: hugepages-config
+spec:
+  nodeSelector:
+    workload: high-performance
+  hugePagesConfig:
+    enabled: true
+    allocationStrategy: "runtime"  # runtime, persistent, or best-effort
+    preAllocationCheck: true       # Check memory availability before allocation
+    pages:
+      - size: "2Mi"
+        count: 1024
+        minCount: 512              # Minimum acceptable allocation
+        allowPartialAllocation: true
+        priority: 60               # Higher priority (0-100)
+      - size: "1Gi"
+        count: 4
+        minCount: 2
+        allowPartialAllocation: false  # Must allocate all or fail
+        priority: 80               # Highest priority
+    mountPath: "/dev/hugepages"
+    numaAware: true
+    retryPolicy:
+      maxRetries: 3
+      retryInterval: "30s"
+      backoffMultiplier: 2.0
+---
+apiVersion: networking.k8s.aws/v1alpha1
+kind: NodeSystemConfig
+metadata:
+  name: dpdk-hugepages-config
+spec:
+  nodeSelector:
+    dpdk: "enabled"
+  hugePagesConfig:
+    enabled: true
+    pages:
+      - size: "2Mi"
+        count: 2048
+        numaNode: 0
+      - size: "1Gi"
+        count: 8
+        numaNode: 0
+    mountPath: "/mnt/huge"
+    numaAware: true
+  sysctlConfig:
+    enabled: true
+    presets:
+      - "dpdk-optimized"
+    parameters:
+      vm.nr_hugepages: "2048"
+      vm.hugetlb_shm_group: "0"
+  kernelModulesConfig:
+    enabled: true
+    load:
+      - "vfio"
+      - "vfio-pci"
+    parameters:
+      vfio-pci:
+        enable_sriov: "1"
+        disable_vga: "1"
