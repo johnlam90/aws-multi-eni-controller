@@ -229,6 +229,8 @@ func (m *Manager) ApplyBatchUpdatesWithChangeDetection(updates []ResourceUpdate)
 		}
 	}
 
+	// Keep placeholder resources - they are needed for the system to function properly
+
 	// Cleanup and validate configuration
 	m.cleanupConfig(config)
 
@@ -399,6 +401,32 @@ func (m *Manager) cleanupConfig(config *ModernSRIOVDPConfig) {
 		}
 	}
 	config.ResourceList = newResourceList
+}
+
+// removePlaceholderResources removes placeholder resources when real resources exist
+func (m *Manager) removePlaceholderResources(config *ModernSRIOVDPConfig) {
+	hasRealResources := false
+	var filteredResources []ModernSRIOVResource
+
+	// Check if we have any real (non-placeholder) resources
+	for _, resource := range config.ResourceList {
+		if resource.ResourceName != "sriov_placeholder" {
+			hasRealResources = true
+			filteredResources = append(filteredResources, resource)
+		}
+	}
+
+	// If we have real resources, only keep those
+	if hasRealResources {
+		log.Printf("Removing placeholder resources, found %d real resources", len(filteredResources))
+		config.ResourceList = filteredResources
+	} else {
+		// Keep all resources (including placeholders) if no real resources exist
+		for _, resource := range config.ResourceList {
+			filteredResources = append(filteredResources, resource)
+		}
+		config.ResourceList = filteredResources
+	}
 }
 
 func (m *Manager) containsString(slice []string, item string) bool {

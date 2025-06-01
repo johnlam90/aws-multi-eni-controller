@@ -6,15 +6,12 @@ package hugepages
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 const (
@@ -188,7 +185,7 @@ func (m *Manager) allocatePageSize(ctx context.Context, node corev1.Node, pageSp
 	// Determine allocation status
 	if allocated == pageSpec.Count {
 		pageStatus.AllocationStatus = AllocationStatusSuccess
-	} else if allocated > 0 && m.getAllowPartialAllocation(&pageSpec) {
+	} else if allocated > 0 && *m.getAllowPartialAllocation(&pageSpec) {
 		minCount := m.getMinCount(&pageSpec)
 		if allocated >= minCount {
 			pageStatus.AllocationStatus = AllocationStatusPartialSuccess
@@ -274,4 +271,179 @@ func (m *Manager) performActualAllocation(ctx context.Context, node corev1.Node,
 	default:
 		return m.performRuntimeAllocation(ctx, node, pageSpec, config)
 	}
+}
+
+// getAllocationStrategy gets the allocation strategy from config
+func (m *Manager) getAllocationStrategy(config *networkingv1alpha1.HugePagesConfig) string {
+	if config.AllocationStrategy != "" {
+		return config.AllocationStrategy
+	}
+	return DefaultAllocationStrategy
+}
+
+// shouldPerformPreAllocationCheck determines if pre-allocation check should be performed
+func (m *Manager) shouldPerformPreAllocationCheck(config *networkingv1alpha1.HugePagesConfig) bool {
+	if config.PreAllocationCheck != nil {
+		return *config.PreAllocationCheck
+	}
+	return true // Default to true for safety
+}
+
+// performPreAllocationCheck performs pre-allocation memory checks
+func (m *Manager) performPreAllocationCheck(ctx context.Context, node corev1.Node, config *networkingv1alpha1.HugePagesConfig, status *networkingv1alpha1.HugePagesStatus) error {
+	m.log.Info("Performing pre-allocation check", "node", node.Name)
+	// TODO: Implement actual pre-allocation check
+	return nil
+}
+
+// sortPagesByPriority sorts pages by priority for allocation
+func (m *Manager) sortPagesByPriority(pages []networkingv1alpha1.HugePageSpec) []networkingv1alpha1.HugePageSpec {
+	// TODO: Implement priority-based sorting
+	return pages
+}
+
+// getPersistenceStatus determines persistence status based on config
+func (m *Manager) getPersistenceStatus(config *networkingv1alpha1.HugePagesConfig) string {
+	strategy := m.getAllocationStrategy(config)
+	switch strategy {
+	case AllocationStrategyPersistent:
+		return PersistenceStatusPersistent
+	case AllocationStrategyRuntime:
+		return PersistenceStatusRuntime
+	default:
+		return PersistenceStatusUnknown
+	}
+}
+
+// collectMemoryInfo collects memory information from the node
+func (m *Manager) collectMemoryInfo(ctx context.Context, node corev1.Node, numaAware bool) (*networkingv1alpha1.HugePageMemoryInfo, error) {
+	// TODO: Implement memory info collection
+	return &networkingv1alpha1.HugePageMemoryInfo{}, nil
+}
+
+// getAllocationMethod gets the allocation method based on config
+func (m *Manager) getAllocationMethod(config *networkingv1alpha1.HugePagesConfig) string {
+	strategy := m.getAllocationStrategy(config)
+	switch strategy {
+	case AllocationStrategyPersistent:
+		return AllocationMethodPersistent
+	case AllocationStrategyRuntime:
+		return AllocationMethodRuntime
+	default:
+		return AllocationMethodRuntime
+	}
+}
+
+// getPriority gets priority for a page spec
+func (m *Manager) getPriority(pageSpec *networkingv1alpha1.HugePageSpec) *int32 {
+	if pageSpec.Priority != nil {
+		return pageSpec.Priority
+	}
+	defaultPriority := int32(DefaultPriority)
+	return &defaultPriority
+}
+
+// getAllowPartialAllocation gets partial allocation setting
+func (m *Manager) getAllowPartialAllocation(pageSpec *networkingv1alpha1.HugePageSpec) *bool {
+	if pageSpec.AllowPartialAllocation != nil {
+		return pageSpec.AllowPartialAllocation
+	}
+	defaultValue := true
+	return &defaultValue
+}
+
+// calculateMemoryRequirement calculates memory requirement for pages
+func (m *Manager) calculateMemoryRequirement(pageSize string, count int32) int64 {
+	// Parse page size and calculate total memory
+	pageSizeBytes := m.parsePageSize(pageSize)
+	return int64(pageSizeBytes) * int64(count)
+}
+
+// parsePageSize parses page size string to bytes
+func (m *Manager) parsePageSize(pageSize string) int64 {
+	switch pageSize {
+	case "2Mi", "2MB":
+		return 2 * 1024 * 1024
+	case "1Gi", "1GB":
+		return 1024 * 1024 * 1024
+	case "4Ki":
+		return 4 * 1024
+	case "64Ki":
+		return 64 * 1024
+	case "2Gi":
+		return 2 * 1024 * 1024 * 1024
+	default:
+		return 2 * 1024 * 1024 // Default to 2MB
+	}
+}
+
+// getRetryPolicy gets retry policy from config
+func (m *Manager) getRetryPolicy(config *networkingv1alpha1.HugePagesConfig) *networkingv1alpha1.HugePageRetryPolicy {
+	if config.RetryPolicy != nil {
+		return config.RetryPolicy
+	}
+	return &networkingv1alpha1.HugePageRetryPolicy{}
+}
+
+// getMaxRetries gets max retries from retry policy
+func (m *Manager) getMaxRetries(retryPolicy *networkingv1alpha1.HugePageRetryPolicy) int32 {
+	if retryPolicy.MaxRetries != nil {
+		return *retryPolicy.MaxRetries
+	}
+	return DefaultMaxRetries
+}
+
+// getRetryInterval gets retry interval from retry policy
+func (m *Manager) getRetryInterval(retryPolicy *networkingv1alpha1.HugePageRetryPolicy) time.Duration {
+	if retryPolicy.RetryInterval != "" {
+		if duration, err := time.ParseDuration(retryPolicy.RetryInterval); err == nil {
+			return duration
+		}
+	}
+	defaultDuration, _ := time.ParseDuration(DefaultRetryInterval)
+	return defaultDuration
+}
+
+// getBackoffMultiplier gets backoff multiplier from retry policy
+func (m *Manager) getBackoffMultiplier(retryPolicy *networkingv1alpha1.HugePageRetryPolicy) float64 {
+	if retryPolicy.BackoffMultiplier != nil {
+		return *retryPolicy.BackoffMultiplier
+	}
+	return DefaultBackoffMultiplier
+}
+
+// getMinCount gets minimum count for a page spec
+func (m *Manager) getMinCount(pageSpec *networkingv1alpha1.HugePageSpec) int32 {
+	if pageSpec.MinCount != nil {
+		return *pageSpec.MinCount
+	}
+	return 0
+}
+
+// performRuntimeAllocation performs runtime huge pages allocation
+func (m *Manager) performRuntimeAllocation(ctx context.Context, node corev1.Node, pageSpec networkingv1alpha1.HugePageSpec, config *networkingv1alpha1.HugePagesConfig) (int32, int32, error) {
+	m.log.Info("Performing runtime allocation", "node", node.Name, "pageSize", pageSpec.Size)
+	// TODO: Implement actual runtime allocation
+	// For now, simulate successful allocation
+	return pageSpec.Count, pageSpec.Count, nil
+}
+
+// performPersistentAllocation performs persistent huge pages allocation
+func (m *Manager) performPersistentAllocation(ctx context.Context, node corev1.Node, pageSpec networkingv1alpha1.HugePageSpec, config *networkingv1alpha1.HugePagesConfig) (int32, int32, error) {
+	m.log.Info("Performing persistent allocation", "node", node.Name, "pageSize", pageSpec.Size)
+	// TODO: Implement actual persistent allocation
+	// For now, simulate successful allocation
+	return pageSpec.Count, pageSpec.Count, nil
+}
+
+// performBestEffortAllocation performs best-effort huge pages allocation
+func (m *Manager) performBestEffortAllocation(ctx context.Context, node corev1.Node, pageSpec networkingv1alpha1.HugePageSpec, config *networkingv1alpha1.HugePagesConfig) (int32, int32, error) {
+	m.log.Info("Performing best-effort allocation", "node", node.Name, "pageSize", pageSpec.Size)
+	// Try runtime first
+	allocated, available, err := m.performRuntimeAllocation(ctx, node, pageSpec, config)
+	if err == nil {
+		return allocated, available, nil
+	}
+	// Fall back to persistent if runtime fails
+	return m.performPersistentAllocation(ctx, node, pageSpec, config)
 }

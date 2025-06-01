@@ -355,7 +355,6 @@ func (r *NodeSystemConfigReconciler) applyHugePagesConfig(ctx context.Context, n
 	var totalAvailable int32
 	pageStatuses := []networkingv1alpha1.HugePageStatus{}
 	allocationErrors := []string{}
-	overallSuccess := true
 
 	// Get allocation strategy
 	allocationStrategy := hugePagesConfig.AllocationStrategy
@@ -365,15 +364,15 @@ func (r *NodeSystemConfigReconciler) applyHugePagesConfig(ctx context.Context, n
 
 	for _, pageSpec := range hugePagesConfig.Pages {
 		pageStatus := networkingv1alpha1.HugePageStatus{
-			Size:                     pageSpec.Size,
-			Requested:               pageSpec.Count,
-			Allocated:               0,
-			Available:               0,
-			AllocationStatus:        "Pending",
-			AllocationMethod:        allocationStrategy,
-			LastAllocationAttempt:   metav1.Now(),
-			AllocationErrors:        []string{},
-			Priority:                r.getPagePriority(&pageSpec),
+			Size:                      pageSpec.Size,
+			Requested:                 pageSpec.Count,
+			Allocated:                 0,
+			Available:                 0,
+			AllocationStatus:          "Pending",
+			AllocationMethod:          allocationStrategy,
+			LastAllocationAttempt:     metav1.Now(),
+			AllocationErrors:          []string{},
+			Priority:                  r.getPagePriority(&pageSpec),
 			PartialAllocationAccepted: r.getPartialAllocationAccepted(&pageSpec),
 		}
 
@@ -387,7 +386,7 @@ func (r *NodeSystemConfigReconciler) applyHugePagesConfig(ctx context.Context, n
 			log.Error(err, "Failed to calculate memory requirement", "size", pageSpec.Size)
 			pageStatus.AllocationErrors = append(pageStatus.AllocationErrors, fmt.Sprintf("Memory calculation failed: %v", err))
 			pageStatus.AllocationStatus = "Failed"
-			overallSuccess = false
+
 		} else {
 			pageStatus.MemoryRequirement = memReq
 		}
@@ -399,7 +398,6 @@ func (r *NodeSystemConfigReconciler) applyHugePagesConfig(ctx context.Context, n
 			pageStatus.AllocationStatus = "Failed"
 			pageStatus.AllocationErrors = append(pageStatus.AllocationErrors, err.Error())
 			allocationErrors = append(allocationErrors, fmt.Sprintf("%s: %v", pageSpec.Size, err))
-			overallSuccess = false
 		} else {
 			pageStatus.Allocated = allocated
 			pageStatus.Available = available
@@ -411,7 +409,7 @@ func (r *NodeSystemConfigReconciler) applyHugePagesConfig(ctx context.Context, n
 				pageStatus.AllocationStatus = "PartialSuccess"
 			} else {
 				pageStatus.AllocationStatus = "Failed"
-				overallSuccess = false
+
 			}
 		}
 
@@ -1178,8 +1176,8 @@ func (r *NodeSystemConfigReconciler) checkPersistentConfigurationNeeded(ctx cont
 	log.Info("Runtime allocation failed - persistent configuration may be required")
 
 	// Return guidance message
-	return fmt.Errorf("consider configuring huge pages persistently via boot parameters or sysctl.conf. " +
-		"For %s pages, add 'hugepagesz=%s hugepages=%d' to kernel boot parameters or " +
+	return fmt.Errorf("consider configuring huge pages persistently via boot parameters or sysctl.conf. "+
+		"For %s pages, add 'hugepagesz=%s hugepages=%d' to kernel boot parameters or "+
 		"'vm.nr_hugepages_%s = %d' to /etc/sysctl.conf",
 		pageSpec.Size, pageSpec.Size, pageSpec.Count,
 		r.getSysctlPageSizeKey(pageSpec.Size), pageSpec.Count)
