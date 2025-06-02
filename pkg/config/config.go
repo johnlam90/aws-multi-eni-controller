@@ -411,9 +411,11 @@ func loadDPDKConfig(config *ENIManagerConfig) {
 		for _, pair := range pairs {
 			parts := strings.Split(pair, ":")
 			if len(parts) == 2 {
-				ifaceName := parts[0]
-				resourceName := parts[1]
-				config.DPDKResourceNames[ifaceName] = resourceName
+				ifaceName := strings.TrimSpace(parts[0])
+				resourceName := strings.TrimSpace(parts[1])
+				if ifaceName != "" && resourceName != "" {
+					config.DPDKResourceNames[ifaceName] = resourceName
+				}
 			}
 		}
 	}
@@ -444,10 +446,12 @@ func loadInterfaceMTUs(config *ENIManagerConfig) {
 		for _, pair := range pairs {
 			parts := strings.Split(pair, ":")
 			if len(parts) == 2 {
-				ifaceName := parts[0]
-				mtuStr := parts[1]
-				if mtu, err := strconv.Atoi(mtuStr); err == nil {
-					config.InterfaceMTUs[ifaceName] = mtu
+				ifaceName := strings.TrimSpace(parts[0])
+				mtuStr := strings.TrimSpace(parts[1])
+				if ifaceName != "" && mtuStr != "" {
+					if mtu, err := strconv.Atoi(mtuStr); err == nil {
+						config.InterfaceMTUs[ifaceName] = mtu
+					}
 				}
 			}
 		}

@@ -12,6 +12,7 @@ on:
       - 'feature-*'
       - 'dev-*'
       - 'fix/*'
+      - 'improve-config-tests' # Add this line
   pull_request:
     branches: [ main ]
   # Allow manual triggering

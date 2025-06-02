@@ -2,7 +2,9 @@ name: Go Report
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+      - 'improve-config-tests' # Add this line
   pull_request:
     branches: [ main ]
 
