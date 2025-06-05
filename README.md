@@ -32,29 +32,7 @@ The following diagram illustrates the overall architecture and interaction betwe
 
 This diagram shows how the AWS Multi-ENI Controller integrates with Kubernetes and AWS to provide multiple network interfaces for pods using Multus CNI.
 
-```mermaid
-flowchart TB
-    subgraph k8s["Kubernetes Cluster"]
-        crd["NodeENI CRD"]
-        resources["NodeENI Resources"]
-        controller["NodeENI Controller"]
-        daemonset["ENI Manager DaemonSet"]
-        nodes["Kubernetes Nodes"]
-    end
-
-    subgraph aws["AWS Cloud"]
-        ec2api["EC2 API"]
-        enis["Elastic Network Interfaces"]
-    end
-
-    %% Connections with labels
-    crd -->|"Defines"| resources
-    resources -->|"Watched by"| controller
-    controller -->|"API Calls"| ec2api
-    controller -->|"Creates/Manages"| enis
-    daemonset -->|"Configures interfaces on"| nodes
-    enis -->|"Attached to"| nodes
-```
+![AWS Multi-ENI Controller Architecture Diagram](docs/control-flow.svg)
 
 ### ENI Lifecycle
 
