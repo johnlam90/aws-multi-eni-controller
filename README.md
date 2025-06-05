@@ -39,6 +39,35 @@ This diagram shows how the AWS Multi-ENI Controller integrates with Kubernetes a
 ### ENI Lifecycle
 
 ```mermaid
+
+---
+config:
+  layout: fixed
+---
+flowchart TD
+    etcdOp["Cluster Etcd Operator"] L_etcdOp_csrEtcd_0@--> csrEtcd["Generate CSR: etcd-peer"]
+    csrEtcd --> etcdCA["ETCD CA"]
+    etcdCA --> signedEtcd["Signs etcd-peer certificate"]
+    signedEtcd --> secretEtcd["TLS Secret: etcd-peer
+(openshift-etcd)"]
+    secretEtcd --> podEtcd["Mounted in: etcd pods"]
+    newCsrEtcd["Re-issue CSR for renewal"] --> etcdCA
+    etcdOp -- Monitors certiifcate for expiry --> newCsrEtcd
+     etcdOp:::operator
+     csrEtcd:::cert
+     etcdCA:::ca
+     signedEtcd:::cert
+     secretEtcd:::cert
+     podEtcd:::pod
+     newCsrEtcd:::cert
+    classDef operator fill:#d0e8ff,stroke:#1d4ed8,stroke-width:1.5px,color:#1d4ed8
+    classDef ca fill:#ffe4b5,stroke:#d97706,stroke-width:1.5px,color:#92400e
+    classDef cert fill:#dcfce7,stroke:#15803d,stroke-width:1.5px,color:#166534
+    classDef pod fill:#f3f4f6,stroke:#4b5563,stroke-width:1.5px,color:#374151
+    L_etcdOp_csrEtcd_0@{ animation: fast }
+ ```
+
+```mermaid
 sequenceDiagram
     participant User
     participant NodeENI as NodeENI Resource
