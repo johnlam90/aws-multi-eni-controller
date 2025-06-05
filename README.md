@@ -32,7 +32,7 @@ The following diagram illustrates the overall architecture and interaction betwe
 
 This diagram shows how the AWS Multi-ENI Controller integrates with Kubernetes and AWS to provide multiple network interfaces for pods using Multus CNI.
 
-![AWS Multi-ENI Controller Architecture Diagram](docs/control-flow.svg)
+![AWS Multi-ENI Controller Architecture Diagram](docs/controller-flow.svg)
 
 ### ENI Lifecycle
 
