@@ -4,7 +4,9 @@ This directory contains the architecture diagrams for the AWS Multi-ENI Controll
 
 ## Files Overview
 
-- `arch.drawio.svg` - Main architecture diagram (Draw.io format, embedded in main README)
+- `arch.drawio.svg` - Main architecture diagram (Draw.io format, editable source)
+- `arch-simple.svg` - Simplified architecture diagram (GitHub-optimized, embedded in main README)
+- `export-clean-svg.md` - Instructions for creating GitHub-compatible SVG exports
 - `architecture-diagram.md` - Mermaid-based architecture diagram with documentation
 - `class-diagram.md` - Class/component relationship diagrams
 - `eni-lifecycle.md` - ENI lifecycle flow diagrams
@@ -151,6 +153,26 @@ Your current approach is optimal:
 - No external dependencies
 
 ### Troubleshooting
+
+#### GitHub "Unable to Render Code Block" Error
+
+**Problem**: GitHub shows "unable to render code block" when viewing README.md
+
+**Causes & Solutions**:
+
+1. **Draw.io SVG with embedded data** (Most common)
+   - **Cause**: File contains `<mxfile>` data that GitHub can't process
+   - **Solution**: Export clean SVG without "Include a copy of my diagram"
+   - **Quick Fix**: Use the simplified SVG version we've provided
+
+2. **File size too large**
+   - **Cause**: Files over ~50KB may not render reliably
+   - **Current file**: 175KB (too large)
+   - **Solution**: Export optimized version or use PNG
+
+3. **Invalid SVG syntax**
+   - **Cause**: Malformed XML or unsupported elements
+   - **Solution**: Validate SVG using online validators
 
 #### SVG Not Rendering on GitHub
 - Ensure SVG doesn't contain JavaScript
