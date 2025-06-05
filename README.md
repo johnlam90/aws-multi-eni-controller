@@ -22,6 +22,14 @@ The AWS Multi-ENI Controller consists of two main components:
 
 2. **ENI Manager**: A DaemonSet that runs on nodes with matching labels and automatically brings up secondary interfaces when they're attached.It can also set mtu,bind dpdk interfaces and advertise sriov dpdk resources to the ec2 worker node.
 
+### System Architecture Diagram
+
+The following diagram illustrates the overall architecture and interaction between components:
+
+![AWS Multi-ENI Controller Architecture](docs/diagrams/arch.drawio.svg)
+
+This diagram shows how the AWS Multi-ENI Controller integrates with Kubernetes and AWS to provide multiple network interfaces for pods using Multus CNI.
+
 ```mermaid
 flowchart TB
     subgraph k8s["Kubernetes Cluster"]

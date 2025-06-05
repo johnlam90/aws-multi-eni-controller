@@ -1,6 +1,17 @@
-# AWS Multi-ENI Controller Architecture Diagram
+# AWS Multi-ENI Controller Architecture Diagrams
 
-This diagram illustrates the high-level architecture and component interactions of the AWS Multi-ENI Controller.
+This directory contains multiple representations of the AWS Multi-ENI Controller architecture:
+
+## Available Diagrams
+
+1. **High-Level Architecture**: `arch.drawio.svg` - Detailed visual diagram showing component relationships
+2. **Mermaid Flowchart**: Below - Text-based diagram for easy editing and version control
+
+## High-Level Architecture Diagram
+
+![AWS Multi-ENI Controller Architecture](arch.drawio.svg)
+
+The above diagram provides a comprehensive visual overview of how the AWS Multi-ENI Controller integrates with Kubernetes and AWS services.
 
 ```mermaid
 %%{
