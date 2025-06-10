@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">
+  <!-- Background -->
+  <rect x="0" y="0" width="400" height="300" fill="#ffffff"/>
+  
+  <!-- Main components -->
+  <rect x="50" y="50" width="120" height="80" rx="10" fill="#ffffff" stroke="#000000" stroke-width="2"/>
+  <text x="110" y="95" text-anchor="middle" fill="#000000" font-family="Arial" font-size="16" font-weight="bold">Frontend</text>
+  
+  <rect x="250" y="50" width="120" height="80" rx="10" fill="#2875e2" stroke="#000000" stroke-width="2"/>
+  <text x="310" y="95" text-anchor="middle" fill="#ffffff" font-family="Arial" font-size="16" font-weight="bold">API</text>
+  
+  <!-- Connection -->
+  <path d="M 170 90 L 240 90" stroke="#000000" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="205" y="85" text-anchor="middle" fill="#666666" font-family="Arial" font-size="12">HTTP</text>
+  
+  <!-- Status -->
+  <circle cx="80" cy="200" r="8" fill="#28a745"/>
+  <text x="100" y="205" fill="#28a745" font-family="Arial" font-size="12">Online</text>
+  
+  <circle cx="200" cy="200" r="8" fill="#dc3545"/>
+  <text x="220" y="205" fill="#dc3545" font-family="Arial" font-size="12">Error</text>
+  
+  <!-- Arrow marker -->
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#000000"/>
+    </marker>
+  </defs>
+</svg>
