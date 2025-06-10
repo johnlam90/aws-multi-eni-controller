@@ -36,6 +36,16 @@ const hexToCssVariables = {
   '#28A745': 'var(--svg-accent-green)',
   '#dc3545': 'var(--svg-accent-red)',
   '#DC3545': 'var(--svg-accent-red)',
+
+  // Colored box backgrounds (need contrasting text)
+  '#ffe6cc': 'var(--svg-orange-bg)',
+  '#FFE6CC': 'var(--svg-orange-bg)',
+  '#dae8fc': 'var(--svg-blue-bg)',
+  '#DAE8FC': 'var(--svg-blue-bg)',
+  '#d5e8d4': 'var(--svg-green-bg)',
+  '#D5E8D4': 'var(--svg-green-bg)',
+  '#e1d5e7': 'var(--svg-purple-bg)',
+  '#E1D5E7': 'var(--svg-purple-bg)',
 };
 
 // CSS template for the SVG
@@ -49,6 +59,10 @@ const cssTemplate = `<style><![CDATA[
   --svg-accent-purple: #a166ff;
   --svg-accent-green: #28a745;
   --svg-accent-red: #dc3545;
+  --svg-orange-bg: #ffe6cc;
+  --svg-blue-bg: #dae8fc;
+  --svg-green-bg: #d5e8d4;
+  --svg-purple-bg: #e1d5e7;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -61,6 +75,10 @@ const cssTemplate = `<style><![CDATA[
     --svg-accent-purple: #9f6df0;
     --svg-accent-green: #4caf50;
     --svg-accent-red: #ff6b7a;
+    --svg-orange-bg: #362108;
+    --svg-blue-bg: #1d293b;
+    --svg-green-bg: #1f2f1e;
+    --svg-purple-bg: #392f3f;
   }
 }
 
@@ -72,6 +90,25 @@ text {
   font-family: "Helvetica", "Arial", sans-serif;
 }
 ]]></style>`;
+
+function fixTextContrast(svgContent) {
+  let result = svgContent;
+
+  // Find text elements that might be inside colored boxes and ensure they use proper text color
+  // Look for color attributes in text elements and foreignObject divs
+  result = result.replace(/(<text[^>]*fill=")var\(--svg-orange-bg\)("[^>]*>)/gi, '$1var(--svg-text)$2');
+  result = result.replace(/(<text[^>]*fill=")var\(--svg-blue-bg\)("[^>]*>)/gi, '$1var(--svg-text)$2');
+  result = result.replace(/(<text[^>]*fill=")var\(--svg-green-bg\)("[^>]*>)/gi, '$1var(--svg-text)$2');
+  result = result.replace(/(<text[^>]*fill=")var\(--svg-purple-bg\)("[^>]*>)/gi, '$1var(--svg-text)$2');
+
+  // Fix color in div elements within foreignObject
+  result = result.replace(/(color:\s*)var\(--svg-orange-bg\)/gi, '$1var(--svg-text)');
+  result = result.replace(/(color:\s*)var\(--svg-blue-bg\)/gi, '$1var(--svg-text)');
+  result = result.replace(/(color:\s*)var\(--svg-green-bg\)/gi, '$1var(--svg-text)');
+  result = result.replace(/(color:\s*)var\(--svg-purple-bg\)/gi, '$1var(--svg-text)');
+
+  return result;
+}
 
 function processFile(inputFile, outputFile) {
   console.log(`Processing: ${inputFile}`);
@@ -110,7 +147,10 @@ function processFile(inputFile, outputFile) {
     
     // Remove light-dark() functions
     svgContent = svgContent.replace(/light-dark\([^)]+\)/gi, 'var(--svg-text)');
-    
+
+    // Fix text contrast issues - ensure text in colored boxes remains readable
+    svgContent = fixTextContrast(svgContent);
+
     // Insert CSS after the opening SVG tag
     const svgTagMatch = svgContent.match(/<svg[^>]*>/);
     if (svgTagMatch) {

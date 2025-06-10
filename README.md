@@ -26,7 +26,7 @@ The AWS Multi-ENI Controller consists of two main components:
 
 The following diagram illustrates the overall architecture and interaction between components:
 
-![AWS Multi-ENI Controller Architecture](docs/diagrams/arch.svg)
+![AWS Multi-ENI Controller Architecture](tools/arch-themed-fixed.svg)
 
 > **Note**: This diagram is automatically generated from `docs/diagrams/arch.drawio.svg` using the [VS Code Draw.io extension](https://marketplace.visualstudio.com/items?itemName=hediet.vscode-drawio). To edit the diagram, open the `.drawio.svg` file in VS Code.
 
