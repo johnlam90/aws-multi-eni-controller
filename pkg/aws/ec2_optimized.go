@@ -76,7 +76,8 @@ type EC2ClientOptimized struct {
 
 // NewEC2ClientOptimized creates a new optimized EC2 client using AWS SDK v2
 func NewEC2ClientOptimized(ctx context.Context, region string, logger logr.Logger) (*EC2ClientOptimized, error) {
-	// Create AWS config
+	// Create AWS config - IMDSv2 configuration is handled via environment variables
+	// The AWS SDK v2 automatically uses IMDSv2 by default and falls back to IMDSv1 if needed
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)

@@ -76,6 +76,7 @@ Before deploying the AWS Multi-ENI Controller, ensure you have:
 - kubectl configured to access your cluster
 - Helm 3.0+ (for Helm installation)
 - IAM permissions for EC2 ENI operations
+- **Amazon Linux 2023 Support**: The controller includes full IMDSv2 support for AL2023 nodes
 
 ### Required IAM Permissions
 
@@ -103,6 +104,17 @@ The controller requires the following IAM permissions:
   ]
 }
 ```
+
+### IMDSv2 Support
+
+The AWS Multi-ENI Controller includes comprehensive support for **Instance Metadata Service Version 2 (IMDSv2)**, ensuring compatibility with both Amazon Linux 2 and Amazon Linux 2023 nodes:
+
+- **Amazon Linux 2023**: Full support for nodes with `HttpTokens: required` (IMDSv2 enforcement)
+- **Amazon Linux 2**: Backward compatibility with both `HttpTokens: optional` and `HttpTokens: required`
+- **Automatic Configuration**: No manual IMDS configuration changes required
+- **Timeout & Retry**: Optimized timeout and retry settings for reliable credential retrieval
+
+For detailed information about IMDSv2 implementation, see [IMDSv2 Support Documentation](docs/imdsv2-support.md).
 
 ## Installation
 

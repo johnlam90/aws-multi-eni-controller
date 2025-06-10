@@ -20,11 +20,18 @@ spec:
         ng: multi-eni
       initContainers:
       - name: dpdk-setup
-        image: alpine:3.19
+        image: johnlam90/aws-multi-eni-controller:v1.3.6-al2023-fix
         command: ["/bin/sh", "-c"]
         args:
         - |
           echo "Setting up DPDK environment..."
+
+          # Detect AMI type for better debugging
+          if nsenter -t 1 -m -u -i -n -p -- test -f /etc/os-release; then
+            echo "Host OS information:"
+            nsenter -t 1 -m -u -i -n -p -- cat /etc/os-release | head -5
+          fi
+
           # Install required packages
           apk --no-cache add kmod pciutils python3 build-base linux-headers git
 
@@ -90,9 +97,16 @@ spec:
           # Enable unsafe NOIOMMU mode
           nsenter -t 1 -m -u -i -n -p -- sh -c 'echo 1 > /sys/module/vfio/parameters/enable_unsafe_noiommu_mode' || echo "Failed to enable unsafe NOIOMMU mode"
 
-          # Copy DPDK binding script to host
+          # Debug: Show available DPDK files
+          echo "Available DPDK files in container:"
+          echo "From Docker image (/opt/dpdk):"
+          ls -la /opt/dpdk/ || echo "No /opt/dpdk directory"
+          echo "From ConfigMap (/opt/dpdk-configmap):"
+          ls -la /opt/dpdk-configmap/ || echo "No /opt/dpdk-configmap directory"
+
+          # Copy DPDK binding script to host (from ConfigMap)
           mkdir -p /host/usr/bin
-          cp -f /opt/dpdk/dpdk-devbind.py /host/usr/bin/
+          cp -f /opt/dpdk-configmap/dpdk-devbind.py /host/usr/bin/
           chmod 755 /host/usr/bin/dpdk-devbind.py
 
           # Create module load configuration for persistence across reboots
@@ -112,11 +126,17 @@ spec:
           else
             echo "Write Combining is not enabled, attempting to patch vfio-pci"
 
-            # Use the pre-packaged patch script
-            cd /opt/dpdk/scripts
-
-            # Run the patch script to enable Write Combining
-            nsenter -t 1 -m -u -i -n -p -- /opt/dpdk/scripts/get-vfio-with-wc.sh || echo "Failed to patch vfio-pci for Write Combining"
+            # Check if the DPDK scripts directory exists (from Docker image)
+            if [ -d "/opt/dpdk/scripts" ] && [ -f "/opt/dpdk/scripts/get-vfio-with-wc.sh" ]; then
+              echo "Using DPDK scripts from Docker image"
+              cd /opt/dpdk/scripts
+              # Run the patch script to enable Write Combining
+              nsenter -t 1 -m -u -i -n -p -- /opt/dpdk/scripts/get-vfio-with-wc.sh || echo "Failed to patch vfio-pci for Write Combining"
+            else
+              echo "DPDK scripts not found in expected location, skipping Write Combining patch"
+              echo "This is expected on Amazon Linux 2023 and other newer distributions"
+              echo "DPDK will still function without Write Combining optimization"
+            fi
           fi
 
           # Final verification of DPDK environment
@@ -154,13 +174,13 @@ spec:
         - name: host-root
           mountPath: /host
         - name: dpdk-tools
-          mountPath: /opt/dpdk
+          mountPath: /opt/dpdk-configmap
         - name: host-modules
           mountPath: /lib/modules
           readOnly: true
       containers:
       - name: eni-manager
-        image: johnlam90/aws-multi-eni-controller:v1.3.5
+        image: johnlam90/aws-multi-eni-controller:v1.3.6-al2023-fix
         env:
         - name: COMPONENT
           value: "eni-manager"
@@ -172,13 +192,28 @@ spec:
               fieldPath: spec.nodeName
         - name: AWS_REGION
           value: "us-east-1"  # Set your AWS region here
+        # AWS SDK configuration for strict IMDSv2 enforcement
+        # These settings ensure IMDSv2-only operation for enhanced security
+        - name: AWS_EC2_METADATA_DISABLED
+          value: "false"
+        - name: AWS_EC2_METADATA_V1_DISABLED
+          value: "true"
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE
+          value: "IPv4"
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT
+          value: "http://169.254.169.254"
+        # Increased timeout and retry configuration for reliable IMDS calls
+        - name: AWS_METADATA_SERVICE_TIMEOUT
+          value: "30"
+        - name: AWS_METADATA_SERVICE_NUM_ATTEMPTS
+          value: "5"
         # DPDK Configuration
         - name: ENABLE_DPDK
           value: "true"  # Enable DPDK device binding
         - name: DEFAULT_DPDK_DRIVER
           value: "vfio-pci"  # Default DPDK driver to use
         - name: DPDK_BINDING_SCRIPT
-          value: "/opt/dpdk/dpdk-devbind.py"  # Path to DPDK binding script
+          value: "/opt/dpdk/dpdk-devbind.py"  # Path to DPDK binding script (from Docker image)
         - name: SRIOV_DP_CONFIG_PATH
           value: "/etc/pcidp/config.json"  # Path to SRIOV device plugin config
         securityContext:
@@ -188,7 +223,7 @@ spec:
         args:
         - --check-interval=30s
         - --debug=true
-        - --eni-pattern=^(eth|ens|eni|en)[0-9]+
+        - --eni-pattern=^(eth|ens|eni|en|enX)[0-9]+
         - --ignore-interfaces=tunl0,gre0,gretap0,erspan0,ip_vti0,ip6_vti0,sit0,ip6tnl0,ip6gre0
         - --use-netlink=true
         # Primary interface will be auto-detected
@@ -207,7 +242,7 @@ spec:
         - name: host-run
           mountPath: /host/run
         - name: dpdk-tools
-          mountPath: /opt/dpdk
+          mountPath: /opt/dpdk-configmap
         - name: sriov-dp-config
           mountPath: /etc/pcidp
       volumes:

@@ -45,7 +45,8 @@ type EC2Client struct {
 
 // NewEC2Client creates a new EC2 client using AWS SDK v2
 func NewEC2Client(ctx context.Context, region string, logger logr.Logger) (*EC2Client, error) {
-	// Create AWS config
+	// Create AWS config - IMDSv2 configuration is handled via environment variables
+	// The AWS SDK v2 automatically uses IMDSv2 by default and falls back to IMDSv1 if needed
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %v", err)

@@ -181,6 +181,21 @@ spec:
         # This is a placeholder that should be customized
         - name: AWS_REGION
           value: "us-east-1"
+        # AWS SDK configuration for strict IMDSv2 enforcement
+        # These settings ensure IMDSv2-only operation for enhanced security
+        - name: AWS_EC2_METADATA_DISABLED
+          value: "false"
+        - name: AWS_EC2_METADATA_V1_DISABLED
+          value: "true"
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE
+          value: "IPv4"
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT
+          value: "http://169.254.169.254"
+        # Increased timeout and retry configuration for reliable IMDS calls
+        - name: AWS_METADATA_SERVICE_TIMEOUT
+          value: "30"
+        - name: AWS_METADATA_SERVICE_NUM_ATTEMPTS
+          value: "5"
         # Maximum number of concurrent ENI cleanup operations
         - name: MAX_CONCURRENT_ENI_CLEANUP
           value: "3"
