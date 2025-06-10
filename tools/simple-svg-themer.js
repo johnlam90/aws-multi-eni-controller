@@ -9,13 +9,16 @@
 const fs = require('fs');
 const path = require('path');
 
-// Color mapping: hex codes to CSS variables
+// Color mapping: hex codes to CSS variables (both lowercase and uppercase)
 const hexToCssVariables = {
-  // Background colors (case-insensitive)
+  // Background colors
   '#ffffff': 'var(--svg-bg)',
+  '#FFFFFF': 'var(--svg-bg)',
   '#fff': 'var(--svg-bg)',
+  '#FFF': 'var(--svg-bg)',
   'white': 'var(--svg-bg)',
   '#f5f5f5': 'var(--svg-secondary-bg)',
+  '#F5F5F5': 'var(--svg-secondary-bg)',
 
   // Text colors
   '#000000': 'var(--svg-text)',
@@ -26,9 +29,13 @@ const hexToCssVariables = {
 
   // Accent colors
   '#2875e2': 'var(--svg-accent-blue)',
+  '#2875E2': 'var(--svg-accent-blue)',
   '#a166ff': 'var(--svg-accent-purple)',
+  '#A166FF': 'var(--svg-accent-purple)',
   '#28a745': 'var(--svg-accent-green)',
+  '#28A745': 'var(--svg-accent-green)',
   '#dc3545': 'var(--svg-accent-red)',
+  '#DC3545': 'var(--svg-accent-red)',
 };
 
 // CSS template for the SVG
