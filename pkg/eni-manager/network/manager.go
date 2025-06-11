@@ -282,8 +282,8 @@ func (m *Manager) getDeviceIndexForInterface(ifaceName string) (int, error) {
 	if strings.HasPrefix(ifaceName, "ens") {
 		indexStr := strings.TrimPrefix(ifaceName, "ens")
 		if index, err := strconv.Atoi(indexStr); err == nil {
-			// EKS typically starts at ens5 for device index 1
-			return index - 4, nil
+			// EKS typically starts at ens5 for device index 0
+			return index - 5, nil
 		}
 	}
 

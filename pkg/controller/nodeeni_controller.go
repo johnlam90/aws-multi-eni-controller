@@ -1542,7 +1542,7 @@ func (r *NodeENIReconciler) removeStaleAttachments(ctx context.Context, nodeENI 
 				staleAttachments = append(staleAttachments, attachment)
 			} else {
 				// Keep attachment if comprehensive verification suggests it's still valid
-				log.Info("Keeping attachment despite missing node - AWS verification suggests it's still valid",
+				log.Info("Keeping attachment despite node not matching selector - comprehensive verification failed to confirm it's stale",
 					"nodeID", attachment.NodeID, "eniID", attachment.ENIID)
 				updatedAttachments = append(updatedAttachments, attachment)
 			}
@@ -1677,11 +1677,11 @@ func (r *NodeENIReconciler) isAttachmentComprehensivelyStale(ctx context.Context
 		return true // Stale
 	}
 
-	// Step 4: Instance exists and ENI is properly attached, but node is missing from Kubernetes
-	// This could be a temporary condition (node restart, network issues, etc.)
-	// Be conservative and keep the attachment for now
-	log.Info("Instance and ENI exist and are properly attached, but node is missing from Kubernetes - keeping attachment")
-	return false
+	// Step 4: Instance exists and ENI is properly attached, but node no longer matches NodeENI selector
+	// This means the user intentionally removed the node from the selector (e.g., removed labels)
+	// We should clean up the ENI as the user expects it to be removed
+	log.Info("Instance and ENI exist and are properly attached, but node no longer matches NodeENI selector - marking as stale for cleanup")
+	return true
 }
 
 // verifyInstanceExists verifies that an AWS instance exists and is in a valid state
