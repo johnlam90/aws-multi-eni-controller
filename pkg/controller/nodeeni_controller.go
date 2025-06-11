@@ -296,7 +296,10 @@ func (r *NodeENIReconciler) setCleanupStartTime(ctx context.Context, nodeENI *ne
 	// Only set if not already set
 	if _, exists := nodeENI.Annotations[CleanupStartTimeAnnotation]; !exists {
 		nodeENI.Annotations[CleanupStartTimeAnnotation] = time.Now().Format(time.RFC3339)
-		return r.Client.Update(ctx, nodeENI)
+
+		// Use retry logic for resource version conflicts
+		_, err := r.updateNodeENIWithRetry(ctx, nodeENI)
+		return err
 	}
 
 	return nil
@@ -314,12 +317,129 @@ func (r *NodeENIReconciler) removeFinalizer(ctx context.Context, nodeENI *networ
 	return r.updateNodeENIWithRetry(ctx, nodeENI)
 }
 
-// updateNodeENIWithRetry updates a NodeENI resource with retry logic
+// updateNodeENIWithRetry updates a NodeENI resource with retry logic for resource version conflicts
 func (r *NodeENIReconciler) updateNodeENIWithRetry(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI) (ctrl.Result, error) {
-	if err := r.Client.Update(ctx, nodeENI); err != nil {
-		return ctrl.Result{}, err
+	log := r.Log.WithValues("nodeeni", nodeENI.Name)
+
+	// Use exponential backoff for resource version conflicts
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 100 * time.Millisecond,
+		Factor:   2.0,
+		Jitter:   0.1,
 	}
+
+	var lastErr error
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		updateErr := r.Client.Update(ctx, nodeENI)
+		if updateErr != nil {
+			// Check if this is a resource version conflict
+			if errors.IsConflict(updateErr) {
+				log.V(1).Info("Resource version conflict detected, retrying update", "error", updateErr.Error())
+
+				// Fetch the latest version of the resource
+				latest := &networkingv1alpha1.NodeENI{}
+				if getErr := r.Client.Get(ctx, client.ObjectKeyFromObject(nodeENI), latest); getErr != nil {
+					log.Error(getErr, "Failed to fetch latest NodeENI for retry")
+					lastErr = getErr
+					return false, getErr
+				}
+
+				// Preserve the changes we want to make
+				preserveFinalizers := nodeENI.Finalizers
+				preserveAnnotations := nodeENI.Annotations
+
+				// Update the latest version with our changes
+				latest.Finalizers = preserveFinalizers
+				if preserveAnnotations != nil {
+					if latest.Annotations == nil {
+						latest.Annotations = make(map[string]string)
+					}
+					for key, value := range preserveAnnotations {
+						latest.Annotations[key] = value
+					}
+					// Remove cleanup annotation if it was deleted
+					if _, exists := preserveAnnotations[CleanupStartTimeAnnotation]; !exists {
+						delete(latest.Annotations, CleanupStartTimeAnnotation)
+					}
+				}
+
+				// Update nodeENI to point to the latest version for the next retry
+				*nodeENI = *latest
+				lastErr = updateErr
+				return false, nil // Continue retrying
+			}
+
+			// For other errors, fail immediately
+			lastErr = updateErr
+			return false, updateErr
+		}
+		return true, nil
+	})
+
+	if err != nil {
+		log.Error(lastErr, "Failed to update NodeENI after retries")
+		return ctrl.Result{}, lastErr
+	}
+
+	log.V(1).Info("Successfully updated NodeENI")
 	return ctrl.Result{}, nil
+}
+
+// updateNodeENIStatusWithRetry updates a NodeENI status with retry logic for resource version conflicts
+func (r *NodeENIReconciler) updateNodeENIStatusWithRetry(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI) error {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name)
+
+	// Use exponential backoff for resource version conflicts
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 100 * time.Millisecond,
+		Factor:   2.0,
+		Jitter:   0.1,
+	}
+
+	var lastErr error
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		updateErr := r.Client.Status().Update(ctx, nodeENI)
+		if updateErr != nil {
+			// Check if this is a resource version conflict
+			if errors.IsConflict(updateErr) {
+				log.V(1).Info("Resource version conflict detected during status update, retrying", "error", updateErr.Error())
+
+				// Fetch the latest version of the resource
+				latest := &networkingv1alpha1.NodeENI{}
+				if getErr := r.Client.Get(ctx, client.ObjectKeyFromObject(nodeENI), latest); getErr != nil {
+					log.Error(getErr, "Failed to fetch latest NodeENI for status retry")
+					lastErr = getErr
+					return false, getErr
+				}
+
+				// Preserve the status changes we want to make
+				preserveStatus := nodeENI.Status
+
+				// Update the latest version with our status changes
+				latest.Status = preserveStatus
+
+				// Update nodeENI to point to the latest version for the next retry
+				*nodeENI = *latest
+				lastErr = updateErr
+				return false, nil // Continue retrying
+			}
+
+			// For other errors, fail immediately
+			lastErr = updateErr
+			return false, updateErr
+		}
+		return true, nil
+	})
+
+	if err != nil {
+		log.Error(lastErr, "Failed to update NodeENI status after retries")
+		return lastErr
+	}
+
+	log.V(1).Info("Successfully updated NodeENI status")
+	return nil
 }
 
 // executeWithCircuitBreaker executes an AWS operation with circuit breaker protection
@@ -1104,12 +1224,16 @@ func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *netw
 // addFinalizer adds a finalizer to a NodeENI resource
 func (r *NodeENIReconciler) addFinalizer(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI) (ctrl.Result, error) {
 	controllerutil.AddFinalizer(nodeENI, NodeENIFinalizer)
-	if err := r.Client.Update(ctx, nodeENI); err != nil {
+
+	// Use retry logic for resource version conflicts
+	result, err := r.updateNodeENIWithRetry(ctx, nodeENI)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	// Return here to avoid processing the rest of the reconciliation
 	// The update will trigger another reconciliation
-	return ctrl.Result{}, nil
+	return result, nil
 }
 
 // processNodeENI processes a NodeENI resource
@@ -1144,8 +1268,8 @@ func (r *NodeENIReconciler) processNodeENI(ctx context.Context, nodeENI *network
 	updatedAttachments := r.removeStaleAttachments(ctx, nodeENI, currentAttachments)
 	nodeENI.Status.Attachments = updatedAttachments
 
-	// Update the NodeENI status
-	if err := r.Client.Status().Update(ctx, nodeENI); err != nil {
+	// Update the NodeENI status with retry logic
+	if err := r.updateNodeENIStatusWithRetry(ctx, nodeENI); err != nil {
 		log.Error(err, "Failed to update NodeENI status")
 		return err
 	}
@@ -2140,8 +2264,8 @@ func (r *NodeENIReconciler) updateNodeENIStatus(
 		"before", len(nodeENI.Status.Attachments), "after", len(updatedAttachments))
 	nodeENI.Status.Attachments = updatedAttachments
 
-	// Update the NodeENI status
-	if err := r.Client.Status().Update(ctx, nodeENI); err != nil {
+	// Update the NodeENI status with retry logic
+	if err := r.updateNodeENIStatusWithRetry(ctx, nodeENI); err != nil {
 		log.Error(err, "Failed to update NodeENI status with verified attachments")
 	} else {
 		log.Info("Successfully updated NodeENI status with verified attachments")

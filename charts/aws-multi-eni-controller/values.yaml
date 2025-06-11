@@ -4,8 +4,8 @@
 
 # Image configuration
 image:
-  repository: johnlam90/aws-multi-eni-controller
-  tag: v1.3.6-cloud-native-auth-v2
+  repository: ghcr.io/johnlam90/aws-multi-eni-controller
+  tag: beta-332d180
   pullPolicy: Always
 
 # Namespace to deploy the controller
