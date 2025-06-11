@@ -4,8 +4,8 @@
 
 # Image configuration
 image:
-  repository: johnlam90/aws-multi-eni-controller
-  tag: v1.3.6-comprehensive-tests
+  repository: ghcr.io/johnlam90/aws-multi-eni-controller
+  tag: beta-a86ce7b
   pullPolicy: Always
 
 # Namespace to deploy the controller
