@@ -267,8 +267,14 @@ func (m *Manager) getPCIAddressForInterface(ifaceName string) (string, error) {
 }
 
 func (m *Manager) getDeviceIndexForInterface(ifaceName string) (int, error) {
-	// Try to extract device index from interface name
-	// This is a simplified approach - in practice, this would use more sophisticated mapping
+	// Method 1: Try to read device index from sysfs (most reliable)
+	if deviceIndex, err := m.getDeviceIndexFromSysfs(ifaceName); err == nil {
+		log.Printf("Device index for %s from sysfs: %d", ifaceName, deviceIndex)
+		return deviceIndex, nil
+	}
+
+	// Method 2: Fallback to interface name parsing
+	log.Printf("Sysfs unavailable for %s, using name-based calculation", ifaceName)
 
 	// For eth interfaces (eth0, eth1, etc.)
 	if strings.HasPrefix(ifaceName, "eth") {
@@ -288,6 +294,25 @@ func (m *Manager) getDeviceIndexForInterface(ifaceName string) (int, error) {
 	}
 
 	return 0, fmt.Errorf("could not determine device index for interface %s", ifaceName)
+}
+
+// getDeviceIndexFromSysfs reads the device index directly from sysfs
+func (m *Manager) getDeviceIndexFromSysfs(ifaceName string) (int, error) {
+	// Try multiple sysfs paths for device index
+	paths := []string{
+		fmt.Sprintf("/sys/class/net/%s/device/device_index", ifaceName),
+		fmt.Sprintf("/sys/class/net/%s/dev_id", ifaceName),
+	}
+
+	for _, path := range paths {
+		if data, err := os.ReadFile(path); err == nil {
+			if deviceIndex, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+				return deviceIndex, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("device index not found in sysfs for interface %s", ifaceName)
 }
 
 func (m *Manager) bringUpInterfaceWithIP(ifaceName string) error {
