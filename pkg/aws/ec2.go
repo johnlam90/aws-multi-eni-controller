@@ -79,42 +79,42 @@ func createCloudNativeAWSConfig(ctx context.Context, region string, log logr.Log
 
 	// Strategy 1: Try IRSA (IAM Roles for Service Accounts) first
 	// This is the most cloud-native approach and works without IMDS
-	if cfg, err := tryIRSAAuthentication(ctx, region, log); err == nil {
+	cfg, err := tryIRSAAuthentication(ctx, region, log)
+	if err == nil {
 		log.Info("Successfully authenticated using IRSA (IAM Roles for Service Accounts)")
 		return cfg, nil
-	} else {
-		log.V(1).Info("IRSA authentication failed", "error", err.Error())
 	}
+	log.V(1).Info("IRSA authentication failed", "error", err.Error())
 
 	// Strategy 2: Try environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-	if cfg, err := tryEnvironmentAuthentication(ctx, region, log); err == nil {
+	cfg, err = tryEnvironmentAuthentication(ctx, region, log)
+	if err == nil {
 		log.Info("Successfully authenticated using environment variables")
 		return cfg, nil
-	} else {
-		log.V(1).Info("Environment variable authentication failed", "error", err.Error())
 	}
+	log.V(1).Info("Environment variable authentication failed", "error", err.Error())
 
 	// Strategy 3: Try standard AWS config (includes IMDS with fallback)
 	// This is the fallback that should work in most cases
-	if cfg, err := tryStandardAuthentication(ctx, region, log); err == nil {
+	cfg, err = tryStandardAuthentication(ctx, region, log)
+	if err == nil {
 		log.Info("Successfully authenticated using standard AWS config")
 		return cfg, nil
-	} else {
-		log.V(1).Info("Standard authentication failed", "error", err.Error())
 	}
+	log.V(1).Info("Standard authentication failed", "error", err.Error())
 
 	// Strategy 4: Try IMDS with custom configuration (last resort)
-	if cfg, err := tryCustomIMDSAuthentication(ctx, region, log); err == nil {
+	cfg, err = tryCustomIMDSAuthentication(ctx, region, log)
+	if err == nil {
 		log.Info("Successfully authenticated using custom IMDS configuration")
 		return cfg, nil
-	} else {
-		log.V(1).Info("Custom IMDS authentication failed", "error", err.Error())
 	}
+	log.V(1).Info("Custom IMDS authentication failed", "error", err.Error())
 
 	// Strategy 5: Fallback to basic config without credential testing
 	// This allows the controller to start even if credentials are not immediately available
 	log.Info("All authentication strategies with credential testing failed, falling back to basic config")
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	cfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		return aws.Config{}, fmt.Errorf("failed to load basic AWS config: %v", err)
 	}
