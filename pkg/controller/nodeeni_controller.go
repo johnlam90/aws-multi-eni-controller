@@ -136,6 +136,10 @@ func NewNodeENIReconciler(mgr manager.Manager) (*NodeENIReconciler, error) {
 
 // SetupWithManager sets up the controller with the Manager
 func (r *NodeENIReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Start IMDS configuration retry in the background
+	ctx := context.Background()
+	r.startIMDSConfigurationRetry(ctx)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha1.NodeENI{}).
 		Watches(
@@ -2141,5 +2145,31 @@ func (r *NodeENIReconciler) updateNodeENIStatus(
 		log.Error(err, "Failed to update NodeENI status with verified attachments")
 	} else {
 		log.Info("Successfully updated NodeENI status with verified attachments")
+	}
+}
+
+// startIMDSConfigurationRetry starts a background process to periodically retry IMDS configuration
+// This helps handle node replacement scenarios where new instances need IMDS hop limit configuration
+func (r *NodeENIReconciler) startIMDSConfigurationRetry(ctx context.Context) {
+	if ec2Client, ok := r.AWS.(*awsutil.EC2Client); ok {
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute) // Retry every 5 minutes
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					r.Log.Info("IMDS configuration retry stopped due to context cancellation")
+					return
+				case <-ticker.C:
+					r.Log.V(1).Info("Retrying IMDS hop limit configuration")
+					if err := ec2Client.ConfigureIMDSHopLimit(ctx); err != nil {
+						r.Log.V(1).Info("IMDS configuration retry failed", "error", err.Error())
+					} else {
+						r.Log.V(1).Info("IMDS configuration retry completed successfully")
+					}
+				}
+			}
+		}()
 	}
 }

@@ -59,3 +59,4 @@ recommended-sample-improvements.yaml
 sriov-device-plugin-hostpath.yaml
 charts/aws-multi-eni-controller/values.yaml
 aws-multi-eni-controller
+trust-policy.json

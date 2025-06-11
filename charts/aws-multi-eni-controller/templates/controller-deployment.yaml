@@ -57,6 +57,9 @@ spec:
           value: "{{ .Values.imds.autoConfigureHopLimit }}"
         - name: IMDS_HOP_LIMIT
           value: "{{ .Values.imds.hopLimit }}"
+        # Enable aggressive IMDS configuration for node replacement scenarios
+        - name: IMDS_AGGRESSIVE_CONFIGURATION
+          value: "{{ .Values.imds.aggressiveConfiguration }}"
         # Node name for Kubernetes context
         - name: NODE_NAME
           valueFrom:

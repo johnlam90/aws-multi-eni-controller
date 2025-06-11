@@ -2,8 +2,8 @@ apiVersion: v2
 name: aws-multi-eni-controller
 description: A Helm chart for AWS Multi-ENI Controller
 type: application
-version: "1.3.5"
-appVersion: "v1.3.5"
+version: "1.3.6"
+appVersion: "v1.3.6"
 home: https://github.com/johnlam90/aws-multi-eni-controller
 sources:
   - https://github.com/johnlam90/aws-multi-eni-controller
@@ -20,12 +20,12 @@ keywords:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/changes: |
-    - Update version to v1.3.5
-    - Fix ENI Manager incorrectly generating SR-IOV config for regular ENI configurations
-    - Implement proper PCI address mapping for SR-IOV configurations
-    - Prioritize PCI address matching over device index for SR-IOV interfaces
-    - Add comprehensive test coverage for interface-to-NodeENI mapping
-    - Resolve PCI address mismatches in SR-IOV device plugin configuration
-    - Improve separation between regular ENI and SR-IOV functionality
-    - Add detailed logging for interface mapping decisions
-    - Fix issue where regular ENI configs triggered unnecessary SR-IOV operations
+    - Update version to v1.3.6
+    - Fix automatic node replacement recovery for IMDSv2 environments
+    - Implement multi-strategy IMDS hop limit configuration
+    - Add private IP-based instance ID discovery for new nodes
+    - Enable VPC-wide IMDS configuration as fallback strategy
+    - Add background IMDS configuration retry mechanism
+    - Resolve chicken-and-egg problem with IMDS access on new instances
+    - Support automatic recovery without manual intervention
+    - Add aggressive IMDS configuration option for node replacement scenarios

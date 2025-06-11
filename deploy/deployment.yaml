@@ -173,7 +173,7 @@ spec:
       #   - "kubernetes"
       containers:
       - name: manager
-        image: johnlam90/aws-multi-eni-controller:v1.3.5
+        image: johnlam90/aws-multi-eni-controller:v1.3.6-cloud-native-auth
         env:
         - name: COMPONENT
           value: "eni-controller"
@@ -201,6 +201,9 @@ spec:
           value: "true"
         - name: IMDS_HOP_LIMIT
           value: "2"
+        # Enable aggressive IMDS configuration for node replacement scenarios
+        - name: IMDS_AGGRESSIVE_CONFIGURATION
+          value: "true"
         # Maximum number of concurrent ENI cleanup operations
         - name: MAX_CONCURRENT_ENI_CLEANUP
           value: "3"

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -17,9 +18,11 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
@@ -47,24 +50,188 @@ type EC2Client struct {
 	lastCacheUpdate time.Time
 }
 
-// NewEC2Client creates a new EC2 client using AWS SDK v2
+// NewEC2Client creates a new EC2 client using AWS SDK v2 with cloud-native authentication
 func NewEC2Client(ctx context.Context, region string, logger logr.Logger) (*EC2Client, error) {
-	// Create AWS config - IMDSv2 configuration is handled via environment variables
-	// The AWS SDK v2 automatically uses IMDSv2 by default and falls back to IMDSv1 if needed
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	log := logger.WithName("aws-ec2-client")
+	log.Info("Creating AWS EC2 client with cloud-native authentication")
+
+	// Create AWS config with multiple authentication strategies
+	cfg, err := createCloudNativeAWSConfig(ctx, region, log)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load AWS config: %v", err)
+		return nil, fmt.Errorf("failed to create cloud-native AWS config: %v", err)
 	}
 
 	return &EC2Client{
 		EC2:             ec2.NewFromConfig(cfg),
-		Logger:          logger.WithName("aws-ec2"),
+		Logger:          log,
 		subnetCache:     make(map[string]string),
 		subnetNameCache: make(map[string]string),
 		sgCache:         make(map[string]string),
 		cacheExpiration: 5 * time.Minute, // Cache expires after 5 minutes
 		lastCacheUpdate: time.Now(),
 	}, nil
+}
+
+// createCloudNativeAWSConfig creates AWS config with multiple authentication strategies
+// This solves the IMDSv2 chicken-and-egg problem by using cloud-native approaches
+func createCloudNativeAWSConfig(ctx context.Context, region string, log logr.Logger) (aws.Config, error) {
+	log.Info("Attempting cloud-native AWS authentication", "region", region)
+
+	// Strategy 1: Try IRSA (IAM Roles for Service Accounts) first
+	// This is the most cloud-native approach and works without IMDS
+	if cfg, err := tryIRSAAuthentication(ctx, region, log); err == nil {
+		log.Info("Successfully authenticated using IRSA (IAM Roles for Service Accounts)")
+		return cfg, nil
+	} else {
+		log.V(1).Info("IRSA authentication failed", "error", err.Error())
+	}
+
+	// Strategy 2: Try environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+	if cfg, err := tryEnvironmentAuthentication(ctx, region, log); err == nil {
+		log.Info("Successfully authenticated using environment variables")
+		return cfg, nil
+	} else {
+		log.V(1).Info("Environment variable authentication failed", "error", err.Error())
+	}
+
+	// Strategy 3: Try standard AWS config (includes IMDS with fallback)
+	// This is the fallback that should work in most cases
+	if cfg, err := tryStandardAuthentication(ctx, region, log); err == nil {
+		log.Info("Successfully authenticated using standard AWS config")
+		return cfg, nil
+	} else {
+		log.V(1).Info("Standard authentication failed", "error", err.Error())
+	}
+
+	// Strategy 4: Try IMDS with custom configuration (last resort)
+	if cfg, err := tryCustomIMDSAuthentication(ctx, region, log); err == nil {
+		log.Info("Successfully authenticated using custom IMDS configuration")
+		return cfg, nil
+	} else {
+		log.V(1).Info("Custom IMDS authentication failed", "error", err.Error())
+	}
+
+	// Strategy 5: Fallback to basic config without credential testing
+	// This allows the controller to start even if credentials are not immediately available
+	log.Info("All authentication strategies with credential testing failed, falling back to basic config")
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("failed to load basic AWS config: %v", err)
+	}
+
+	log.Info("Using basic AWS config - credentials will be tested during first API call")
+	return cfg, nil
+}
+
+// tryIRSAAuthentication attempts to authenticate using IRSA (IAM Roles for Service Accounts)
+// This is the most cloud-native approach and works without IMDS
+func tryIRSAAuthentication(ctx context.Context, region string, log logr.Logger) (aws.Config, error) {
+	log.V(1).Info("Attempting IRSA authentication")
+
+	// Check if we're running in a Kubernetes environment with IRSA
+	tokenFile := os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")
+	roleArn := os.Getenv("AWS_ROLE_ARN")
+
+	if tokenFile == "" || roleArn == "" {
+		return aws.Config{}, fmt.Errorf("IRSA environment variables not found (AWS_WEB_IDENTITY_TOKEN_FILE, AWS_ROLE_ARN)")
+	}
+
+	log.Info("Found IRSA configuration", "tokenFile", tokenFile, "roleArn", roleArn)
+
+	// Create config with web identity token credentials
+	cfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(region),
+		config.WithWebIdentityRoleCredentialOptions(func(options *stscreds.WebIdentityRoleOptions) {
+			options.RoleARN = roleArn
+			options.TokenRetriever = stscreds.IdentityTokenFile(tokenFile)
+		}),
+	)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("failed to load IRSA config: %v", err)
+	}
+
+	// Test the credentials by making a simple STS call
+	stsClient := sts.NewFromConfig(cfg)
+	_, err = stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("IRSA credentials test failed: %v", err)
+	}
+
+	log.Info("IRSA authentication successful")
+	return cfg, nil
+}
+
+// tryEnvironmentAuthentication attempts to authenticate using environment variables
+func tryEnvironmentAuthentication(ctx context.Context, region string, log logr.Logger) (aws.Config, error) {
+	log.V(1).Info("Attempting environment variable authentication")
+
+	accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
+	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+
+	if accessKey == "" || secretKey == "" {
+		return aws.Config{}, fmt.Errorf("AWS environment variables not found (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)")
+	}
+
+	log.Info("Found AWS environment variables")
+
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("failed to load environment config: %v", err)
+	}
+
+	// Test the credentials
+	stsClient := sts.NewFromConfig(cfg)
+	_, err = stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("environment credentials test failed: %v", err)
+	}
+
+	log.Info("Environment variable authentication successful")
+	return cfg, nil
+}
+
+// tryStandardAuthentication attempts standard AWS authentication
+func tryStandardAuthentication(ctx context.Context, region string, log logr.Logger) (aws.Config, error) {
+	log.V(1).Info("Attempting standard AWS authentication")
+
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("failed to load standard config: %v", err)
+	}
+
+	// Test the credentials
+	stsClient := sts.NewFromConfig(cfg)
+	_, err = stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("standard credentials test failed: %v", err)
+	}
+
+	log.Info("Standard authentication successful")
+	return cfg, nil
+}
+
+// tryCustomIMDSAuthentication attempts IMDS authentication with custom configuration
+func tryCustomIMDSAuthentication(ctx context.Context, region string, log logr.Logger) (aws.Config, error) {
+	log.V(1).Info("Attempting custom IMDS authentication")
+
+	// Try with different IMDS configurations
+	cfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(region),
+		config.WithEC2IMDSClientEnableState(imds.ClientEnabled),
+	)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("failed to load custom IMDS config: %v", err)
+	}
+
+	// Test the credentials
+	stsClient := sts.NewFromConfig(cfg)
+	_, err = stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("custom IMDS credentials test failed: %v", err)
+	}
+
+	log.Info("Custom IMDS authentication successful")
+	return cfg, nil
 }
 
 // CreateENI creates a new ENI in AWS
@@ -666,23 +833,128 @@ func (c *EC2Client) ConfigureIMDSHopLimit(ctx context.Context) error {
 		return fmt.Errorf("invalid IMDS_HOP_LIMIT value '%s': %v", hopLimitStr, err)
 	}
 
-	// Get the current instance ID from IMDS
-	instanceID, err := c.getCurrentInstanceID(ctx)
-	if err != nil {
-		c.Logger.Info("Could not determine current instance ID, skipping IMDS hop limit configuration", "error", err.Error())
-		return nil // Don't fail if we can't determine the instance ID
+	c.Logger.Info("Starting IMDS hop limit configuration", "desiredHopLimit", hopLimit)
+
+	// Try to configure IMDS hop limit using multiple strategies
+	return c.configureIMDSWithFallback(ctx, int32(hopLimit))
+}
+
+// configureIMDSWithFallback attempts to configure IMDS hop limit using multiple strategies
+// This method now uses cloud-native authentication to solve the chicken-and-egg problem
+func (c *EC2Client) configureIMDSWithFallback(ctx context.Context, hopLimit int32) error {
+	c.Logger.Info("Starting cloud-native IMDS configuration", "hopLimit", hopLimit)
+
+	// Strategy 1: Use cloud-native authentication to configure IMDS for current instance
+	if err := c.tryCloudNativeIMDSConfiguration(ctx, hopLimit); err == nil {
+		c.Logger.Info("Successfully configured IMDS hop limit using cloud-native authentication")
+		return nil
 	}
 
-	c.Logger.Info("Checking IMDS configuration for current instance", "instanceID", instanceID, "desiredHopLimit", hopLimit)
+	c.Logger.Info("Cloud-native IMDS configuration failed, trying fallback methods")
+
+	// Strategy 2: Try the standard approach (works if IMDS is already accessible)
+	if err := c.tryStandardIMDSConfiguration(ctx, hopLimit); err == nil {
+		c.Logger.Info("Successfully configured IMDS hop limit using standard method")
+		return nil
+	}
+
+	// Strategy 3: Use private IP lookup to find instance ID
+	if err := c.tryPrivateIPBasedConfiguration(ctx, hopLimit); err == nil {
+		c.Logger.Info("Successfully configured IMDS hop limit using private IP lookup")
+		return nil
+	}
+
+	// Strategy 4: Configure all instances in the current VPC (last resort)
+	if err := c.tryVPCWideConfiguration(ctx, hopLimit); err == nil {
+		c.Logger.Info("Successfully configured IMDS hop limit using VPC-wide approach")
+		return nil
+	}
+
+	c.Logger.Info("All IMDS configuration strategies failed, continuing without IMDS configuration")
+	return nil // Don't fail controller startup
+}
+
+// tryCloudNativeIMDSConfiguration uses cloud-native authentication to configure IMDS
+// This solves the chicken-and-egg problem by using IRSA or other non-IMDS authentication
+func (c *EC2Client) tryCloudNativeIMDSConfiguration(ctx context.Context, hopLimit int32) error {
+	c.Logger.Info("Attempting cloud-native IMDS configuration")
+
+	// Create a separate EC2 client with cloud-native authentication
+	// This bypasses the IMDS chicken-and-egg problem
+	cfg, err := createCloudNativeAWSConfig(ctx, "us-east-1", c.Logger)
+	if err != nil {
+		return fmt.Errorf("failed to create cloud-native AWS config: %v", err)
+	}
+
+	// Create a new EC2 client with the cloud-native config
+	cloudNativeEC2 := ec2.NewFromConfig(cfg)
+
+	// Strategy 1: Try to get current instance ID using private IP lookup
+	privateIP, err := c.getPrivateIPFromNetworkInterface()
+	if err != nil {
+		return fmt.Errorf("failed to get private IP: %v", err)
+	}
+
+	// Find instance by private IP using cloud-native authentication
+	instanceID, err := c.findInstanceByPrivateIPWithClient(ctx, cloudNativeEC2, privateIP)
+	if err != nil {
+		return fmt.Errorf("failed to find instance by private IP: %v", err)
+	}
+
+	c.Logger.Info("Found current instance using cloud-native authentication", "instanceID", instanceID, "privateIP", privateIP)
+
+	// Configure IMDS hop limit for this instance
+	return c.configureInstanceIMDSWithClient(ctx, cloudNativeEC2, instanceID, hopLimit)
+}
+
+// findInstanceByPrivateIPWithClient finds an instance by private IP using a specific EC2 client
+func (c *EC2Client) findInstanceByPrivateIPWithClient(ctx context.Context, ec2Client *ec2.Client, privateIP string) (string, error) {
+	c.Logger.V(1).Info("Looking up instance by private IP using cloud-native client", "privateIP", privateIP)
+
+	// Use EC2 API to find instance with this private IP
+	input := &ec2.DescribeInstancesInput{
+		Filters: []types.Filter{
+			{
+				Name:   aws.String("private-ip-address"),
+				Values: []string{privateIP},
+			},
+			{
+				Name:   aws.String("instance-state-name"),
+				Values: []string{"running", "pending"},
+			},
+		},
+	}
+
+	result, err := ec2Client.DescribeInstances(ctx, input)
+	if err != nil {
+		return "", fmt.Errorf("failed to describe instances by private IP: %v", err)
+	}
+
+	// Find the instance
+	for _, reservation := range result.Reservations {
+		for _, instance := range reservation.Instances {
+			if instance.InstanceId != nil {
+				c.Logger.V(1).Info("Found instance by private IP using cloud-native client", "instanceID", *instance.InstanceId, "privateIP", privateIP)
+				return *instance.InstanceId, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no instance found with private IP %s", privateIP)
+}
+
+// configureInstanceIMDSWithClient configures IMDS hop limit for a specific instance using a specific EC2 client
+func (c *EC2Client) configureInstanceIMDSWithClient(ctx context.Context, ec2Client *ec2.Client, instanceID string, hopLimit int32) error {
+	c.Logger.Info("Configuring IMDS for instance using cloud-native client", "instanceID", instanceID, "hopLimit", hopLimit)
 
 	// Check current IMDS configuration
-	currentHopLimit, err := c.getCurrentIMDSHopLimit(ctx, instanceID)
+	currentHopLimit, err := c.getCurrentIMDSHopLimitWithClient(ctx, ec2Client, instanceID)
 	if err != nil {
 		return fmt.Errorf("failed to get current IMDS hop limit: %v", err)
 	}
 
 	// Only modify if the current hop limit is different from desired
-	if currentHopLimit == int32(hopLimit) {
+	if currentHopLimit == hopLimit {
 		c.Logger.Info("IMDS hop limit is already correctly configured", "instanceID", instanceID, "hopLimit", currentHopLimit)
 		return nil
 	}
@@ -693,7 +965,198 @@ func (c *EC2Client) ConfigureIMDSHopLimit(ctx context.Context) error {
 		"newHopLimit", hopLimit)
 
 	// Modify the instance metadata options
-	err = c.modifyInstanceMetadataOptions(ctx, instanceID, int32(hopLimit))
+	err = c.modifyInstanceMetadataOptionsWithClient(ctx, ec2Client, instanceID, hopLimit)
+	if err != nil {
+		return fmt.Errorf("failed to modify IMDS hop limit: %v", err)
+	}
+
+	c.Logger.Info("Successfully updated IMDS hop limit using cloud-native client", "instanceID", instanceID, "hopLimit", hopLimit)
+	return nil
+}
+
+// getCurrentIMDSHopLimitWithClient gets the current IMDS hop limit using a specific EC2 client
+func (c *EC2Client) getCurrentIMDSHopLimitWithClient(ctx context.Context, ec2Client *ec2.Client, instanceID string) (int32, error) {
+	// Use DescribeInstances to get the metadata options
+	input := &ec2.DescribeInstancesInput{
+		InstanceIds: []string{instanceID},
+	}
+
+	result, err := ec2Client.DescribeInstances(ctx, input)
+	if err != nil {
+		return 0, fmt.Errorf("failed to describe instance: %v", err)
+	}
+
+	if len(result.Reservations) == 0 || len(result.Reservations[0].Instances) == 0 {
+		return 0, fmt.Errorf("instance not found: %s", instanceID)
+	}
+
+	instance := result.Reservations[0].Instances[0]
+	if instance.MetadataOptions == nil {
+		return 1, nil // Default hop limit
+	}
+
+	hopLimit := instance.MetadataOptions.HttpPutResponseHopLimit
+	if hopLimit == nil {
+		return 1, nil // Default hop limit
+	}
+
+	return *hopLimit, nil
+}
+
+// modifyInstanceMetadataOptionsWithClient modifies instance metadata options using a specific EC2 client
+func (c *EC2Client) modifyInstanceMetadataOptionsWithClient(ctx context.Context, ec2Client *ec2.Client, instanceID string, hopLimit int32) error {
+	input := &ec2.ModifyInstanceMetadataOptionsInput{
+		InstanceId:              aws.String(instanceID),
+		HttpPutResponseHopLimit: aws.Int32(hopLimit),
+		HttpTokens:              types.HttpTokensStateRequired, // Enforce IMDSv2
+		HttpEndpoint:            types.InstanceMetadataEndpointStateEnabled,
+		InstanceMetadataTags:    types.InstanceMetadataTagsStateDisabled,
+	}
+
+	_, err := ec2Client.ModifyInstanceMetadataOptions(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to modify instance metadata options: %v", err)
+	}
+
+	return nil
+}
+
+// tryStandardIMDSConfiguration attempts the standard IMDS configuration approach
+func (c *EC2Client) tryStandardIMDSConfiguration(ctx context.Context, hopLimit int32) error {
+	// Get the current instance ID from IMDS
+	instanceID, err := c.getCurrentInstanceID(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get instance ID: %v", err)
+	}
+
+	return c.configureInstanceIMDS(ctx, instanceID, hopLimit)
+}
+
+// tryKubernetesBasedConfiguration attempts to configure IMDS using Kubernetes node metadata
+func (c *EC2Client) tryKubernetesBasedConfiguration(_ context.Context, _ int32) error {
+	// This would require Kubernetes API access, which we don't have in the EC2Client
+	// For now, we'll skip this strategy
+	return fmt.Errorf("Kubernetes-based configuration not implemented")
+}
+
+// tryPrivateIPBasedConfiguration attempts to configure IMDS using private IP lookup
+func (c *EC2Client) tryPrivateIPBasedConfiguration(ctx context.Context, hopLimit int32) error {
+	// Get the private IP of this instance from the network interface
+	privateIP, err := c.getPrivateIPFromNetworkInterface()
+	if err != nil {
+		return fmt.Errorf("failed to get private IP: %v", err)
+	}
+
+	// Find instance by private IP
+	instanceID, err := c.findInstanceByPrivateIP(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to find instance by private IP: %v", err)
+	}
+
+	c.Logger.Info("Found instance ID using private IP lookup", "instanceID", instanceID, "privateIP", privateIP)
+	return c.configureInstanceIMDS(ctx, instanceID, hopLimit)
+}
+
+// tryVPCWideConfiguration attempts to configure IMDS for all instances in the VPC (last resort)
+func (c *EC2Client) tryVPCWideConfiguration(ctx context.Context, hopLimit int32) error {
+	// Check if aggressive configuration is enabled
+	aggressiveConfig := os.Getenv("IMDS_AGGRESSIVE_CONFIGURATION")
+	if aggressiveConfig != "true" {
+		c.Logger.Info("Aggressive IMDS configuration is disabled, skipping VPC-wide configuration")
+		return fmt.Errorf("aggressive configuration disabled")
+	}
+
+	// This is a last resort strategy - configure IMDS for all instances that might need it
+	// We'll look for instances that have hop limit 1 and are in running state
+
+	c.Logger.Info("Attempting VPC-wide IMDS configuration as last resort")
+
+	// Get all running instances in the region
+	input := &ec2.DescribeInstancesInput{
+		Filters: []types.Filter{
+			{
+				Name:   aws.String("instance-state-name"),
+				Values: []string{"running"},
+			},
+		},
+	}
+
+	result, err := c.EC2.DescribeInstances(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to describe instances: %v", err)
+	}
+
+	var configuredCount int
+	for _, reservation := range result.Reservations {
+		for _, instance := range reservation.Instances {
+			if instance.InstanceId == nil {
+				continue
+			}
+
+			instanceID := *instance.InstanceId
+
+			// Check if this instance needs IMDS configuration
+			currentHopLimit, err := c.getCurrentIMDSHopLimit(ctx, instanceID)
+			if err != nil {
+				c.Logger.V(1).Info("Failed to get IMDS hop limit for instance", "instanceID", instanceID, "error", err.Error())
+				continue
+			}
+
+			if currentHopLimit == hopLimit {
+				continue // Already configured
+			}
+
+			// Configure this instance
+			if err := c.configureInstanceIMDS(ctx, instanceID, hopLimit); err != nil {
+				c.Logger.V(1).Info("Failed to configure IMDS for instance", "instanceID", instanceID, "error", err.Error())
+				continue
+			}
+
+			configuredCount++
+			c.Logger.Info("Configured IMDS hop limit for instance", "instanceID", instanceID, "hopLimit", hopLimit)
+
+			// Limit the number of instances we configure to avoid excessive API calls
+			if configuredCount >= 10 {
+				c.Logger.Info("Configured IMDS for maximum number of instances, stopping")
+				break
+			}
+		}
+		if configuredCount >= 10 {
+			break
+		}
+	}
+
+	if configuredCount == 0 {
+		return fmt.Errorf("no instances were configured")
+	}
+
+	c.Logger.Info("VPC-wide IMDS configuration completed", "configuredCount", configuredCount)
+	return nil
+}
+
+// configureInstanceIMDS configures IMDS hop limit for a specific instance
+func (c *EC2Client) configureInstanceIMDS(ctx context.Context, instanceID string, hopLimit int32) error {
+	c.Logger.Info("Configuring IMDS for instance", "instanceID", instanceID, "hopLimit", hopLimit)
+
+	// Check current IMDS configuration
+	currentHopLimit, err := c.getCurrentIMDSHopLimit(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("failed to get current IMDS hop limit: %v", err)
+	}
+
+	// Only modify if the current hop limit is different from desired
+	if currentHopLimit == hopLimit {
+		c.Logger.Info("IMDS hop limit is already correctly configured", "instanceID", instanceID, "hopLimit", currentHopLimit)
+		return nil
+	}
+
+	c.Logger.Info("Updating IMDS hop limit for container compatibility",
+		"instanceID", instanceID,
+		"currentHopLimit", currentHopLimit,
+		"newHopLimit", hopLimit)
+
+	// Modify the instance metadata options
+	err = c.modifyInstanceMetadataOptions(ctx, instanceID, hopLimit)
 	if err != nil {
 		return fmt.Errorf("failed to modify IMDS hop limit: %v", err)
 	}
@@ -720,8 +1183,42 @@ func (c *EC2Client) getCurrentInstanceID(ctx context.Context) (string, error) {
 		}
 	}
 
+	// Try IMDS with multiple strategies for node replacement scenarios
+	return c.getInstanceIDWithFallback(ctx)
+}
+
+// getInstanceIDWithFallback attempts to get instance ID with multiple fallback strategies
+func (c *EC2Client) getInstanceIDWithFallback(ctx context.Context) (string, error) {
+	// Strategy 1: Try IMDS with current configuration
+	instanceID, err := c.tryIMDSInstanceID(ctx)
+	if err == nil {
+		c.Logger.V(1).Info("Retrieved instance ID from IMDS", "instanceID", instanceID)
+		return instanceID, nil
+	}
+
+	c.Logger.Info("Failed to get instance ID from IMDS, trying alternative methods", "error", err.Error())
+
+	// Strategy 2: Try to configure IMDS hop limit first, then retry
+	if c.tryConfigureIMDSForNewNode(ctx) {
+		instanceID, err := c.tryIMDSInstanceID(ctx)
+		if err == nil {
+			c.Logger.Info("Retrieved instance ID after configuring IMDS hop limit", "instanceID", instanceID)
+			return instanceID, nil
+		}
+	}
+
+	// Strategy 3: Use EC2 API to find instance by private IP (if available)
+	if instanceID, err := c.findInstanceByPrivateIP(ctx); err == nil {
+		c.Logger.Info("Retrieved instance ID by private IP lookup", "instanceID", instanceID)
+		return instanceID, nil
+	}
+
+	return "", fmt.Errorf("failed to determine instance ID using all available methods")
+}
+
+// tryIMDSInstanceID attempts to get instance ID from IMDS
+func (c *EC2Client) tryIMDSInstanceID(ctx context.Context) (string, error) {
 	// Use AWS SDK's built-in IMDS client to get the instance ID
-	// This leverages the same IMDS configuration we've set up for credentials
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to load AWS config for IMDS: %v", err)
@@ -746,8 +1243,179 @@ func (c *EC2Client) getCurrentInstanceID(ctx context.Context) (string, error) {
 	}
 
 	instanceID := strings.TrimSpace(string(content))
-	c.Logger.V(1).Info("Retrieved instance ID from IMDS", "instanceID", instanceID)
 	return instanceID, nil
+}
+
+// tryConfigureIMDSForNewNode attempts to configure IMDS hop limit for a new node
+// This is used when the controller detects it's running on a new instance
+func (c *EC2Client) tryConfigureIMDSForNewNode(ctx context.Context) bool {
+	c.Logger.Info("Attempting to configure IMDS hop limit for new node")
+
+	// Try to get instance ID using EC2 API instead of IMDS
+	instanceID, err := c.findInstanceByPrivateIP(ctx)
+	if err != nil {
+		c.Logger.Info("Could not determine instance ID for IMDS configuration", "error", err.Error())
+		return false
+	}
+
+	// Get the desired hop limit from environment variable
+	hopLimitStr := os.Getenv("IMDS_HOP_LIMIT")
+	if hopLimitStr == "" {
+		hopLimitStr = "2" // Default to 2 for container environments
+	}
+
+	hopLimit, err := strconv.Atoi(hopLimitStr)
+	if err != nil {
+		c.Logger.Error(err, "Invalid IMDS_HOP_LIMIT value", "value", hopLimitStr)
+		return false
+	}
+
+	// Check current IMDS configuration
+	currentHopLimit, err := c.getCurrentIMDSHopLimit(ctx, instanceID)
+	if err != nil {
+		c.Logger.Error(err, "Failed to get current IMDS hop limit")
+		return false
+	}
+
+	// Only modify if the current hop limit is different from desired
+	if currentHopLimit == int32(hopLimit) {
+		c.Logger.Info("IMDS hop limit is already correctly configured", "instanceID", instanceID, "hopLimit", currentHopLimit)
+		return true
+	}
+
+	c.Logger.Info("Updating IMDS hop limit for new node",
+		"instanceID", instanceID,
+		"currentHopLimit", currentHopLimit,
+		"newHopLimit", hopLimit)
+
+	// Modify the instance metadata options
+	err = c.modifyInstanceMetadataOptions(ctx, instanceID, int32(hopLimit))
+	if err != nil {
+		c.Logger.Error(err, "Failed to modify IMDS hop limit for new node")
+		return false
+	}
+
+	c.Logger.Info("Successfully updated IMDS hop limit for new node", "instanceID", instanceID, "hopLimit", hopLimit)
+	return true
+}
+
+// findInstanceByPrivateIP attempts to find the current instance ID by looking up the private IP
+func (c *EC2Client) findInstanceByPrivateIP(ctx context.Context) (string, error) {
+	// Get the private IP of this instance from the network interface
+	privateIP, err := c.getPrivateIPFromNetworkInterface()
+	if err != nil {
+		return "", fmt.Errorf("failed to get private IP: %v", err)
+	}
+
+	if privateIP == "" {
+		return "", fmt.Errorf("no private IP found")
+	}
+
+	c.Logger.V(1).Info("Looking up instance by private IP", "privateIP", privateIP)
+
+	// Use EC2 API to find instance with this private IP
+	input := &ec2.DescribeInstancesInput{
+		Filters: []types.Filter{
+			{
+				Name:   aws.String("private-ip-address"),
+				Values: []string{privateIP},
+			},
+			{
+				Name:   aws.String("instance-state-name"),
+				Values: []string{"running", "pending"},
+			},
+		},
+	}
+
+	result, err := c.EC2.DescribeInstances(ctx, input)
+	if err != nil {
+		return "", fmt.Errorf("failed to describe instances by private IP: %v", err)
+	}
+
+	// Find the instance
+	for _, reservation := range result.Reservations {
+		for _, instance := range reservation.Instances {
+			if instance.InstanceId != nil {
+				c.Logger.V(1).Info("Found instance by private IP", "instanceID", *instance.InstanceId, "privateIP", privateIP)
+				return *instance.InstanceId, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no instance found with private IP %s", privateIP)
+}
+
+// getPrivateIPFromNetworkInterface gets the private IP address of the current instance
+func (c *EC2Client) getPrivateIPFromNetworkInterface() (string, error) {
+	// Try to get the private IP from the default network interface
+	// This is a simple approach that works for most cases
+
+	// First, try to get it from the environment if available
+	if privateIP := os.Getenv("PRIVATE_IP"); privateIP != "" {
+		c.Logger.V(1).Info("Using private IP from environment variable", "privateIP", privateIP)
+		return privateIP, nil
+	}
+
+	// Try to read from the network interface files
+	// This is a fallback method that works in most Linux environments
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return "", fmt.Errorf("failed to get network interfaces: %v", err)
+	}
+
+	for _, iface := range interfaces {
+		// Skip loopback and down interfaces
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					// This is an IPv4 address
+					ip := ipnet.IP.String()
+					// Check if this is a private IP (AWS instances use private IPs)
+					if c.isPrivateIP(ip) {
+						c.Logger.V(1).Info("Found private IP from network interface", "privateIP", ip, "interface", iface.Name)
+						return ip, nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no private IP address found")
+}
+
+// isPrivateIP checks if an IP address is in a private range
+func (c *EC2Client) isPrivateIP(ip string) bool {
+	privateRanges := []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+	}
+
+	ipAddr := net.ParseIP(ip)
+	if ipAddr == nil {
+		return false
+	}
+
+	for _, cidr := range privateRanges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if network.Contains(ipAddr) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // getCurrentIMDSHopLimit gets the current IMDS hop limit for an instance

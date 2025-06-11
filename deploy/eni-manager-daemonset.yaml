@@ -180,7 +180,7 @@ spec:
           readOnly: true
       containers:
       - name: eni-manager
-        image: johnlam90/aws-multi-eni-controller:v1.3.6-al2023-fix
+        image: johnlam90/aws-multi-eni-controller:v1.3.6-cloud-native-auth
         env:
         - name: COMPONENT
           value: "eni-manager"
@@ -212,6 +212,9 @@ spec:
           value: "true"
         - name: IMDS_HOP_LIMIT
           value: "2"
+        # Enable aggressive IMDS configuration for node replacement scenarios
+        - name: IMDS_AGGRESSIVE_CONFIGURATION
+          value: "true"
         # DPDK Configuration
         - name: ENABLE_DPDK
           value: "true"  # Enable DPDK device binding

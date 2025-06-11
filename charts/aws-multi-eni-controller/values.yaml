@@ -5,7 +5,7 @@
 # Image configuration
 image:
   repository: johnlam90/aws-multi-eni-controller
-  tag: v1.3.6-imdsv2-auto
+  tag: v1.3.6-cloud-native-auth-v2
   pullPolicy: Always
 
 # Namespace to deploy the controller
@@ -20,6 +20,17 @@ imds:
   autoConfigureHopLimit: true
   # Desired hop limit value (2 is recommended for containerized environments)
   hopLimit: 2
+  # Enable aggressive IMDS configuration for node replacement scenarios
+  # This allows VPC-wide IMDS configuration as a last resort
+  aggressiveConfiguration: true
+
+# Cloud-native authentication configuration
+# This enables automatic node replacement recovery without manual intervention
+cloudNativeAuth:
+  # Enable cloud-native authentication strategies
+  enabled: true
+  # Prefer IRSA (IAM Roles for Service Accounts) over IMDS
+  preferIRSA: true
 
 # Controller configuration
 controller:
@@ -97,6 +108,9 @@ serviceAccount:
   # If not set and create is true, a name is generated using the fullname template
   name: "eni-controller"
   # Annotations to add to the service account
+  # For IRSA (IAM Roles for Service Accounts), add the role ARN annotation:
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT-ID:role/AWSMultiENIControllerRole
   annotations: {}
 
 # RBAC configuration
