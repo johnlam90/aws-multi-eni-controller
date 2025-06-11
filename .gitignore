@@ -57,5 +57,4 @@ recommended-sample-improvements.yaml
 
 # Test artifacts that shouldn't be committed
 sriov-device-plugin-hostpath.yaml
-charts/aws-multi-eni-controller/values.yaml
-aws-multi-eni-controller
+

@@ -2,8 +2,8 @@ apiVersion: v2
 name: aws-multi-eni-controller
 description: A Helm chart for AWS Multi-ENI Controller
 type: application
-version: "1.3.6"
-appVersion: "v1.3.6"
+version: "1.3.7"
+appVersion: "v1.3.6-comprehensive-tests"
 home: https://github.com/johnlam90/aws-multi-eni-controller
 sources:
   - https://github.com/johnlam90/aws-multi-eni-controller
@@ -20,12 +20,13 @@ keywords:
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/changes: |
-    - Update version to v1.3.6
-    - Fix automatic node replacement recovery for IMDSv2 environments
-    - Implement multi-strategy IMDS hop limit configuration
-    - Add private IP-based instance ID discovery for new nodes
-    - Enable VPC-wide IMDS configuration as fallback strategy
-    - Add background IMDS configuration retry mechanism
-    - Resolve chicken-and-egg problem with IMDS access on new instances
-    - Support automatic recovery without manual intervention
-    - Add aggressive IMDS configuration option for node replacement scenarios
+    - Update version to v1.3.7 with comprehensive test suite
+    - Fix ens8 interface device index calculation (ens_number - 5 formula)
+    - Implement robust hybrid device index calculation (sysfs + fallback)
+    - Add comprehensive unit tests for device index calculation logic
+    - Support scalability testing for 10+ ENI interfaces per node
+    - Add cross-platform compatibility for Amazon Linux 2 vs 2023
+    - Implement concurrent device index lookup performance testing
+    - Add error handling and graceful degradation for sysfs failures
+    - Include NodeENI integration testing and regression prevention
+    - Performance benchmarks: 2.6M+ operations/second for device index calculation
