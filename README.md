@@ -111,10 +111,11 @@ The AWS Multi-ENI Controller includes comprehensive support for **Instance Metad
 
 - **Amazon Linux 2023**: Full support for nodes with `HttpTokens: required` (IMDSv2 enforcement)
 - **Amazon Linux 2**: Backward compatibility with both `HttpTokens: optional` and `HttpTokens: required`
-- **Automatic Configuration**: No manual IMDS configuration changes required
+- **Automatic Hop Limit Configuration**: Automatically configures EC2 instance metadata hop limit for containerized environments
+- **Strict IMDSv2 Enforcement**: Configurable IMDSv1 fallback prevention for enhanced security
 - **Timeout & Retry**: Optimized timeout and retry settings for reliable credential retrieval
 
-For detailed information about IMDSv2 implementation, see [IMDSv2 Support Documentation](docs/imdsv2-support.md).
+For detailed information about IMDSv2 implementation and automatic configuration, see [IMDSv2 Support Documentation](docs/imdsv2-support.md).
 
 ## Installation
 

@@ -46,6 +46,85 @@ The following environment variables are configured in both the controller deploy
 # Configure retry attempts for IMDS requests
 - name: AWS_METADATA_SERVICE_NUM_ATTEMPTS
   value: "3"
+
+# Automatic IMDS hop limit configuration
+- name: IMDS_AUTO_CONFIGURE_HOP_LIMIT
+  value: "true"
+- name: IMDS_HOP_LIMIT
+  value: "2"
+```
+
+## Automatic IMDS Hop Limit Configuration
+
+The AWS Multi-ENI Controller includes automatic configuration of the EC2 instance metadata hop limit to ensure IMDS requests work from containerized environments.
+
+### Overview
+
+In containerized environments like Kubernetes, IMDS requests may need to traverse multiple network hops to reach the metadata service. The default hop limit of 1 can cause IMDS requests to fail, resulting in credential retrieval errors.
+
+The controller automatically:
+- **Detects the current instance ID**
+- **Checks the current hop limit** via AWS API
+- **Updates the hop limit** to the desired value if needed
+- **Logs all operations** for transparency
+- **Gracefully handles failures** without stopping controller startup
+
+### Configuration Options
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `IMDS_AUTO_CONFIGURE_HOP_LIMIT` | `true` | Enable/disable automatic hop limit configuration |
+| `IMDS_HOP_LIMIT` | `2` | Desired hop limit value (2 recommended for containers) |
+| `EC2_INSTANCE_ID` | - | Optional: Manually specify instance ID if auto-detection fails |
+
+### How It Works
+
+1. **Instance Detection**: The controller attempts to determine the current EC2 instance ID through:
+   - Environment variable `EC2_INSTANCE_ID` (if set)
+   - AWS IMDS API call to retrieve instance metadata
+
+2. **Current State Check**: Queries the current IMDS configuration via `DescribeInstances` API
+
+3. **Conditional Update**: Only modifies the hop limit if it differs from the desired value using `ModifyInstanceMetadataOptions` API
+
+4. **Error Handling**: Gracefully handles failures and continues controller startup
+
+### Required IAM Permissions
+
+The controller requires the following additional IAM permission for automatic hop limit configuration:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ec2:DescribeInstances",
+                "ec2:ModifyInstanceMetadataOptions"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+```
+
+### Disabling Auto-Configuration
+
+To disable automatic hop limit configuration:
+
+```yaml
+env:
+- name: IMDS_AUTO_CONFIGURE_HOP_LIMIT
+  value: "false"
+```
+
+When disabled, you must manually configure the hop limit:
+
+```bash
+aws ec2 modify-instance-metadata-options \
+    --instance-id i-1234567890abcdef0 \
+    --http-put-response-hop-limit 2
 ```
 
 ### Code Changes
@@ -95,18 +174,32 @@ No additional configuration is required when deploying via Helm.
 ### Common Issues
 
 1. **Credential Retrieval Timeout**
-   ```
+   ```text
    failed to retrieve credentials: failed to refresh cached credentials, no EC2 IMDS role found, operation error ec2imds: GetMetadata, request canceled, context deadline exceeded
    ```
-   
-   **Solution**: The IMDSv2 configuration should resolve this. Verify the environment variables are set correctly.
+
+   **Solution**: This often indicates a hop limit issue. The automatic hop limit configuration should resolve this. Verify the environment variables are set correctly.
 
 2. **IMDS Access Denied**
-   ```
+   ```text
    operation error ec2imds: GetMetadata, https response error StatusCode: 403
    ```
-   
+
    **Solution**: This typically occurs when IMDSv1 is disabled but the application doesn't support IMDSv2. The updated configuration should resolve this.
+
+3. **Hop Limit Configuration Failed**
+   ```text
+   Failed to configure IMDS hop limit, continuing with default configuration: failed to modify IMDS hop limit: operation error EC2: ModifyInstanceMetadataOptions, https response error StatusCode: 403
+   ```
+
+   **Solution**: The controller lacks the `ec2:ModifyInstanceMetadataOptions` permission. Add this permission to the node IAM role or disable auto-configuration.
+
+4. **Instance ID Detection Failed**
+   ```text
+   Could not determine current instance ID, skipping IMDS hop limit configuration: unable to determine current instance ID
+   ```
+
+   **Solution**: Set the `EC2_INSTANCE_ID` environment variable manually or ensure the controller can access IMDS to retrieve the instance ID.
 
 ### Verification
 

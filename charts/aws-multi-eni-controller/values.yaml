@@ -5,7 +5,7 @@
 # Image configuration
 image:
   repository: johnlam90/aws-multi-eni-controller
-  tag: v1.3.6-imdsv2-strict
+  tag: v1.3.6-imdsv2-auto
   pullPolicy: Always
 
 # Namespace to deploy the controller
@@ -13,6 +13,13 @@ namespace: eni-controller-system
 
 # AWS Region configuration
 awsRegion: us-east-1
+
+# IMDS (Instance Metadata Service) configuration
+imds:
+  # Enable automatic configuration of IMDS hop limit for container compatibility
+  autoConfigureHopLimit: true
+  # Desired hop limit value (2 is recommended for containerized environments)
+  hopLimit: 2
 
 # Controller configuration
 controller:

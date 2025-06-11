@@ -8,12 +8,16 @@ package aws
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/go-logr/logr"
@@ -638,5 +642,148 @@ func (c *EC2Client) WaitForENIDetachment(ctx context.Context, eniID string, time
 	}
 
 	log.Info("ENI detachment confirmed")
+	return nil
+}
+
+// ConfigureIMDSHopLimit automatically configures the IMDS hop limit for the current instance
+// to ensure IMDS requests work from containerized environments
+func (c *EC2Client) ConfigureIMDSHopLimit(ctx context.Context) error {
+	// Check if auto-configuration is enabled
+	autoConfigureStr := os.Getenv("IMDS_AUTO_CONFIGURE_HOP_LIMIT")
+	if autoConfigureStr != "true" {
+		c.Logger.V(1).Info("IMDS hop limit auto-configuration is disabled")
+		return nil
+	}
+
+	// Get the desired hop limit from environment variable
+	hopLimitStr := os.Getenv("IMDS_HOP_LIMIT")
+	if hopLimitStr == "" {
+		hopLimitStr = "2" // Default to 2 for container environments
+	}
+
+	hopLimit, err := strconv.Atoi(hopLimitStr)
+	if err != nil {
+		return fmt.Errorf("invalid IMDS_HOP_LIMIT value '%s': %v", hopLimitStr, err)
+	}
+
+	// Get the current instance ID from IMDS
+	instanceID, err := c.getCurrentInstanceID(ctx)
+	if err != nil {
+		c.Logger.Info("Could not determine current instance ID, skipping IMDS hop limit configuration", "error", err.Error())
+		return nil // Don't fail if we can't determine the instance ID
+	}
+
+	c.Logger.Info("Checking IMDS configuration for current instance", "instanceID", instanceID, "desiredHopLimit", hopLimit)
+
+	// Check current IMDS configuration
+	currentHopLimit, err := c.getCurrentIMDSHopLimit(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("failed to get current IMDS hop limit: %v", err)
+	}
+
+	// Only modify if the current hop limit is different from desired
+	if currentHopLimit == int32(hopLimit) {
+		c.Logger.Info("IMDS hop limit is already correctly configured", "instanceID", instanceID, "hopLimit", currentHopLimit)
+		return nil
+	}
+
+	c.Logger.Info("Updating IMDS hop limit for container compatibility",
+		"instanceID", instanceID,
+		"currentHopLimit", currentHopLimit,
+		"newHopLimit", hopLimit)
+
+	// Modify the instance metadata options
+	err = c.modifyInstanceMetadataOptions(ctx, instanceID, int32(hopLimit))
+	if err != nil {
+		return fmt.Errorf("failed to modify IMDS hop limit: %v", err)
+	}
+
+	c.Logger.Info("Successfully updated IMDS hop limit", "instanceID", instanceID, "hopLimit", hopLimit)
+	return nil
+}
+
+// getCurrentInstanceID retrieves the current instance ID from IMDS or environment
+func (c *EC2Client) getCurrentInstanceID(ctx context.Context) (string, error) {
+	// Check if instance ID is available in environment (some container platforms set this)
+	if instanceID := os.Getenv("EC2_INSTANCE_ID"); instanceID != "" {
+		c.Logger.V(1).Info("Using instance ID from environment variable", "instanceID", instanceID)
+		return instanceID, nil
+	}
+
+	// Try to get instance ID from node name if running in Kubernetes
+	if nodeName := os.Getenv("NODE_NAME"); nodeName != "" {
+		// Extract instance ID from node name if it follows AWS pattern
+		if strings.HasPrefix(nodeName, "ip-") && strings.HasSuffix(nodeName, ".ec2.internal") {
+			c.Logger.V(1).Info("Detected Kubernetes environment, but cannot determine instance ID from node name alone")
+			// We would need to query Kubernetes API to get the provider ID
+			// For now, fall back to IMDS
+		}
+	}
+
+	// Use AWS SDK's built-in IMDS client to get the instance ID
+	// This leverages the same IMDS configuration we've set up for credentials
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to load AWS config for IMDS: %v", err)
+	}
+
+	// Create an IMDS client using the same configuration
+	imdsClient := imds.NewFromConfig(cfg)
+
+	// Get the instance ID from IMDS
+	result, err := imdsClient.GetMetadata(ctx, &imds.GetMetadataInput{
+		Path: "instance-id",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get instance ID from IMDS: %v", err)
+	}
+
+	// Read the content from the response
+	defer result.Content.Close()
+	content, err := io.ReadAll(result.Content)
+	if err != nil {
+		return "", fmt.Errorf("failed to read instance ID from IMDS response: %v", err)
+	}
+
+	instanceID := strings.TrimSpace(string(content))
+	c.Logger.V(1).Info("Retrieved instance ID from IMDS", "instanceID", instanceID)
+	return instanceID, nil
+}
+
+// getCurrentIMDSHopLimit gets the current IMDS hop limit for an instance
+func (c *EC2Client) getCurrentIMDSHopLimit(ctx context.Context, instanceID string) (int32, error) {
+	input := &ec2.DescribeInstancesInput{
+		InstanceIds: []string{instanceID},
+	}
+
+	result, err := c.EC2.DescribeInstances(ctx, input)
+	if err != nil {
+		return 0, fmt.Errorf("failed to describe instance: %v", err)
+	}
+
+	if len(result.Reservations) == 0 || len(result.Reservations[0].Instances) == 0 {
+		return 0, fmt.Errorf("instance not found: %s", instanceID)
+	}
+
+	instance := result.Reservations[0].Instances[0]
+	if instance.MetadataOptions == nil {
+		return 1, nil // Default hop limit is 1
+	}
+
+	return *instance.MetadataOptions.HttpPutResponseHopLimit, nil
+}
+
+// modifyInstanceMetadataOptions modifies the IMDS hop limit for an instance
+func (c *EC2Client) modifyInstanceMetadataOptions(ctx context.Context, instanceID string, hopLimit int32) error {
+	input := &ec2.ModifyInstanceMetadataOptionsInput{
+		InstanceId:              aws.String(instanceID),
+		HttpPutResponseHopLimit: aws.Int32(hopLimit),
+	}
+
+	_, err := c.EC2.ModifyInstanceMetadataOptions(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to modify instance metadata options: %v", err)
+	}
+
 	return nil
 }

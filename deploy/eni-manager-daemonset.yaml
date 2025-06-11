@@ -207,6 +207,11 @@ spec:
           value: "30"
         - name: AWS_METADATA_SERVICE_NUM_ATTEMPTS
           value: "5"
+        # IMDS hop limit auto-configuration
+        - name: IMDS_AUTO_CONFIGURE_HOP_LIMIT
+          value: "true"
+        - name: IMDS_HOP_LIMIT
+          value: "2"
         # DPDK Configuration
         - name: ENABLE_DPDK
           value: "true"  # Enable DPDK device binding

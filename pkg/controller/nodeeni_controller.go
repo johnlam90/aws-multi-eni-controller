@@ -87,6 +87,14 @@ func NewNodeENIReconciler(mgr manager.Manager) (*NodeENIReconciler, error) {
 		return nil, fmt.Errorf("failed to create AWS EC2 client: %v", err)
 	}
 
+	// Configure IMDS hop limit for container compatibility
+	if ec2Client, ok := awsClient.(*awsutil.EC2Client); ok {
+		if err := ec2Client.ConfigureIMDSHopLimit(ctx); err != nil {
+			log.Error(err, "Failed to configure IMDS hop limit, continuing with default configuration")
+			// Don't fail controller startup if IMDS configuration fails
+		}
+	}
+
 	// Create circuit breaker if enabled
 	var circuitBreaker *retry.CircuitBreaker
 	if cfg.CircuitBreakerEnabled {

@@ -216,6 +216,11 @@ spec:
           value: "30"
         - name: AWS_METADATA_SERVICE_NUM_ATTEMPTS
           value: "5"
+        # IMDS hop limit auto-configuration
+        - name: IMDS_AUTO_CONFIGURE_HOP_LIMIT
+          value: "{{ .Values.imds.autoConfigureHopLimit }}"
+        - name: IMDS_HOP_LIMIT
+          value: "{{ .Values.imds.hopLimit }}"
         - name: LOG_LEVEL
           value: "{{ .Values.logLevel }}"
         - name: DEFAULT_MTU
