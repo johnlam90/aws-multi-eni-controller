@@ -496,12 +496,28 @@ func (r *NodeENIReconciler) cleanupENIAttachmentCoordinated(ctx context.Context,
 	// Create operation ID for coordination
 	operationID := fmt.Sprintf("cleanup-%s-%s-%s", nodeENI.Name, attachment.NodeID, attachment.ENIID)
 
-	// Define resource IDs that this operation will use
+	// Define resource IDs with granular locking strategy
+	// Only lock the specific ENI resource to allow parallel cleanup of different ENIs
+	// on the same node/instance
 	resourceIDs := []string{
-		attachment.ENIID,                          // ENI resource
-		attachment.InstanceID,                     // Instance resource
-		fmt.Sprintf("node-%s", attachment.NodeID), // Node resource
+		attachment.ENIID, // Only lock the specific ENI being cleaned up
 	}
+
+	// For operations that might conflict at the instance level (like instance termination),
+	// we use a more specific resource ID that includes the ENI ID
+	if attachment.InstanceID != "" {
+		// Create instance-specific resource ID that includes ENI to avoid conflicts
+		// between different ENI cleanup operations on the same instance
+		instanceResourceID := fmt.Sprintf("instance-%s-eni-%s", attachment.InstanceID, attachment.ENIID)
+		resourceIDs = append(resourceIDs, instanceResourceID)
+	}
+
+	log.V(1).Info("Acquiring locks for ENI cleanup",
+		"operationID", operationID,
+		"resourceIDs", resourceIDs,
+		"eniID", attachment.ENIID,
+		"instanceID", attachment.InstanceID,
+		"nodeID", attachment.NodeID)
 
 	// Create coordinated operation
 	operation := &CoordinatedOperation{
@@ -524,12 +540,85 @@ func (r *NodeENIReconciler) cleanupENIAttachmentCoordinated(ctx context.Context,
 	// Execute with coordination
 	err := r.Coordinator.ExecuteCoordinated(ctx, operation)
 	if err != nil {
-		log.Error(err, "Coordinated cleanup failed")
+		log.Error(err, "Coordinated cleanup failed",
+			"operationID", operationID,
+			"resourceIDs", resourceIDs)
 		return false
 	}
 
-	log.Info("Coordinated cleanup succeeded")
+	log.Info("Coordinated cleanup succeeded", "operationID", operationID)
 	return true
+}
+
+// cleanupENIAttachmentWithNodeCoordination performs ENI cleanup with node-level coordination
+// This is used when operations need to be serialized at the node level (e.g., for DPDK operations)
+func (r *NodeENIReconciler) cleanupENIAttachmentWithNodeCoordination(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+
+	// Create operation ID for coordination
+	operationID := fmt.Sprintf("node-cleanup-%s-%s-%s", nodeENI.Name, attachment.NodeID, attachment.ENIID)
+
+	// Define resource IDs with node-level locking for operations that require serialization
+	resourceIDs := []string{
+		attachment.ENIID, // ENI resource
+		fmt.Sprintf("node-%s", attachment.NodeID), // Node resource for serialization
+	}
+
+	// Add instance-level coordination if needed
+	if attachment.InstanceID != "" {
+		resourceIDs = append(resourceIDs, attachment.InstanceID)
+	}
+
+	log.V(1).Info("Acquiring node-level locks for ENI cleanup",
+		"operationID", operationID,
+		"resourceIDs", resourceIDs,
+		"reason", "node-level coordination required")
+
+	// Create coordinated operation
+	operation := &CoordinatedOperation{
+		ID:          operationID,
+		Type:        "eni-node-cleanup",
+		ResourceIDs: resourceIDs,
+		Priority:    2, // Higher priority for node-level operations
+		DependsOn:   []string{},
+		Timeout:     r.Config.DetachmentTimeout,
+		Execute: func(ctx context.Context) error {
+			// Execute the actual cleanup
+			success := r.cleanupENIAttachment(ctx, nodeENI, attachment)
+			if !success {
+				return fmt.Errorf("node-coordinated cleanup failed for ENI %s", attachment.ENIID)
+			}
+			return nil
+		},
+	}
+
+	// Execute with coordination
+	err := r.Coordinator.ExecuteCoordinated(ctx, operation)
+	if err != nil {
+		log.Error(err, "Node-coordinated cleanup failed",
+			"operationID", operationID,
+			"resourceIDs", resourceIDs)
+		return false
+	}
+
+	log.Info("Node-coordinated cleanup succeeded", "operationID", operationID)
+	return true
+}
+
+// shouldUseNodeLevelCoordination determines if node-level coordination is needed
+func (r *NodeENIReconciler) shouldUseNodeLevelCoordination(nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	// Use node-level coordination for DPDK-enabled ENIs
+	if nodeENI.Spec.EnableDPDK {
+		return true
+	}
+
+	// Use node-level coordination for SR-IOV enabled ENIs (indicated by PCI address or resource name)
+	if nodeENI.Spec.DPDKPCIAddress != "" || nodeENI.Spec.DPDKResourceName != "" {
+		return true
+	}
+
+	// For standard ENIs (Case 1), use granular coordination (no node-level locking)
+	return false
 }
 
 // InterfaceState represents the current state of a network interface
@@ -2296,4 +2385,9 @@ func (r *NodeENIReconciler) startIMDSConfigurationRetry(ctx context.Context) {
 			}
 		}()
 	}
+}
+
+// ShouldUseNodeLevelCoordinationTest exposes shouldUseNodeLevelCoordination for testing purposes
+func (r *NodeENIReconciler) ShouldUseNodeLevelCoordinationTest(nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	return r.shouldUseNodeLevelCoordination(nodeENI, attachment)
 }

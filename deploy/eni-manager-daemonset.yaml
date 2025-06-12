@@ -20,7 +20,7 @@ spec:
         ng: multi-eni
       initContainers:
       - name: dpdk-setup
-        image: johnlam90/aws-multi-eni-controller:v1.3.6-ens8-device-index-fix
+        image: johnlam90/aws-multi-eni-controller:fix-al2023-dpdk-setup-7101ae5
         command: ["/bin/sh", "-c"]
         args:
         - |
@@ -180,7 +180,7 @@ spec:
           readOnly: true
       containers:
       - name: eni-manager
-        image: johnlam90/aws-multi-eni-controller:v1.3.6-ens8-device-index-fix
+        image: johnlam90/aws-multi-eni-controller:fix-al2023-dpdk-setup-7101ae5
         env:
         - name: COMPONENT
           value: "eni-manager"

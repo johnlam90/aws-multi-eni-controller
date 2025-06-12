@@ -209,23 +209,50 @@ func (m *Manager) handleNodeENIChanges(ctx context.Context, nodeENIs []networkin
 func (m *Manager) processNetworkInterfaces(ctx context.Context, nodeENIs []networkingv1alpha1.NodeENI) error {
 	log.Printf("Processing network interfaces for %d NodeENI resources", len(nodeENIs))
 
+	// First, wait for expected interfaces to appear based on NodeENI attachments
+	if err := m.waitForExpectedInterfaces(ctx, nodeENIs); err != nil {
+		log.Printf("Warning: Some expected interfaces may not be available yet: %v", err)
+		// Continue processing available interfaces
+	}
+
 	// Get all network interfaces
 	interfaces, err := m.networkManager.GetAllInterfaces()
 	if err != nil {
 		return fmt.Errorf("failed to get network interfaces: %v", err)
 	}
 
+	// Track which interfaces we've processed
+	processedInterfaces := make(map[string]bool)
+	configuredCount := 0
+	skippedCount := 0
+
 	// Process each interface
 	for _, iface := range interfaces {
 		if !iface.IsAWSENI {
+			log.Printf("Skipping non-AWS ENI interface: %s", iface.Name)
+			skippedCount++
 			continue
 		}
+
+		// Skip if already processed (shouldn't happen, but safety check)
+		if processedInterfaces[iface.Name] {
+			log.Printf("Interface %s already processed, skipping", iface.Name)
+			continue
+		}
+
+		log.Printf("Processing AWS ENI interface: %s (device index: %d, state: %s)",
+			iface.Name, iface.DeviceIndex, iface.State)
 
 		// Find corresponding NodeENI
 		nodeENI := m.findNodeENIForInterface(iface, nodeENIs)
 		if nodeENI == nil {
+			log.Printf("No matching NodeENI found for interface %s (device index: %d)",
+				iface.Name, iface.DeviceIndex)
+			skippedCount++
 			continue
 		}
+
+		log.Printf("Found matching NodeENI %s for interface %s", nodeENI.Name, iface.Name)
 
 		// Configure the interface
 		if err := m.networkManager.ConfigureInterfaceFromNodeENI(iface.Name, *nodeENI); err != nil {
@@ -233,8 +260,16 @@ func (m *Manager) processNetworkInterfaces(ctx context.Context, nodeENIs []netwo
 			continue
 		}
 
-		log.Printf("Successfully configured interface %s", iface.Name)
+		processedInterfaces[iface.Name] = true
+		configuredCount++
+		log.Printf("Successfully configured interface %s from NodeENI %s", iface.Name, nodeENI.Name)
 	}
+
+	log.Printf("Network interface processing complete: %d configured, %d skipped, %d total",
+		configuredCount, skippedCount, len(interfaces))
+
+	// Check if we missed any expected interfaces
+	m.checkForMissingInterfaces(nodeENIs, processedInterfaces)
 
 	return nil
 }
@@ -418,32 +453,153 @@ func (m *Manager) trackSRIOVResource(nodeENIName string, resourceInfo SRIOVResou
 }
 
 func (m *Manager) findNodeENIForInterface(iface network.InterfaceInfo, nodeENIs []networkingv1alpha1.NodeENI) *networkingv1alpha1.NodeENI {
+	log.Printf("Finding NodeENI for interface %s (device index: %d, PCI: %s)",
+		iface.Name, iface.DeviceIndex, iface.PCIAddress)
+
 	// For SR-IOV configurations, prioritize PCI address matching over device index
 	// This ensures correct mapping when dpdkPCIAddress is explicitly specified
 	if iface.PCIAddress != "" {
+		log.Printf("Interface %s has PCI address %s, checking for PCI-based matching",
+			iface.Name, iface.PCIAddress)
 		for _, nodeENI := range nodeENIs {
 			if nodeENI.Spec.DPDKPCIAddress == iface.PCIAddress {
-				log.Printf("Matched interface %s (PCI: %s) to NodeENI %s by PCI address",
+				log.Printf("✓ Matched interface %s (PCI: %s) to NodeENI %s by PCI address",
 					iface.Name, iface.PCIAddress, nodeENI.Name)
 				return &nodeENI
 			}
 		}
+		log.Printf("No PCI-based match found for interface %s", iface.Name)
 	}
 
 	// Fallback to device index matching for regular ENI configurations
+	log.Printf("Checking device index matching for interface %s (device index: %d)",
+		iface.Name, iface.DeviceIndex)
+
 	for _, nodeENI := range nodeENIs {
+		log.Printf("Checking NodeENI %s with %d attachments",
+			nodeENI.Name, len(nodeENI.Status.Attachments))
+
 		for _, attachment := range nodeENI.Status.Attachments {
+			log.Printf("  Attachment: device index %d, ENI %s, node %s",
+				attachment.DeviceIndex, attachment.ENIID, attachment.NodeID)
+
 			if attachment.DeviceIndex == iface.DeviceIndex {
-				log.Printf("Matched interface %s (device index: %d) to NodeENI %s by device index",
+				log.Printf("✓ Matched interface %s (device index: %d) to NodeENI %s by device index",
 					iface.Name, iface.DeviceIndex, nodeENI.Name)
 				return &nodeENI
 			}
 		}
 	}
 
-	log.Printf("No matching NodeENI found for interface %s (PCI: %s, device index: %d)",
+	log.Printf("❌ No matching NodeENI found for interface %s (PCI: %s, device index: %d)",
 		iface.Name, iface.PCIAddress, iface.DeviceIndex)
+
+	// Debug: List all available NodeENI device indices
+	log.Printf("Available NodeENI device indices:")
+	for _, nodeENI := range nodeENIs {
+		for _, attachment := range nodeENI.Status.Attachments {
+			log.Printf("  NodeENI %s: device index %d", nodeENI.Name, attachment.DeviceIndex)
+		}
+	}
+
 	return nil
+}
+
+// waitForExpectedInterfaces waits for expected interfaces to appear based on NodeENI attachments
+func (m *Manager) waitForExpectedInterfaces(ctx context.Context, nodeENIs []networkingv1alpha1.NodeENI) error {
+	expectedDeviceIndices := make(map[int]string) // device index -> NodeENI name
+
+	// Collect expected device indices from NodeENI attachments
+	for _, nodeENI := range nodeENIs {
+		for _, attachment := range nodeENI.Status.Attachments {
+			// Only check attachments for this node
+			if attachment.NodeID == m.config.NodeName {
+				expectedDeviceIndices[attachment.DeviceIndex] = nodeENI.Name
+			}
+		}
+	}
+
+	if len(expectedDeviceIndices) == 0 {
+		log.Printf("No expected interfaces found for node %s", m.config.NodeName)
+		return nil
+	}
+
+	log.Printf("Waiting for %d expected interfaces for node %s", len(expectedDeviceIndices), m.config.NodeName)
+
+	// Wait for each expected interface with timeout
+	timeout := 30 * time.Second
+	for deviceIndex, nodeENIName := range expectedDeviceIndices {
+		expectedIfaceName, err := m.getExpectedInterfaceName(deviceIndex)
+		if err != nil {
+			log.Printf("Warning: Could not determine expected interface name for device index %d: %v", deviceIndex, err)
+			continue
+		}
+
+		log.Printf("Waiting for interface %s (device index %d) from NodeENI %s",
+			expectedIfaceName, deviceIndex, nodeENIName)
+
+		if err := m.networkManager.WaitForInterface(expectedIfaceName, timeout); err != nil {
+			log.Printf("Warning: Interface %s did not appear within timeout: %v", expectedIfaceName, err)
+			// Continue with other interfaces
+		} else {
+			log.Printf("Interface %s is now available", expectedIfaceName)
+		}
+	}
+
+	return nil
+}
+
+// checkForMissingInterfaces checks if any expected interfaces are missing
+func (m *Manager) checkForMissingInterfaces(nodeENIs []networkingv1alpha1.NodeENI, processedInterfaces map[string]bool) {
+	expectedCount := 0
+	missingCount := 0
+
+	for _, nodeENI := range nodeENIs {
+		for _, attachment := range nodeENI.Status.Attachments {
+			// Only check attachments for this node
+			if attachment.NodeID == m.config.NodeName {
+				expectedCount++
+				expectedIfaceName, err := m.getExpectedInterfaceName(attachment.DeviceIndex)
+				if err != nil {
+					log.Printf("Warning: Could not determine expected interface name for device index %d: %v",
+						attachment.DeviceIndex, err)
+					continue
+				}
+
+				if !processedInterfaces[expectedIfaceName] {
+					missingCount++
+					log.Printf("❌ Expected interface %s (device index %d) from NodeENI %s was not processed",
+						expectedIfaceName, attachment.DeviceIndex, nodeENI.Name)
+				} else {
+					log.Printf("✓ Interface %s (device index %d) from NodeENI %s was processed successfully",
+						expectedIfaceName, attachment.DeviceIndex, nodeENI.Name)
+				}
+			}
+		}
+	}
+
+	if missingCount > 0 {
+		log.Printf("⚠️  Missing interfaces: %d out of %d expected interfaces were not processed",
+			missingCount, expectedCount)
+	} else {
+		log.Printf("✅ All %d expected interfaces were processed successfully", expectedCount)
+	}
+}
+
+// getExpectedInterfaceName determines the expected interface name for a device index
+func (m *Manager) getExpectedInterfaceName(deviceIndex int) (string, error) {
+	// For AWS EKS, the mapping is typically:
+	// device index 0 -> ens5 (primary)
+	// device index 1 -> ens6 (VPC CNI)
+	// device index 2 -> ens7 (first NodeENI)
+	// device index 3 -> ens8 (second NodeENI)
+	// etc.
+
+	expectedInterfaceNumber := deviceIndex + 5
+	expectedIfaceName := fmt.Sprintf("ens%d", expectedInterfaceNumber)
+
+	log.Printf("Device index %d maps to expected interface %s", deviceIndex, expectedIfaceName)
+	return expectedIfaceName, nil
 }
 
 // FindNodeENIForInterfaceTest exposes findNodeENIForInterface for testing purposes

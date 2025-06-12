@@ -4,8 +4,8 @@
 
 # Image configuration
 image:
-  repository: ghcr.io/johnlam90/aws-multi-eni-controller
-  tag: beta-a86ce7b
+  repository: johnlam90/aws-multi-eni-controller
+  tag: fix-al2023-dpdk-setup-7101ae5
   pullPolicy: Always
 
 # Namespace to deploy the controller

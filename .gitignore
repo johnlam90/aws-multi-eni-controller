@@ -58,3 +58,6 @@ recommended-sample-improvements.yaml
 # Test artifacts that shouldn't be committed
 sriov-device-plugin-hostpath.yaml
 
+charts/aws-multi-eni-controller/values.yaml.backup
+deploy/deployment.yaml.backup
+deploy/eni-manager-daemonset.yaml.backup
