@@ -1412,12 +1412,23 @@ func (r *NodeENIReconciler) buildAttachmentMaps(nodeENI *networkingv1alpha1.Node
 	usedDeviceIndices map[int]bool,
 	subnetToDeviceIndex map[string]int,
 ) {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", nodeName)
+
 	existingSubnets = make(map[string]bool)
 	usedDeviceIndices = make(map[int]bool)
 	subnetToDeviceIndex = make(map[string]int)
 
+	log.Info("Building attachment maps", "totalAttachments", len(nodeENI.Status.Attachments))
+
 	// First pass: build the subnet to device index mapping from existing attachments
 	for _, attachment := range nodeENI.Status.Attachments {
+		log.V(1).Info("Processing attachment",
+			"nodeID", attachment.NodeID,
+			"eniID", attachment.ENIID,
+			"subnetID", attachment.SubnetID,
+			"deviceIndex", attachment.DeviceIndex,
+			"isCurrentNode", attachment.NodeID == nodeName)
+
 		// We want to build a global mapping across all nodes
 		if attachment.SubnetID != "" && attachment.DeviceIndex > 0 {
 			// If we haven't seen this subnet before, or if this device index is lower
@@ -1430,13 +1441,20 @@ func (r *NodeENIReconciler) buildAttachmentMaps(nodeENI *networkingv1alpha1.Node
 		// For this specific node, track which subnets already have ENIs
 		if attachment.NodeID == nodeName && attachment.SubnetID != "" {
 			existingSubnets[attachment.SubnetID] = true
+			log.Info("Found existing ENI for node in subnet", "subnetID", attachment.SubnetID, "eniID", attachment.ENIID)
 		}
 
 		// For this specific node, track which device indices are already in use
 		if attachment.NodeID == nodeName && attachment.DeviceIndex > 0 {
 			usedDeviceIndices[attachment.DeviceIndex] = true
+			log.Info("Found used device index for node", "deviceIndex", attachment.DeviceIndex, "eniID", attachment.ENIID)
 		}
 	}
+
+	log.Info("Built attachment maps",
+		"existingSubnets", existingSubnets,
+		"usedDeviceIndices", usedDeviceIndices,
+		"subnetToDeviceIndex", subnetToDeviceIndex)
 
 	return existingSubnets, usedDeviceIndices, subnetToDeviceIndex
 }
@@ -1454,22 +1472,32 @@ func (r *NodeENIReconciler) createMissingENIs(
 ) {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", node.Name)
 
+	log.Info("Processing subnets for ENI creation",
+		"totalSubnets", len(subnetIDs),
+		"subnetIDs", subnetIDs,
+		"existingSubnets", existingSubnets,
+		"usedDeviceIndices", usedDeviceIndices)
+
 	for i, subnetID := range subnetIDs {
 		// Skip if we already have an ENI in this subnet
 		if existingSubnets[subnetID] {
-			log.Info("Node already has an ENI in this subnet", "subnetID", subnetID)
+			log.Info("Node already has an ENI in this subnet, skipping", "subnetID", subnetID)
 			continue
 		}
+
+		log.Info("Creating ENI for subnet", "subnetID", subnetID, "subnetIndex", i)
 
 		// Determine the device index to use for this subnet
 		deviceIndex := r.determineDeviceIndex(nodeENI, subnetID, i, subnetToDeviceIndex, usedDeviceIndices, log)
 
 		// Create and attach a new ENI for this subnet
 		if err := r.createAndAttachENIForSubnet(ctx, nodeENI, node, instanceID, subnetID, deviceIndex); err != nil {
-			log.Error(err, "Failed to create and attach ENI for subnet", "subnetID", subnetID)
+			log.Error(err, "Failed to create and attach ENI for subnet", "subnetID", subnetID, "deviceIndex", deviceIndex)
 			// Continue with other subnets even if one fails
 			continue
 		}
+
+		log.Info("Successfully created and attached ENI for subnet", "subnetID", subnetID, "deviceIndex", deviceIndex)
 	}
 }
 
@@ -1601,6 +1629,14 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 		Status:       "attached",
 		LastUpdated:  metav1.Now(),
 	})
+
+	// Update the NodeENI status immediately to prevent race conditions
+	// This ensures that subsequent reconciliations see the attachment
+	if err := r.updateNodeENIStatusWithRetry(ctx, nodeENI); err != nil {
+		log.Error(err, "Failed to update NodeENI status after ENI attachment", "eniID", eniID)
+		// Don't return error here as the ENI is already attached successfully
+		// The status will be updated in the next reconciliation
+	}
 
 	r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAttached",
 		"Successfully attached ENI %s to node %s in subnet %s", eniID, node.Name, subnetID)

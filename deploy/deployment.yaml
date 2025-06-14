@@ -173,7 +173,7 @@ spec:
       #   - "kubernetes"
       containers:
       - name: manager
-        image: johnlam90/aws-multi-eni-controller:fix-al2023-dpdk-setup-7101ae5
+        image: johnlam90/aws-multi-eni-controller:fix-cleanup-case-01-3614101
         env:
         - name: COMPONENT
           value: "eni-controller"

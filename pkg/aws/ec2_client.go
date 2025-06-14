@@ -104,3 +104,8 @@ func (c *EC2ClientFacade) GetSecurityGroupIDByName(ctx context.Context, security
 func (c *EC2ClientFacade) DescribeInstance(ctx context.Context, instanceID string) (*EC2Instance, error) {
 	return c.instanceDescriber.DescribeInstance(ctx, instanceID)
 }
+
+// GetInstanceENIs delegates to InstanceDescriber
+func (c *EC2ClientFacade) GetInstanceENIs(ctx context.Context, instanceID string) (map[int]string, error) {
+	return c.instanceDescriber.GetInstanceENIs(ctx, instanceID)
+}
