@@ -1400,6 +1400,16 @@ func (r *NodeENIReconciler) processNode(ctx context.Context, nodeENI *networking
 	// Build maps for tracking existing attachments and device indices
 	existingSubnets, usedDeviceIndices, subnetToDeviceIndex := r.buildAttachmentMaps(nodeENI, node.Name)
 
+	// Query AWS for actual current ENI attachments to ensure state consistency
+	awsUsedDeviceIndices, err := r.getAWSUsedDeviceIndices(ctx, instanceID)
+	if err != nil {
+		log.Error(err, "Failed to query AWS for current ENI attachments, proceeding with internal state only")
+		// Continue with internal state only as fallback
+	} else {
+		// Merge AWS state with internal state for more accurate device index tracking
+		usedDeviceIndices = r.mergeDeviceIndices(usedDeviceIndices, awsUsedDeviceIndices, log)
+	}
+
 	// Create ENIs for any subnets that don't already have one
 	r.createMissingENIs(ctx, nodeENI, node, instanceID, subnetIDs, existingSubnets, usedDeviceIndices, subnetToDeviceIndex)
 
@@ -1556,6 +1566,62 @@ func (r *NodeENIReconciler) findAvailableDeviceIndex(
 	return deviceIndex
 }
 
+// getAWSUsedDeviceIndices queries AWS for actual current ENI attachments on an instance
+func (r *NodeENIReconciler) getAWSUsedDeviceIndices(ctx context.Context, instanceID string) (map[int]bool, error) {
+	log := r.Log.WithValues("instanceID", instanceID)
+	log.V(1).Info("Querying AWS for current ENI attachments")
+
+	// Query AWS for all ENIs currently attached to this instance
+	eniMap, err := r.AWS.GetInstanceENIs(ctx, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get instance ENIs from AWS: %v", err)
+	}
+
+	// Convert to device index map
+	awsUsedDeviceIndices := make(map[int]bool)
+	for deviceIndex := range eniMap {
+		awsUsedDeviceIndices[deviceIndex] = true
+	}
+
+	log.Info("Retrieved AWS ENI attachments", "deviceIndices", awsUsedDeviceIndices)
+	return awsUsedDeviceIndices, nil
+}
+
+// mergeDeviceIndices merges internal state with AWS state for more accurate device index tracking
+func (r *NodeENIReconciler) mergeDeviceIndices(internalIndices, awsIndices map[int]bool, log logr.Logger) map[int]bool {
+	merged := make(map[int]bool)
+
+	// Start with AWS state as the source of truth
+	for deviceIndex := range awsIndices {
+		merged[deviceIndex] = true
+	}
+
+	// Add any internal indices that might not be reflected in AWS yet
+	// (e.g., during attachment process)
+	for deviceIndex := range internalIndices {
+		if !merged[deviceIndex] {
+			log.Info("Adding internal device index not found in AWS", "deviceIndex", deviceIndex)
+			merged[deviceIndex] = true
+		}
+	}
+
+	// Log any discrepancies for debugging
+	for deviceIndex := range awsIndices {
+		if !internalIndices[deviceIndex] {
+			log.Info("AWS shows device index not in internal state", "deviceIndex", deviceIndex)
+		}
+	}
+
+	for deviceIndex := range internalIndices {
+		if !awsIndices[deviceIndex] {
+			log.Info("Internal state shows device index not in AWS", "deviceIndex", deviceIndex)
+		}
+	}
+
+	log.Info("Merged device indices", "internal", internalIndices, "aws", awsIndices, "merged", merged)
+	return merged
+}
+
 // createAndAttachENI creates and attaches a new ENI to a node
 // This is kept for backward compatibility
 func (r *NodeENIReconciler) createAndAttachENI(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, node corev1.Node, instanceID string) error {
@@ -1587,7 +1653,7 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 	}
 
 	// Attach the ENI
-	attachmentID, err := r.attachENI(ctx, eniID, instanceID, deviceIndex)
+	attachmentID, actualDeviceIndex, err := r.attachENI(ctx, eniID, instanceID, deviceIndex)
 	if err != nil {
 		log.Error(err, "Failed to attach ENI", "eniID", eniID)
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIAttachmentFailed",
@@ -1607,6 +1673,9 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 
 		return err
 	}
+
+	// Use the actual device index that was used (may be different if corrected during retry)
+	deviceIndex = actualDeviceIndex
 
 	// Get the subnet CIDR
 	subnetCIDR, err := r.AWS.GetSubnetCIDRByID(ctx, subnetID)
@@ -2109,20 +2178,78 @@ func (r *NodeENIReconciler) getAllSubnetIDs(ctx context.Context, nodeENI *networ
 	return subnetIDs, nil
 }
 
-// attachENI attaches an ENI to an EC2 instance
-func (r *NodeENIReconciler) attachENI(ctx context.Context, eniID, instanceID string, deviceIndex int) (string, error) {
+// attachENI attaches an ENI to an EC2 instance with retry logic for device index conflicts
+// Returns the attachment ID and the actual device index used (which may differ from requested if corrected during retry)
+func (r *NodeENIReconciler) attachENI(ctx context.Context, eniID, instanceID string, deviceIndex int) (string, int, error) {
+	log := r.Log.WithValues("eniID", eniID, "instanceID", instanceID, "deviceIndex", deviceIndex)
+
 	// Use default device index if not specified
 	if deviceIndex <= 0 {
 		deviceIndex = r.Config.DefaultDeviceIndex
 	}
 
-	// Attach the ENI with delete on termination set to the configured default
+	// First attempt: try to attach with the requested device index
 	attachmentID, err := r.AWS.AttachENI(ctx, eniID, instanceID, deviceIndex, r.Config.DefaultDeleteOnTermination)
 	if err != nil {
-		return "", fmt.Errorf("failed to attach ENI: %v", err)
+		// Check if this is a device index conflict error
+		if r.isDeviceIndexConflictError(err) {
+			log.Info("Device index conflict detected, querying AWS for current state and retrying", "error", err.Error())
+
+			// Query AWS for actual current ENI attachments
+			awsUsedDeviceIndices, awsErr := r.getAWSUsedDeviceIndices(ctx, instanceID)
+			if awsErr != nil {
+				log.Error(awsErr, "Failed to query AWS for current ENI attachments during retry")
+				return "", deviceIndex, fmt.Errorf("failed to attach ENI: %v (retry query failed: %v)", err, awsErr)
+			}
+
+			// Find the next available device index based on AWS reality
+			retryDeviceIndex := r.findNextAvailableDeviceIndex(deviceIndex, awsUsedDeviceIndices, log)
+			if retryDeviceIndex == deviceIndex {
+				// No conflict found in AWS state, this might be a transient error
+				log.Info("No device index conflict found in AWS state, original error might be transient")
+				return "", deviceIndex, fmt.Errorf("failed to attach ENI: %v", err)
+			}
+
+			log.Info("Retrying attachment with corrected device index", "originalIndex", deviceIndex, "retryIndex", retryDeviceIndex)
+
+			// Retry with the corrected device index
+			attachmentID, retryErr := r.AWS.AttachENI(ctx, eniID, instanceID, retryDeviceIndex, r.Config.DefaultDeleteOnTermination)
+			if retryErr != nil {
+				return "", retryDeviceIndex, fmt.Errorf("failed to attach ENI after retry: original error: %v, retry error: %v", err, retryErr)
+			}
+
+			log.Info("Successfully attached ENI after device index correction", "finalDeviceIndex", retryDeviceIndex)
+			return attachmentID, retryDeviceIndex, nil
+		}
+
+		// For non-device-index errors, return the original error
+		return "", deviceIndex, fmt.Errorf("failed to attach ENI: %v", err)
 	}
 
-	return attachmentID, nil
+	return attachmentID, deviceIndex, nil
+}
+
+// isDeviceIndexConflictError checks if the error indicates a device index conflict
+func (r *NodeENIReconciler) isDeviceIndexConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errorStr := err.Error()
+	return strings.Contains(errorStr, "already has an interface attached at device index") ||
+		strings.Contains(errorStr, "InvalidParameterValue") && strings.Contains(errorStr, "device index")
+}
+
+// findNextAvailableDeviceIndex finds the next available device index starting from the given index
+func (r *NodeENIReconciler) findNextAvailableDeviceIndex(startIndex int, usedDeviceIndices map[int]bool, log logr.Logger) int {
+	deviceIndex := startIndex
+
+	// Find the next available device index
+	for usedDeviceIndices[deviceIndex] {
+		deviceIndex++
+		log.Info("Device index in use according to AWS, incrementing", "usedIndex", deviceIndex-1, "nextIndex", deviceIndex)
+	}
+
+	return deviceIndex
 }
 
 // verifyENIAttachments verifies the actual state of ENIs in AWS and updates the NodeENI resource status accordingly
