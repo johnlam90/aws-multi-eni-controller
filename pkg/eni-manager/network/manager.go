@@ -130,12 +130,11 @@ func (m *Manager) BringUpInterface(ifaceName string) error {
 			if updatedLink.Attrs().Flags&net.FlagUp != 0 {
 				log.Printf("Successfully brought up interface %s using netlink (attempt %d)", ifaceName, attempt)
 				return nil
-			} else {
-				log.Printf("Interface %s netlink operation succeeded but interface is still down (attempt %d)", ifaceName, attempt)
-				if attempt < maxRetries {
-					time.Sleep(retryDelay)
-					continue
-				}
+			}
+			log.Printf("Interface %s netlink operation succeeded but interface is still down (attempt %d)", ifaceName, attempt)
+			if attempt < maxRetries {
+				time.Sleep(retryDelay)
+				continue
 			}
 		}
 	}

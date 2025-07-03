@@ -4,8 +4,8 @@
 
 # Image configuration
 image:
-  repository: johnlam90/aws-multi-eni-controller
-  tag: fix-cleanup-case-01-2261c5e
+  repository: ghcr.io/johnlam90/aws-multi-eni-controller
+  tag: v1.3.8
   pullPolicy: Always
 
 # Namespace to deploy the controller
