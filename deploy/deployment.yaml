@@ -173,7 +173,7 @@ spec:
       #   - "kubernetes"
       containers:
       - name: manager
-        image: johnlam90/aws-multi-eni-controller:v1.3.5
+        image: ghcr.io/johnlam90/aws-multi-eni-controller:v1.3.8
         env:
         - name: COMPONENT
           value: "eni-controller"
@@ -181,12 +181,40 @@ spec:
         # This is a placeholder that should be customized
         - name: AWS_REGION
           value: "us-east-1"
+        # AWS SDK configuration for strict IMDSv2 enforcement
+        # These settings ensure IMDSv2-only operation for enhanced security
+        - name: AWS_EC2_METADATA_DISABLED
+          value: "false"
+        - name: AWS_EC2_METADATA_V1_DISABLED
+          value: "true"
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE
+          value: "IPv4"
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT
+          value: "http://169.254.169.254"
+        # Increased timeout and retry configuration for reliable IMDS calls
+        - name: AWS_METADATA_SERVICE_TIMEOUT
+          value: "30"
+        - name: AWS_METADATA_SERVICE_NUM_ATTEMPTS
+          value: "5"
+        # IMDS hop limit auto-configuration
+        - name: IMDS_AUTO_CONFIGURE_HOP_LIMIT
+          value: "true"
+        - name: IMDS_HOP_LIMIT
+          value: "2"
+        # Enable aggressive IMDS configuration for node replacement scenarios
+        - name: IMDS_AGGRESSIVE_CONFIGURATION
+          value: "true"
         # Maximum number of concurrent ENI cleanup operations
         - name: MAX_CONCURRENT_ENI_CLEANUP
           value: "3"
         # Maximum number of concurrent reconciles
         - name: MAX_CONCURRENT_RECONCILES
-          value: "1"
+          value: "5"
+        # Node name for Kubernetes context
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
         # Let Kubernetes handle service discovery automatically
         # - name: KUBERNETES_SERVICE_HOST
         #   value: "172.20.0.1"
@@ -197,8 +225,8 @@ spec:
         - --enable-leader-election
         resources:
           limits:
-            cpu: 100m
-            memory: 128Mi
+            cpu: 500m
+            memory: 512Mi
           requests:
             cpu: 100m
             memory: 128Mi

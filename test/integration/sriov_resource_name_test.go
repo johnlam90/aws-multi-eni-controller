@@ -1,7 +1,10 @@
 package integration
 
 import (
+	"fmt"
+	"os"
 	"testing"
+	"time"
 
 	networkingv1alpha1 "github.com/johnlam90/aws-multi-eni-controller/pkg/apis/networking/v1alpha1"
 	"github.com/johnlam90/aws-multi-eni-controller/pkg/config"
@@ -119,8 +122,9 @@ func TestSRIOVConfigurationGeneration(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	// Create a test SR-IOV manager
-	tempConfigPath := "/tmp/test-sriov-config-generation.json"
+	// Create a test SR-IOV manager with a unique config file
+	tempConfigPath := "/tmp/test-sriov-config-generation-" + fmt.Sprintf("%d", time.Now().UnixNano()) + ".json"
+	defer os.Remove(tempConfigPath) // Clean up after test
 	sriovManager := sriov.NewManager(tempConfigPath)
 
 	// Test resource updates with different resource names

@@ -64,6 +64,8 @@ func (r *NodeENIReconciler) workerFunc(
 	workChan <-chan networkingv1alpha1.ENIAttachment,
 	resultChan chan<- bool,
 ) {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "worker", "cleanup")
+
 	for {
 		select {
 		case att, ok := <-workChan:
@@ -71,8 +73,23 @@ func (r *NodeENIReconciler) workerFunc(
 				// Channel closed, exit worker
 				return
 			}
-			// Clean up the attachment with coordinated execution
-			success := r.cleanupENIAttachmentCoordinated(ctx, nodeENI, att)
+
+			// Determine the appropriate coordination strategy
+			var success bool
+			if r.shouldUseNodeLevelCoordination(nodeENI, att) {
+				log.V(1).Info("Using node-level coordination for ENI cleanup",
+					"eniID", att.ENIID,
+					"nodeID", att.NodeID,
+					"reason", "DPDK or SR-IOV enabled")
+				success = r.cleanupENIAttachmentWithNodeCoordination(ctx, nodeENI, att)
+			} else {
+				log.V(1).Info("Using granular coordination for ENI cleanup",
+					"eniID", att.ENIID,
+					"nodeID", att.NodeID,
+					"reason", "standard ENI")
+				success = r.cleanupENIAttachmentCoordinated(ctx, nodeENI, att)
+			}
+
 			select {
 			case resultChan <- success:
 			case <-ctx.Done():
@@ -139,6 +156,9 @@ func (r *NodeENIReconciler) parallelCleanupENIs(ctx context.Context, nodeENI *ne
 	log := r.Log.WithValues("nodeeni", nodeENI.Name)
 	log.Info(logPrefix+" ENI attachments in parallel", "count", len(attachments))
 
+	// Analyze coordination requirements
+	r.analyzeCoordinationRequirements(nodeENI, attachments)
+
 	// Handle the case of no attachments or a single attachment
 	singleResult := r.handleSingleAttachment(ctx, nodeENI, attachments)
 	if len(attachments) <= 1 {
@@ -167,6 +187,51 @@ func (r *NodeENIReconciler) parallelCleanupENIs(ctx context.Context, nodeENI *ne
 
 	// Collect and process the results
 	return r.collectResults(resultChan, nodeENI, logPrefix)
+}
+
+// analyzeCoordinationRequirements analyzes and logs the coordination strategy for each attachment
+func (r *NodeENIReconciler) analyzeCoordinationRequirements(nodeENI *networkingv1alpha1.NodeENI, attachments []networkingv1alpha1.ENIAttachment) {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name)
+
+	granularCount := 0
+	nodeLevelCount := 0
+	nodeGroups := make(map[string][]string) // nodeID -> list of ENI IDs
+
+	for _, att := range attachments {
+		if r.shouldUseNodeLevelCoordination(nodeENI, att) {
+			nodeLevelCount++
+			log.V(1).Info("ENI requires node-level coordination",
+				"eniID", att.ENIID,
+				"nodeID", att.NodeID,
+				"enableDPDK", nodeENI.Spec.EnableDPDK,
+				"dpdkPCIAddress", nodeENI.Spec.DPDKPCIAddress,
+				"dpdkResourceName", nodeENI.Spec.DPDKResourceName)
+		} else {
+			granularCount++
+			log.V(1).Info("ENI uses granular coordination",
+				"eniID", att.ENIID,
+				"nodeID", att.NodeID)
+		}
+
+		// Group by node for analysis
+		nodeGroups[att.NodeID] = append(nodeGroups[att.NodeID], att.ENIID)
+	}
+
+	log.Info("Coordination strategy analysis",
+		"totalAttachments", len(attachments),
+		"granularCoordination", granularCount,
+		"nodeLevelCoordination", nodeLevelCount,
+		"affectedNodes", len(nodeGroups))
+
+	// Log node-level grouping for multi-subnet scenarios
+	for nodeID, eniIDs := range nodeGroups {
+		if len(eniIDs) > 1 {
+			log.Info("Multi-ENI node detected",
+				"nodeID", nodeID,
+				"eniCount", len(eniIDs),
+				"eniIDs", eniIDs)
+		}
+	}
 }
 
 // min returns the minimum of two integers

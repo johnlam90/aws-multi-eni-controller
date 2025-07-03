@@ -345,6 +345,36 @@ func (m *MockEC2Client) DescribeInstance(ctx context.Context, instanceID string)
 	return result, nil
 }
 
+// GetInstanceENIs gets all ENIs attached to an instance in the mock AWS environment
+func (m *MockEC2Client) GetInstanceENIs(ctx context.Context, instanceID string) (map[int]string, error) {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	// Simulate describe delay
+	if m.DescribeWaitTime > 0 {
+		time.Sleep(m.DescribeWaitTime)
+	}
+
+	// Check if we should simulate a failure
+	if m.FailureScenarios["GetInstanceENIs"] {
+		return nil, fmt.Errorf("simulated GetInstanceENIs failure")
+	}
+
+	// Build a map of device index to ENI ID for this instance
+	eniMap := make(map[int]string)
+
+	// Check all ENIs to see which ones are attached to this instance
+	for eniID, eni := range m.ENIs {
+		if eni.Attachment != nil &&
+			eni.Attachment.InstanceID == instanceID &&
+			eni.Attachment.Status == "attached" {
+			eniMap[int(eni.Attachment.DeviceIndex)] = eniID
+		}
+	}
+
+	return eniMap, nil
+}
+
 // GetSubnetIDByName looks up a subnet ID by its Name tag in the mock AWS environment
 func (m *MockEC2Client) GetSubnetIDByName(ctx context.Context, subnetName string) (string, error) {
 	m.mutex.RLock()

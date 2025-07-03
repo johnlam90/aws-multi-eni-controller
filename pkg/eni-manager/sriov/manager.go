@@ -385,6 +385,8 @@ func (m *Manager) removePCIAddressFromResource(resource *ModernSRIOVResource, pc
 func (m *Manager) cleanupConfig(config *ModernSRIOVDPConfig) {
 	// Remove empty selectors and resources
 	var newResourceList []ModernSRIOVResource
+	hasRealResources := false
+
 	for _, resource := range config.ResourceList {
 		var newSelectors []ModernSRIOVSelector
 		for _, selector := range resource.Selectors {
@@ -394,11 +396,38 @@ func (m *Manager) cleanupConfig(config *ModernSRIOVDPConfig) {
 		}
 
 		if len(newSelectors) > 0 {
+			// Check if this is a placeholder resource
+			isPlaceholder := resource.ResourceName == "sriov_placeholder" &&
+				len(newSelectors) == 1 &&
+				len(newSelectors[0].PCIAddresses) == 1 &&
+				newSelectors[0].PCIAddresses[0] == "0000:00:00.0"
+
+			if !isPlaceholder {
+				hasRealResources = true
+			}
+
 			resource.Selectors = newSelectors
 			newResourceList = append(newResourceList, resource)
 		}
 	}
-	config.ResourceList = newResourceList
+
+	// If we have real resources, remove placeholder resources
+	if hasRealResources {
+		var finalResourceList []ModernSRIOVResource
+		for _, resource := range newResourceList {
+			isPlaceholder := resource.ResourceName == "sriov_placeholder" &&
+				len(resource.Selectors) == 1 &&
+				len(resource.Selectors[0].PCIAddresses) == 1 &&
+				resource.Selectors[0].PCIAddresses[0] == "0000:00:00.0"
+
+			if !isPlaceholder {
+				finalResourceList = append(finalResourceList, resource)
+			}
+		}
+		config.ResourceList = finalResourceList
+	} else {
+		config.ResourceList = newResourceList
+	}
 }
 
 func (m *Manager) containsString(slice []string, item string) bool {

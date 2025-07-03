@@ -86,30 +86,62 @@ func (m *Manager) GetAllInterfaces() ([]InterfaceInfo, error) {
 	return interfaces, nil
 }
 
-// BringUpInterface brings up a network interface
+// BringUpInterface brings up a network interface with retry logic
 func (m *Manager) BringUpInterface(ifaceName string) error {
 	log.Printf("Bringing up interface %s", ifaceName)
 
-	// Get the link
-	link, err := vnetlink.LinkByName(ifaceName)
-	if err != nil {
-		return fmt.Errorf("failed to get link for interface %s: %v", ifaceName, err)
+	// Retry logic for interface bring-up
+	maxRetries := 3
+	retryDelay := 1 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		log.Printf("Attempt %d/%d to bring up interface %s", attempt, maxRetries, ifaceName)
+
+		// Get the link
+		link, err := vnetlink.LinkByName(ifaceName)
+		if err != nil {
+			if attempt == maxRetries {
+				return fmt.Errorf("failed to get link for interface %s after %d attempts: %v", ifaceName, maxRetries, err)
+			}
+			log.Printf("Failed to get link for interface %s (attempt %d): %v, retrying...", ifaceName, attempt, err)
+			time.Sleep(retryDelay)
+			continue
+		}
+
+		// Check if already up
+		if link.Attrs().Flags&net.FlagUp != 0 {
+			log.Printf("Interface %s is already up", ifaceName)
+			return nil
+		}
+
+		// Try to bring up using netlink
+		if err := vnetlink.LinkSetUp(link); err != nil {
+			log.Printf("Failed to bring up interface %s using netlink (attempt %d): %v", ifaceName, attempt, err)
+			if attempt == maxRetries {
+				log.Printf("All netlink attempts failed, trying ip command as final fallback")
+				return m.bringUpInterfaceWithIP(ifaceName)
+			}
+			time.Sleep(retryDelay)
+			continue
+		}
+
+		// Verify the interface is actually up
+		if updatedLink, err := vnetlink.LinkByName(ifaceName); err == nil {
+			if updatedLink.Attrs().Flags&net.FlagUp != 0 {
+				log.Printf("Successfully brought up interface %s using netlink (attempt %d)", ifaceName, attempt)
+				return nil
+			}
+			log.Printf("Interface %s netlink operation succeeded but interface is still down (attempt %d)", ifaceName, attempt)
+			if attempt < maxRetries {
+				time.Sleep(retryDelay)
+				continue
+			}
+		}
 	}
 
-	// Check if already up
-	if link.Attrs().Flags&net.FlagUp != 0 {
-		log.Printf("Interface %s is already up", ifaceName)
-		return nil
-	}
-
-	// Try to bring up using netlink
-	if err := vnetlink.LinkSetUp(link); err != nil {
-		log.Printf("Failed to bring up interface %s using netlink: %v, trying ip command", ifaceName, err)
-		return m.bringUpInterfaceWithIP(ifaceName)
-	}
-
-	log.Printf("Successfully brought up interface %s using netlink", ifaceName)
-	return nil
+	// Final fallback to ip command
+	log.Printf("All netlink attempts failed for interface %s, trying ip command", ifaceName)
+	return m.bringUpInterfaceWithIP(ifaceName)
 }
 
 // BringDownInterface brings down a network interface
@@ -168,6 +200,17 @@ func (m *Manager) SetMTU(ifaceName string, mtu int) error {
 func (m *Manager) ConfigureInterfaceFromNodeENI(ifaceName string, nodeENI networkingv1alpha1.NodeENI) error {
 	log.Printf("Configuring interface %s from NodeENI %s", ifaceName, nodeENI.Name)
 
+	// Check current interface state before configuration
+	if link, err := vnetlink.LinkByName(ifaceName); err == nil {
+		currentState := "DOWN"
+		if link.Attrs().Flags&net.FlagUp != 0 {
+			currentState = "UP"
+		}
+		log.Printf("Interface %s current state: %s, MTU: %d", ifaceName, currentState, link.Attrs().MTU)
+	} else {
+		log.Printf("Warning: Could not get current state of interface %s: %v", ifaceName, err)
+	}
+
 	// Bring up the interface
 	if err := m.BringUpInterface(ifaceName); err != nil {
 		return fmt.Errorf("failed to bring up interface %s: %v", ifaceName, err)
@@ -178,6 +221,15 @@ func (m *Manager) ConfigureInterfaceFromNodeENI(ifaceName string, nodeENI networ
 		if err := m.SetMTU(ifaceName, nodeENI.Spec.MTU); err != nil {
 			return fmt.Errorf("failed to set MTU for interface %s: %v", ifaceName, err)
 		}
+	}
+
+	// Verify final state
+	if link, err := vnetlink.LinkByName(ifaceName); err == nil {
+		finalState := "DOWN"
+		if link.Attrs().Flags&net.FlagUp != 0 {
+			finalState = "UP"
+		}
+		log.Printf("Interface %s final state: %s, MTU: %d", ifaceName, finalState, link.Attrs().MTU)
 	}
 
 	log.Printf("Successfully configured interface %s", ifaceName)
@@ -267,8 +319,14 @@ func (m *Manager) getPCIAddressForInterface(ifaceName string) (string, error) {
 }
 
 func (m *Manager) getDeviceIndexForInterface(ifaceName string) (int, error) {
-	// Try to extract device index from interface name
-	// This is a simplified approach - in practice, this would use more sophisticated mapping
+	// Method 1: Try to read device index from sysfs (most reliable)
+	if deviceIndex, err := m.getDeviceIndexFromSysfs(ifaceName); err == nil {
+		log.Printf("Device index for %s from sysfs: %d", ifaceName, deviceIndex)
+		return deviceIndex, nil
+	}
+
+	// Method 2: Fallback to interface name parsing
+	log.Printf("Sysfs unavailable for %s, using name-based calculation", ifaceName)
 
 	// For eth interfaces (eth0, eth1, etc.)
 	if strings.HasPrefix(ifaceName, "eth") {
@@ -282,12 +340,31 @@ func (m *Manager) getDeviceIndexForInterface(ifaceName string) (int, error) {
 	if strings.HasPrefix(ifaceName, "ens") {
 		indexStr := strings.TrimPrefix(ifaceName, "ens")
 		if index, err := strconv.Atoi(indexStr); err == nil {
-			// EKS typically starts at ens5 for device index 1
-			return index - 4, nil
+			// EKS typically starts at ens5 for device index 0
+			return index - 5, nil
 		}
 	}
 
 	return 0, fmt.Errorf("could not determine device index for interface %s", ifaceName)
+}
+
+// getDeviceIndexFromSysfs reads the device index directly from sysfs
+func (m *Manager) getDeviceIndexFromSysfs(ifaceName string) (int, error) {
+	// Try multiple sysfs paths for device index
+	paths := []string{
+		fmt.Sprintf("/sys/class/net/%s/device/device_index", ifaceName),
+		fmt.Sprintf("/sys/class/net/%s/dev_id", ifaceName),
+	}
+
+	for _, path := range paths {
+		if data, err := os.ReadFile(path); err == nil {
+			if deviceIndex, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+				return deviceIndex, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("device index not found in sysfs for interface %s", ifaceName)
 }
 
 func (m *Manager) bringUpInterfaceWithIP(ifaceName string) error {

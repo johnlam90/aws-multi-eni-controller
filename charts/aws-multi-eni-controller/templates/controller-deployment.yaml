@@ -37,6 +37,34 @@ spec:
           value: "eni-controller"
         - name: AWS_REGION
           value: "{{ .Values.awsRegion }}"
+        # AWS SDK configuration for strict IMDSv2 enforcement
+        # These settings ensure IMDSv2-only operation for enhanced security
+        - name: AWS_EC2_METADATA_DISABLED
+          value: "false"
+        - name: AWS_EC2_METADATA_V1_DISABLED
+          value: "true"
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE
+          value: "IPv4"
+        - name: AWS_EC2_METADATA_SERVICE_ENDPOINT
+          value: "http://169.254.169.254"
+        # Increased timeout and retry configuration for reliable IMDS calls
+        - name: AWS_METADATA_SERVICE_TIMEOUT
+          value: "30"
+        - name: AWS_METADATA_SERVICE_NUM_ATTEMPTS
+          value: "5"
+        # IMDS hop limit auto-configuration
+        - name: IMDS_AUTO_CONFIGURE_HOP_LIMIT
+          value: "{{ .Values.imds.autoConfigureHopLimit }}"
+        - name: IMDS_HOP_LIMIT
+          value: "{{ .Values.imds.hopLimit }}"
+        # Enable aggressive IMDS configuration for node replacement scenarios
+        - name: IMDS_AGGRESSIVE_CONFIGURATION
+          value: "{{ .Values.imds.aggressiveConfiguration }}"
+        # Node name for Kubernetes context
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
         - name: LOG_LEVEL
           value: "{{ .Values.logLevel }}"
         - name: MAX_CONCURRENT_ENI_CLEANUP

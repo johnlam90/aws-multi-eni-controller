@@ -27,7 +27,8 @@ type EC2ClientFacade struct {
 
 // NewEC2ClientFacade creates a new EC2ClientFacade using AWS SDK v2
 func NewEC2ClientFacade(ctx context.Context, region string, logger logr.Logger) (*EC2ClientFacade, error) {
-	// Create AWS config
+	// Create AWS config - IMDSv2 configuration is handled via environment variables
+	// The AWS SDK v2 automatically uses IMDSv2 by default and falls back to IMDSv1 if needed
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
@@ -102,4 +103,9 @@ func (c *EC2ClientFacade) GetSecurityGroupIDByName(ctx context.Context, security
 // DescribeInstance delegates to InstanceDescriber
 func (c *EC2ClientFacade) DescribeInstance(ctx context.Context, instanceID string) (*EC2Instance, error) {
 	return c.instanceDescriber.DescribeInstance(ctx, instanceID)
+}
+
+// GetInstanceENIs delegates to InstanceDescriber
+func (c *EC2ClientFacade) GetInstanceENIs(ctx context.Context, instanceID string) (map[int]string, error) {
+	return c.instanceDescriber.GetInstanceENIs(ctx, instanceID)
 }

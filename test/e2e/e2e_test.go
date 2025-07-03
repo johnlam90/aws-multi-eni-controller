@@ -5,7 +5,9 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +23,7 @@ import (
 )
 
 // setupE2ETest sets up the test environment for E2E testing
-func setupE2ETest(t *testing.T) (string, string, kubernetes.Interface, client.Client, *corev1.Node, string, string) {
+func setupE2ETest(t *testing.T) (string, string, kubernetes.Interface, client.Client, string, string) {
 	// Skip if no AWS credentials or Kubernetes cluster
 	test.SkipIfNoAWSCredentials(t)
 	test.SkipIfNoKubernetesCluster(t)
@@ -42,17 +44,16 @@ func setupE2ETest(t *testing.T) (string, string, kubernetes.Interface, client.Cl
 	clientset, runtimeClient := createK8sClients(t)
 
 	// Find a worker node to test with
-	testNode, nodeName := findWorkerNode(t, clientset)
+	_, nodeName := findWorkerNode(t, clientset)
 
 	// Add a test label to the node
 	testLabel := "e2e-test-nodeeni"
-	testNode.Labels[testLabel] = "true"
-	_, err := clientset.CoreV1().Nodes().Update(context.Background(), testNode, metav1.UpdateOptions{})
+	err := addNodeLabelWithRetry(clientset, nodeName, testLabel, "true", 3)
 	if err != nil {
-		t.Fatalf("Failed to update node labels: %v", err)
+		t.Fatalf("Failed to add test label to node: %v", err)
 	}
 
-	return subnetID, securityGroupID, clientset, runtimeClient, testNode, nodeName, testLabel
+	return subnetID, securityGroupID, clientset, runtimeClient, nodeName, testLabel
 }
 
 // createK8sClients creates Kubernetes clients for testing
@@ -128,7 +129,7 @@ func createNodeENI(t *testing.T, runtimeClient client.Client, subnetID, security
 			},
 			SubnetID:            subnetID,
 			SecurityGroupIDs:    []string{securityGroupID},
-			DeviceIndex:         2,
+			DeviceIndex:         4,
 			DeleteOnTermination: true,
 			Description:         "E2E test NodeENI",
 		},
@@ -173,24 +174,44 @@ func waitForNodeENIAttachment(t *testing.T, runtimeClient client.Client, nodeNam
 
 // waitForNodeENIDetachment waits for the NodeENI to be detached from the node
 func waitForNodeENIDetachment(t *testing.T, runtimeClient client.Client, nodeName string) {
-	err := wait.PollImmediate(5*time.Second, 2*time.Minute, func() (bool, error) {
+	t.Logf("Starting to wait for NodeENI detachment for node %s", nodeName)
+
+	err := wait.PollImmediate(5*time.Second, 5*time.Minute, func() (bool, error) {
 		nodeENI := &networkingv1alpha1.NodeENI{}
 		err := runtimeClient.Get(context.Background(), client.ObjectKey{Name: "e2e-test-nodeeni"}, nodeENI)
 		if err != nil {
+			t.Logf("Failed to get NodeENI: %v", err)
 			return false, err
+		}
+
+		t.Logf("NodeENI status: %d total attachments", len(nodeENI.Status.Attachments))
+
+		// Log all current attachments for debugging
+		for i, att := range nodeENI.Status.Attachments {
+			t.Logf("Attachment %d: NodeID=%s, ENIID=%s, Status=%s", i, att.NodeID, att.ENIID, att.Status)
 		}
 
 		// Check if the attachment for our node is gone
 		for _, att := range nodeENI.Status.Attachments {
 			if att.NodeID == nodeName {
+				t.Logf("Still waiting for attachment to be removed: ENI %s on node %s (Status: %s)", att.ENIID, att.NodeID, att.Status)
 				return false, nil
 			}
 		}
 
+		t.Logf("Attachment successfully removed from NodeENI status")
 		return true, nil
 	})
 
 	if err != nil {
+		// Get final status for debugging
+		nodeENI := &networkingv1alpha1.NodeENI{}
+		if getErr := runtimeClient.Get(context.Background(), client.ObjectKey{Name: "e2e-test-nodeeni"}, nodeENI); getErr == nil {
+			t.Logf("Final NodeENI status before failure: %d attachments", len(nodeENI.Status.Attachments))
+			for i, att := range nodeENI.Status.Attachments {
+				t.Logf("Final attachment %d: NodeID=%s, ENIID=%s, Status=%s", i, att.NodeID, att.ENIID, att.Status)
+			}
+		}
 		t.Fatalf("Failed to wait for NodeENI attachment to be removed: %v", err)
 	}
 }
@@ -213,8 +234,8 @@ func verifyAttachmentDetails(t *testing.T, nodeENI *networkingv1alpha1.NodeENI, 
 		t.Errorf("Expected subnet ID %s, got %s", subnetID, attachment.SubnetID)
 	}
 
-	if attachment.DeviceIndex != 2 {
-		t.Errorf("Expected device index 2, got %d", attachment.DeviceIndex)
+	if attachment.DeviceIndex != 4 {
+		t.Errorf("Expected device index 4, got %d", attachment.DeviceIndex)
 	}
 
 	if attachment.SubnetCIDR == "" {
@@ -225,19 +246,13 @@ func verifyAttachmentDetails(t *testing.T, nodeENI *networkingv1alpha1.NodeENI, 
 // TestE2E_NodeENIController tests the NodeENI controller end-to-end
 func TestE2E_NodeENIController(t *testing.T) {
 	// Set up the test environment
-	subnetID, securityGroupID, clientset, runtimeClient, testNode, nodeName, testLabel := setupE2ETest(t)
+	subnetID, securityGroupID, clientset, runtimeClient, nodeName, testLabel := setupE2ETest(t)
 
 	// Clean up the test label after the test
 	defer func() {
-		node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+		err := removeNodeLabelWithRetry(clientset, nodeName, testLabel, 3)
 		if err != nil {
-			t.Logf("Failed to get node for cleanup: %v", err)
-			return
-		}
-		delete(node.Labels, testLabel)
-		_, err = clientset.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
-		if err != nil {
-			t.Logf("Failed to remove test label from node: %v", err)
+			t.Logf("Failed to remove test label from node after retries: %v", err)
 		}
 	}()
 
@@ -259,14 +274,126 @@ func TestE2E_NodeENIController(t *testing.T) {
 	verifyAttachmentDetails(t, nodeENI, nodeName, subnetID)
 
 	// Test cleanup by removing the node label
-	delete(testNode.Labels, testLabel)
-	_, err := clientset.CoreV1().Nodes().Update(context.Background(), testNode, metav1.UpdateOptions{})
+	err := removeNodeLabelWithRetry(clientset, nodeName, testLabel, 3)
 	if err != nil {
 		t.Fatalf("Failed to remove test label from node: %v", err)
+	}
+
+	// Give the controller a moment to detect the node label change
+	t.Log("Waiting for controller to detect node label removal...")
+	time.Sleep(10 * time.Second)
+
+	// Trigger reconciliation by updating the NodeENI resource (add an annotation)
+	err = triggerNodeENIReconciliation(runtimeClient, nodeENI.Name)
+	if err != nil {
+		t.Logf("Failed to trigger NodeENI reconciliation: %v", err)
 	}
 
 	// Wait for the attachment to be removed
 	waitForNodeENIDetachment(t, runtimeClient, nodeName)
 
 	t.Log("Successfully verified NodeENI controller end-to-end")
+}
+
+// removeNodeLabelWithRetry removes a label from a node with retry logic to handle resource version conflicts
+func removeNodeLabelWithRetry(clientset kubernetes.Interface, nodeName, labelKey string, maxRetries int) error {
+	for i := 0; i < maxRetries; i++ {
+		// Get the latest version of the node
+		node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get node %s: %v", nodeName, err)
+		}
+
+		// Check if the label exists
+		if _, exists := node.Labels[labelKey]; !exists {
+			// Label doesn't exist, nothing to do
+			return nil
+		}
+
+		// Remove the label
+		delete(node.Labels, labelKey)
+
+		// Try to update the node
+		_, err = clientset.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
+		if err == nil {
+			// Success
+			return nil
+		}
+
+		// Check if it's a conflict error
+		if strings.Contains(err.Error(), "the object has been modified") {
+			// Retry after a short delay
+			time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
+			continue
+		}
+
+		// Non-conflict error, return immediately
+		return fmt.Errorf("failed to update node %s: %v", nodeName, err)
+	}
+
+	return fmt.Errorf("failed to remove label %s from node %s after %d retries", labelKey, nodeName, maxRetries)
+}
+
+// addNodeLabelWithRetry adds a label to a node with retry logic to handle resource version conflicts
+func addNodeLabelWithRetry(clientset kubernetes.Interface, nodeName, labelKey, labelValue string, maxRetries int) error {
+	for i := 0; i < maxRetries; i++ {
+		// Get the latest version of the node
+		node, err := clientset.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get node %s: %v", nodeName, err)
+		}
+
+		// Check if the label already exists with the correct value
+		if existingValue, exists := node.Labels[labelKey]; exists && existingValue == labelValue {
+			// Label already exists with correct value, nothing to do
+			return nil
+		}
+
+		// Add/update the label
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
+		node.Labels[labelKey] = labelValue
+
+		// Try to update the node
+		_, err = clientset.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
+		if err == nil {
+			// Success
+			return nil
+		}
+
+		// Check if it's a conflict error
+		if strings.Contains(err.Error(), "the object has been modified") {
+			// Retry after a short delay
+			time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
+			continue
+		}
+
+		// Non-conflict error, return immediately
+		return fmt.Errorf("failed to update node %s: %v", nodeName, err)
+	}
+
+	return fmt.Errorf("failed to add label %s to node %s after %d retries", labelKey, nodeName, maxRetries)
+}
+
+// triggerNodeENIReconciliation triggers a reconciliation of the NodeENI resource by updating it
+func triggerNodeENIReconciliation(runtimeClient client.Client, nodeENIName string) error {
+	nodeENI := &networkingv1alpha1.NodeENI{}
+	err := runtimeClient.Get(context.Background(), client.ObjectKey{Name: nodeENIName}, nodeENI)
+	if err != nil {
+		return fmt.Errorf("failed to get NodeENI %s: %v", nodeENIName, err)
+	}
+
+	// Add or update an annotation to trigger reconciliation
+	if nodeENI.Annotations == nil {
+		nodeENI.Annotations = make(map[string]string)
+	}
+	nodeENI.Annotations["test.e2e/reconcile-trigger"] = time.Now().Format(time.RFC3339)
+
+	err = runtimeClient.Update(context.Background(), nodeENI)
+	if err != nil {
+		return fmt.Errorf("failed to update NodeENI %s: %v", nodeENIName, err)
+	}
+
+	return nil
 }

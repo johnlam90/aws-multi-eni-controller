@@ -87,6 +87,14 @@ func NewNodeENIReconciler(mgr manager.Manager) (*NodeENIReconciler, error) {
 		return nil, fmt.Errorf("failed to create AWS EC2 client: %v", err)
 	}
 
+	// Configure IMDS hop limit for container compatibility
+	if ec2Client, ok := awsClient.(*awsutil.EC2Client); ok {
+		if err := ec2Client.ConfigureIMDSHopLimit(ctx); err != nil {
+			log.Error(err, "Failed to configure IMDS hop limit, continuing with default configuration")
+			// Don't fail controller startup if IMDS configuration fails
+		}
+	}
+
 	// Create circuit breaker if enabled
 	var circuitBreaker *retry.CircuitBreaker
 	if cfg.CircuitBreakerEnabled {
@@ -128,6 +136,10 @@ func NewNodeENIReconciler(mgr manager.Manager) (*NodeENIReconciler, error) {
 
 // SetupWithManager sets up the controller with the Manager
 func (r *NodeENIReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Start IMDS configuration retry in the background
+	ctx := context.Background()
+	r.startIMDSConfigurationRetry(ctx)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha1.NodeENI{}).
 		Watches(
@@ -284,7 +296,10 @@ func (r *NodeENIReconciler) setCleanupStartTime(ctx context.Context, nodeENI *ne
 	// Only set if not already set
 	if _, exists := nodeENI.Annotations[CleanupStartTimeAnnotation]; !exists {
 		nodeENI.Annotations[CleanupStartTimeAnnotation] = time.Now().Format(time.RFC3339)
-		return r.Client.Update(ctx, nodeENI)
+
+		// Use retry logic for resource version conflicts
+		_, err := r.updateNodeENIWithRetry(ctx, nodeENI)
+		return err
 	}
 
 	return nil
@@ -302,12 +317,129 @@ func (r *NodeENIReconciler) removeFinalizer(ctx context.Context, nodeENI *networ
 	return r.updateNodeENIWithRetry(ctx, nodeENI)
 }
 
-// updateNodeENIWithRetry updates a NodeENI resource with retry logic
+// updateNodeENIWithRetry updates a NodeENI resource with retry logic for resource version conflicts
 func (r *NodeENIReconciler) updateNodeENIWithRetry(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI) (ctrl.Result, error) {
-	if err := r.Client.Update(ctx, nodeENI); err != nil {
-		return ctrl.Result{}, err
+	log := r.Log.WithValues("nodeeni", nodeENI.Name)
+
+	// Use exponential backoff for resource version conflicts
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 100 * time.Millisecond,
+		Factor:   2.0,
+		Jitter:   0.1,
 	}
+
+	var lastErr error
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		updateErr := r.Client.Update(ctx, nodeENI)
+		if updateErr != nil {
+			// Check if this is a resource version conflict
+			if errors.IsConflict(updateErr) {
+				log.V(1).Info("Resource version conflict detected, retrying update", "error", updateErr.Error())
+
+				// Fetch the latest version of the resource
+				latest := &networkingv1alpha1.NodeENI{}
+				if getErr := r.Client.Get(ctx, client.ObjectKeyFromObject(nodeENI), latest); getErr != nil {
+					log.Error(getErr, "Failed to fetch latest NodeENI for retry")
+					lastErr = getErr
+					return false, getErr
+				}
+
+				// Preserve the changes we want to make
+				preserveFinalizers := nodeENI.Finalizers
+				preserveAnnotations := nodeENI.Annotations
+
+				// Update the latest version with our changes
+				latest.Finalizers = preserveFinalizers
+				if preserveAnnotations != nil {
+					if latest.Annotations == nil {
+						latest.Annotations = make(map[string]string)
+					}
+					for key, value := range preserveAnnotations {
+						latest.Annotations[key] = value
+					}
+					// Remove cleanup annotation if it was deleted
+					if _, exists := preserveAnnotations[CleanupStartTimeAnnotation]; !exists {
+						delete(latest.Annotations, CleanupStartTimeAnnotation)
+					}
+				}
+
+				// Update nodeENI to point to the latest version for the next retry
+				*nodeENI = *latest
+				lastErr = updateErr
+				return false, nil // Continue retrying
+			}
+
+			// For other errors, fail immediately
+			lastErr = updateErr
+			return false, updateErr
+		}
+		return true, nil
+	})
+
+	if err != nil {
+		log.Error(lastErr, "Failed to update NodeENI after retries")
+		return ctrl.Result{}, lastErr
+	}
+
+	log.V(1).Info("Successfully updated NodeENI")
 	return ctrl.Result{}, nil
+}
+
+// updateNodeENIStatusWithRetry updates a NodeENI status with retry logic for resource version conflicts
+func (r *NodeENIReconciler) updateNodeENIStatusWithRetry(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI) error {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name)
+
+	// Use exponential backoff for resource version conflicts
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 100 * time.Millisecond,
+		Factor:   2.0,
+		Jitter:   0.1,
+	}
+
+	var lastErr error
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		updateErr := r.Client.Status().Update(ctx, nodeENI)
+		if updateErr != nil {
+			// Check if this is a resource version conflict
+			if errors.IsConflict(updateErr) {
+				log.V(1).Info("Resource version conflict detected during status update, retrying", "error", updateErr.Error())
+
+				// Fetch the latest version of the resource
+				latest := &networkingv1alpha1.NodeENI{}
+				if getErr := r.Client.Get(ctx, client.ObjectKeyFromObject(nodeENI), latest); getErr != nil {
+					log.Error(getErr, "Failed to fetch latest NodeENI for status retry")
+					lastErr = getErr
+					return false, getErr
+				}
+
+				// Preserve the status changes we want to make
+				preserveStatus := nodeENI.Status
+
+				// Update the latest version with our status changes
+				latest.Status = preserveStatus
+
+				// Update nodeENI to point to the latest version for the next retry
+				*nodeENI = *latest
+				lastErr = updateErr
+				return false, nil // Continue retrying
+			}
+
+			// For other errors, fail immediately
+			lastErr = updateErr
+			return false, updateErr
+		}
+		return true, nil
+	})
+
+	if err != nil {
+		log.Error(lastErr, "Failed to update NodeENI status after retries")
+		return lastErr
+	}
+
+	log.V(1).Info("Successfully updated NodeENI status")
+	return nil
 }
 
 // executeWithCircuitBreaker executes an AWS operation with circuit breaker protection
@@ -364,12 +496,28 @@ func (r *NodeENIReconciler) cleanupENIAttachmentCoordinated(ctx context.Context,
 	// Create operation ID for coordination
 	operationID := fmt.Sprintf("cleanup-%s-%s-%s", nodeENI.Name, attachment.NodeID, attachment.ENIID)
 
-	// Define resource IDs that this operation will use
+	// Define resource IDs with granular locking strategy
+	// Only lock the specific ENI resource to allow parallel cleanup of different ENIs
+	// on the same node/instance
 	resourceIDs := []string{
-		attachment.ENIID,                          // ENI resource
-		attachment.InstanceID,                     // Instance resource
-		fmt.Sprintf("node-%s", attachment.NodeID), // Node resource
+		attachment.ENIID, // Only lock the specific ENI being cleaned up
 	}
+
+	// For operations that might conflict at the instance level (like instance termination),
+	// we use a more specific resource ID that includes the ENI ID
+	if attachment.InstanceID != "" {
+		// Create instance-specific resource ID that includes ENI to avoid conflicts
+		// between different ENI cleanup operations on the same instance
+		instanceResourceID := fmt.Sprintf("instance-%s-eni-%s", attachment.InstanceID, attachment.ENIID)
+		resourceIDs = append(resourceIDs, instanceResourceID)
+	}
+
+	log.V(1).Info("Acquiring locks for ENI cleanup",
+		"operationID", operationID,
+		"resourceIDs", resourceIDs,
+		"eniID", attachment.ENIID,
+		"instanceID", attachment.InstanceID,
+		"nodeID", attachment.NodeID)
 
 	// Create coordinated operation
 	operation := &CoordinatedOperation{
@@ -392,12 +540,85 @@ func (r *NodeENIReconciler) cleanupENIAttachmentCoordinated(ctx context.Context,
 	// Execute with coordination
 	err := r.Coordinator.ExecuteCoordinated(ctx, operation)
 	if err != nil {
-		log.Error(err, "Coordinated cleanup failed")
+		log.Error(err, "Coordinated cleanup failed",
+			"operationID", operationID,
+			"resourceIDs", resourceIDs)
 		return false
 	}
 
-	log.Info("Coordinated cleanup succeeded")
+	log.Info("Coordinated cleanup succeeded", "operationID", operationID)
 	return true
+}
+
+// cleanupENIAttachmentWithNodeCoordination performs ENI cleanup with node-level coordination
+// This is used when operations need to be serialized at the node level (e.g., for DPDK operations)
+func (r *NodeENIReconciler) cleanupENIAttachmentWithNodeCoordination(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", attachment.NodeID, "eniID", attachment.ENIID)
+
+	// Create operation ID for coordination
+	operationID := fmt.Sprintf("node-cleanup-%s-%s-%s", nodeENI.Name, attachment.NodeID, attachment.ENIID)
+
+	// Define resource IDs with node-level locking for operations that require serialization
+	resourceIDs := []string{
+		attachment.ENIID, // ENI resource
+		fmt.Sprintf("node-%s", attachment.NodeID), // Node resource for serialization
+	}
+
+	// Add instance-level coordination if needed
+	if attachment.InstanceID != "" {
+		resourceIDs = append(resourceIDs, attachment.InstanceID)
+	}
+
+	log.V(1).Info("Acquiring node-level locks for ENI cleanup",
+		"operationID", operationID,
+		"resourceIDs", resourceIDs,
+		"reason", "node-level coordination required")
+
+	// Create coordinated operation
+	operation := &CoordinatedOperation{
+		ID:          operationID,
+		Type:        "eni-node-cleanup",
+		ResourceIDs: resourceIDs,
+		Priority:    2, // Higher priority for node-level operations
+		DependsOn:   []string{},
+		Timeout:     r.Config.DetachmentTimeout,
+		Execute: func(ctx context.Context) error {
+			// Execute the actual cleanup
+			success := r.cleanupENIAttachment(ctx, nodeENI, attachment)
+			if !success {
+				return fmt.Errorf("node-coordinated cleanup failed for ENI %s", attachment.ENIID)
+			}
+			return nil
+		},
+	}
+
+	// Execute with coordination
+	err := r.Coordinator.ExecuteCoordinated(ctx, operation)
+	if err != nil {
+		log.Error(err, "Node-coordinated cleanup failed",
+			"operationID", operationID,
+			"resourceIDs", resourceIDs)
+		return false
+	}
+
+	log.Info("Node-coordinated cleanup succeeded", "operationID", operationID)
+	return true
+}
+
+// shouldUseNodeLevelCoordination determines if node-level coordination is needed
+func (r *NodeENIReconciler) shouldUseNodeLevelCoordination(nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	// Use node-level coordination for DPDK-enabled ENIs
+	if nodeENI.Spec.EnableDPDK {
+		return true
+	}
+
+	// Use node-level coordination for SR-IOV enabled ENIs (indicated by PCI address or resource name)
+	if nodeENI.Spec.DPDKPCIAddress != "" || nodeENI.Spec.DPDKResourceName != "" {
+		return true
+	}
+
+	// For standard ENIs (Case 1), use granular coordination (no node-level locking)
+	return false
 }
 
 // InterfaceState represents the current state of a network interface
@@ -1092,12 +1313,16 @@ func (r *NodeENIReconciler) deleteENIIfExists(ctx context.Context, nodeENI *netw
 // addFinalizer adds a finalizer to a NodeENI resource
 func (r *NodeENIReconciler) addFinalizer(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI) (ctrl.Result, error) {
 	controllerutil.AddFinalizer(nodeENI, NodeENIFinalizer)
-	if err := r.Client.Update(ctx, nodeENI); err != nil {
+
+	// Use retry logic for resource version conflicts
+	result, err := r.updateNodeENIWithRetry(ctx, nodeENI)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	// Return here to avoid processing the rest of the reconciliation
 	// The update will trigger another reconciliation
-	return ctrl.Result{}, nil
+	return result, nil
 }
 
 // processNodeENI processes a NodeENI resource
@@ -1132,8 +1357,8 @@ func (r *NodeENIReconciler) processNodeENI(ctx context.Context, nodeENI *network
 	updatedAttachments := r.removeStaleAttachments(ctx, nodeENI, currentAttachments)
 	nodeENI.Status.Attachments = updatedAttachments
 
-	// Update the NodeENI status
-	if err := r.Client.Status().Update(ctx, nodeENI); err != nil {
+	// Update the NodeENI status with retry logic
+	if err := r.updateNodeENIStatusWithRetry(ctx, nodeENI); err != nil {
 		log.Error(err, "Failed to update NodeENI status")
 		return err
 	}
@@ -1175,6 +1400,16 @@ func (r *NodeENIReconciler) processNode(ctx context.Context, nodeENI *networking
 	// Build maps for tracking existing attachments and device indices
 	existingSubnets, usedDeviceIndices, subnetToDeviceIndex := r.buildAttachmentMaps(nodeENI, node.Name)
 
+	// Query AWS for actual current ENI attachments to ensure state consistency
+	awsUsedDeviceIndices, err := r.getAWSUsedDeviceIndices(ctx, instanceID)
+	if err != nil {
+		log.Error(err, "Failed to query AWS for current ENI attachments, proceeding with internal state only")
+		// Continue with internal state only as fallback
+	} else {
+		// Merge AWS state with internal state for more accurate device index tracking
+		usedDeviceIndices = r.mergeDeviceIndices(usedDeviceIndices, awsUsedDeviceIndices, log)
+	}
+
 	// Create ENIs for any subnets that don't already have one
 	r.createMissingENIs(ctx, nodeENI, node, instanceID, subnetIDs, existingSubnets, usedDeviceIndices, subnetToDeviceIndex)
 
@@ -1187,12 +1422,23 @@ func (r *NodeENIReconciler) buildAttachmentMaps(nodeENI *networkingv1alpha1.Node
 	usedDeviceIndices map[int]bool,
 	subnetToDeviceIndex map[string]int,
 ) {
+	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", nodeName)
+
 	existingSubnets = make(map[string]bool)
 	usedDeviceIndices = make(map[int]bool)
 	subnetToDeviceIndex = make(map[string]int)
 
+	log.Info("Building attachment maps", "totalAttachments", len(nodeENI.Status.Attachments))
+
 	// First pass: build the subnet to device index mapping from existing attachments
 	for _, attachment := range nodeENI.Status.Attachments {
+		log.V(1).Info("Processing attachment",
+			"nodeID", attachment.NodeID,
+			"eniID", attachment.ENIID,
+			"subnetID", attachment.SubnetID,
+			"deviceIndex", attachment.DeviceIndex,
+			"isCurrentNode", attachment.NodeID == nodeName)
+
 		// We want to build a global mapping across all nodes
 		if attachment.SubnetID != "" && attachment.DeviceIndex > 0 {
 			// If we haven't seen this subnet before, or if this device index is lower
@@ -1205,13 +1451,20 @@ func (r *NodeENIReconciler) buildAttachmentMaps(nodeENI *networkingv1alpha1.Node
 		// For this specific node, track which subnets already have ENIs
 		if attachment.NodeID == nodeName && attachment.SubnetID != "" {
 			existingSubnets[attachment.SubnetID] = true
+			log.Info("Found existing ENI for node in subnet", "subnetID", attachment.SubnetID, "eniID", attachment.ENIID)
 		}
 
 		// For this specific node, track which device indices are already in use
 		if attachment.NodeID == nodeName && attachment.DeviceIndex > 0 {
 			usedDeviceIndices[attachment.DeviceIndex] = true
+			log.Info("Found used device index for node", "deviceIndex", attachment.DeviceIndex, "eniID", attachment.ENIID)
 		}
 	}
+
+	log.Info("Built attachment maps",
+		"existingSubnets", existingSubnets,
+		"usedDeviceIndices", usedDeviceIndices,
+		"subnetToDeviceIndex", subnetToDeviceIndex)
 
 	return existingSubnets, usedDeviceIndices, subnetToDeviceIndex
 }
@@ -1229,22 +1482,32 @@ func (r *NodeENIReconciler) createMissingENIs(
 ) {
 	log := r.Log.WithValues("nodeeni", nodeENI.Name, "node", node.Name)
 
+	log.Info("Processing subnets for ENI creation",
+		"totalSubnets", len(subnetIDs),
+		"subnetIDs", subnetIDs,
+		"existingSubnets", existingSubnets,
+		"usedDeviceIndices", usedDeviceIndices)
+
 	for i, subnetID := range subnetIDs {
 		// Skip if we already have an ENI in this subnet
 		if existingSubnets[subnetID] {
-			log.Info("Node already has an ENI in this subnet", "subnetID", subnetID)
+			log.Info("Node already has an ENI in this subnet, skipping", "subnetID", subnetID)
 			continue
 		}
+
+		log.Info("Creating ENI for subnet", "subnetID", subnetID, "subnetIndex", i)
 
 		// Determine the device index to use for this subnet
 		deviceIndex := r.determineDeviceIndex(nodeENI, subnetID, i, subnetToDeviceIndex, usedDeviceIndices, log)
 
 		// Create and attach a new ENI for this subnet
 		if err := r.createAndAttachENIForSubnet(ctx, nodeENI, node, instanceID, subnetID, deviceIndex); err != nil {
-			log.Error(err, "Failed to create and attach ENI for subnet", "subnetID", subnetID)
+			log.Error(err, "Failed to create and attach ENI for subnet", "subnetID", subnetID, "deviceIndex", deviceIndex)
 			// Continue with other subnets even if one fails
 			continue
 		}
+
+		log.Info("Successfully created and attached ENI for subnet", "subnetID", subnetID, "deviceIndex", deviceIndex)
 	}
 }
 
@@ -1303,6 +1566,62 @@ func (r *NodeENIReconciler) findAvailableDeviceIndex(
 	return deviceIndex
 }
 
+// getAWSUsedDeviceIndices queries AWS for actual current ENI attachments on an instance
+func (r *NodeENIReconciler) getAWSUsedDeviceIndices(ctx context.Context, instanceID string) (map[int]bool, error) {
+	log := r.Log.WithValues("instanceID", instanceID)
+	log.V(1).Info("Querying AWS for current ENI attachments")
+
+	// Query AWS for all ENIs currently attached to this instance
+	eniMap, err := r.AWS.GetInstanceENIs(ctx, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get instance ENIs from AWS: %v", err)
+	}
+
+	// Convert to device index map
+	awsUsedDeviceIndices := make(map[int]bool)
+	for deviceIndex := range eniMap {
+		awsUsedDeviceIndices[deviceIndex] = true
+	}
+
+	log.Info("Retrieved AWS ENI attachments", "deviceIndices", awsUsedDeviceIndices)
+	return awsUsedDeviceIndices, nil
+}
+
+// mergeDeviceIndices merges internal state with AWS state for more accurate device index tracking
+func (r *NodeENIReconciler) mergeDeviceIndices(internalIndices, awsIndices map[int]bool, log logr.Logger) map[int]bool {
+	merged := make(map[int]bool)
+
+	// Start with AWS state as the source of truth
+	for deviceIndex := range awsIndices {
+		merged[deviceIndex] = true
+	}
+
+	// Add any internal indices that might not be reflected in AWS yet
+	// (e.g., during attachment process)
+	for deviceIndex := range internalIndices {
+		if !merged[deviceIndex] {
+			log.Info("Adding internal device index not found in AWS", "deviceIndex", deviceIndex)
+			merged[deviceIndex] = true
+		}
+	}
+
+	// Log any discrepancies for debugging
+	for deviceIndex := range awsIndices {
+		if !internalIndices[deviceIndex] {
+			log.Info("AWS shows device index not in internal state", "deviceIndex", deviceIndex)
+		}
+	}
+
+	for deviceIndex := range internalIndices {
+		if !awsIndices[deviceIndex] {
+			log.Info("Internal state shows device index not in AWS", "deviceIndex", deviceIndex)
+		}
+	}
+
+	log.Info("Merged device indices", "internal", internalIndices, "aws", awsIndices, "merged", merged)
+	return merged
+}
+
 // createAndAttachENI creates and attaches a new ENI to a node
 // This is kept for backward compatibility
 func (r *NodeENIReconciler) createAndAttachENI(ctx context.Context, nodeENI *networkingv1alpha1.NodeENI, node corev1.Node, instanceID string) error {
@@ -1334,7 +1653,7 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 	}
 
 	// Attach the ENI
-	attachmentID, err := r.attachENI(ctx, eniID, instanceID, deviceIndex)
+	attachmentID, actualDeviceIndex, err := r.attachENI(ctx, eniID, instanceID, deviceIndex)
 	if err != nil {
 		log.Error(err, "Failed to attach ENI", "eniID", eniID)
 		r.Recorder.Eventf(nodeENI, corev1.EventTypeWarning, "ENIAttachmentFailed",
@@ -1354,6 +1673,9 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 
 		return err
 	}
+
+	// Use the actual device index that was used (may be different if corrected during retry)
+	deviceIndex = actualDeviceIndex
 
 	// Get the subnet CIDR
 	subnetCIDR, err := r.AWS.GetSubnetCIDRByID(ctx, subnetID)
@@ -1376,6 +1698,14 @@ func (r *NodeENIReconciler) createAndAttachENIForSubnet(ctx context.Context, nod
 		Status:       "attached",
 		LastUpdated:  metav1.Now(),
 	})
+
+	// Update the NodeENI status immediately to prevent race conditions
+	// This ensures that subsequent reconciliations see the attachment
+	if err := r.updateNodeENIStatusWithRetry(ctx, nodeENI); err != nil {
+		log.Error(err, "Failed to update NodeENI status after ENI attachment", "eniID", eniID)
+		// Don't return error here as the ENI is already attached successfully
+		// The status will be updated in the next reconciliation
+	}
 
 	r.Recorder.Eventf(nodeENI, corev1.EventTypeNormal, "ENIAttached",
 		"Successfully attached ENI %s to node %s in subnet %s", eniID, node.Name, subnetID)
@@ -1406,7 +1736,7 @@ func (r *NodeENIReconciler) removeStaleAttachments(ctx context.Context, nodeENI 
 				staleAttachments = append(staleAttachments, attachment)
 			} else {
 				// Keep attachment if comprehensive verification suggests it's still valid
-				log.Info("Keeping attachment despite missing node - AWS verification suggests it's still valid",
+				log.Info("Keeping attachment despite node not matching selector - comprehensive verification failed to confirm it's stale",
 					"nodeID", attachment.NodeID, "eniID", attachment.ENIID)
 				updatedAttachments = append(updatedAttachments, attachment)
 			}
@@ -1541,11 +1871,11 @@ func (r *NodeENIReconciler) isAttachmentComprehensivelyStale(ctx context.Context
 		return true // Stale
 	}
 
-	// Step 4: Instance exists and ENI is properly attached, but node is missing from Kubernetes
-	// This could be a temporary condition (node restart, network issues, etc.)
-	// Be conservative and keep the attachment for now
-	log.Info("Instance and ENI exist and are properly attached, but node is missing from Kubernetes - keeping attachment")
-	return false
+	// Step 4: Instance exists and ENI is properly attached, but node no longer matches NodeENI selector
+	// This means the user intentionally removed the node from the selector (e.g., removed labels)
+	// We should clean up the ENI as the user expects it to be removed
+	log.Info("Instance and ENI exist and are properly attached, but node no longer matches NodeENI selector - marking as stale for cleanup")
+	return true
 }
 
 // verifyInstanceExists verifies that an AWS instance exists and is in a valid state
@@ -1848,20 +2178,78 @@ func (r *NodeENIReconciler) getAllSubnetIDs(ctx context.Context, nodeENI *networ
 	return subnetIDs, nil
 }
 
-// attachENI attaches an ENI to an EC2 instance
-func (r *NodeENIReconciler) attachENI(ctx context.Context, eniID, instanceID string, deviceIndex int) (string, error) {
+// attachENI attaches an ENI to an EC2 instance with retry logic for device index conflicts
+// Returns the attachment ID and the actual device index used (which may differ from requested if corrected during retry)
+func (r *NodeENIReconciler) attachENI(ctx context.Context, eniID, instanceID string, deviceIndex int) (string, int, error) {
+	log := r.Log.WithValues("eniID", eniID, "instanceID", instanceID, "deviceIndex", deviceIndex)
+
 	// Use default device index if not specified
 	if deviceIndex <= 0 {
 		deviceIndex = r.Config.DefaultDeviceIndex
 	}
 
-	// Attach the ENI with delete on termination set to the configured default
+	// First attempt: try to attach with the requested device index
 	attachmentID, err := r.AWS.AttachENI(ctx, eniID, instanceID, deviceIndex, r.Config.DefaultDeleteOnTermination)
 	if err != nil {
-		return "", fmt.Errorf("failed to attach ENI: %v", err)
+		// Check if this is a device index conflict error
+		if r.isDeviceIndexConflictError(err) {
+			log.Info("Device index conflict detected, querying AWS for current state and retrying", "error", err.Error())
+
+			// Query AWS for actual current ENI attachments
+			awsUsedDeviceIndices, awsErr := r.getAWSUsedDeviceIndices(ctx, instanceID)
+			if awsErr != nil {
+				log.Error(awsErr, "Failed to query AWS for current ENI attachments during retry")
+				return "", deviceIndex, fmt.Errorf("failed to attach ENI: %v (retry query failed: %v)", err, awsErr)
+			}
+
+			// Find the next available device index based on AWS reality
+			retryDeviceIndex := r.findNextAvailableDeviceIndex(deviceIndex, awsUsedDeviceIndices, log)
+			if retryDeviceIndex == deviceIndex {
+				// No conflict found in AWS state, this might be a transient error
+				log.Info("No device index conflict found in AWS state, original error might be transient")
+				return "", deviceIndex, fmt.Errorf("failed to attach ENI: %v", err)
+			}
+
+			log.Info("Retrying attachment with corrected device index", "originalIndex", deviceIndex, "retryIndex", retryDeviceIndex)
+
+			// Retry with the corrected device index
+			attachmentID, retryErr := r.AWS.AttachENI(ctx, eniID, instanceID, retryDeviceIndex, r.Config.DefaultDeleteOnTermination)
+			if retryErr != nil {
+				return "", retryDeviceIndex, fmt.Errorf("failed to attach ENI after retry: original error: %v, retry error: %v", err, retryErr)
+			}
+
+			log.Info("Successfully attached ENI after device index correction", "finalDeviceIndex", retryDeviceIndex)
+			return attachmentID, retryDeviceIndex, nil
+		}
+
+		// For non-device-index errors, return the original error
+		return "", deviceIndex, fmt.Errorf("failed to attach ENI: %v", err)
 	}
 
-	return attachmentID, nil
+	return attachmentID, deviceIndex, nil
+}
+
+// isDeviceIndexConflictError checks if the error indicates a device index conflict
+func (r *NodeENIReconciler) isDeviceIndexConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errorStr := err.Error()
+	return strings.Contains(errorStr, "already has an interface attached at device index") ||
+		strings.Contains(errorStr, "InvalidParameterValue") && strings.Contains(errorStr, "device index")
+}
+
+// findNextAvailableDeviceIndex finds the next available device index starting from the given index
+func (r *NodeENIReconciler) findNextAvailableDeviceIndex(startIndex int, usedDeviceIndices map[int]bool, log logr.Logger) int {
+	deviceIndex := startIndex
+
+	// Find the next available device index
+	for usedDeviceIndices[deviceIndex] {
+		deviceIndex++
+		log.Info("Device index in use according to AWS, incrementing", "usedIndex", deviceIndex-1, "nextIndex", deviceIndex)
+	}
+
+	return deviceIndex
 }
 
 // verifyENIAttachments verifies the actual state of ENIs in AWS and updates the NodeENI resource status accordingly
@@ -2128,10 +2516,41 @@ func (r *NodeENIReconciler) updateNodeENIStatus(
 		"before", len(nodeENI.Status.Attachments), "after", len(updatedAttachments))
 	nodeENI.Status.Attachments = updatedAttachments
 
-	// Update the NodeENI status
-	if err := r.Client.Status().Update(ctx, nodeENI); err != nil {
+	// Update the NodeENI status with retry logic
+	if err := r.updateNodeENIStatusWithRetry(ctx, nodeENI); err != nil {
 		log.Error(err, "Failed to update NodeENI status with verified attachments")
 	} else {
 		log.Info("Successfully updated NodeENI status with verified attachments")
 	}
+}
+
+// startIMDSConfigurationRetry starts a background process to periodically retry IMDS configuration
+// This helps handle node replacement scenarios where new instances need IMDS hop limit configuration
+func (r *NodeENIReconciler) startIMDSConfigurationRetry(ctx context.Context) {
+	if ec2Client, ok := r.AWS.(*awsutil.EC2Client); ok {
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute) // Retry every 5 minutes
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					r.Log.Info("IMDS configuration retry stopped due to context cancellation")
+					return
+				case <-ticker.C:
+					r.Log.V(1).Info("Retrying IMDS hop limit configuration")
+					if err := ec2Client.ConfigureIMDSHopLimit(ctx); err != nil {
+						r.Log.V(1).Info("IMDS configuration retry failed", "error", err.Error())
+					} else {
+						r.Log.V(1).Info("IMDS configuration retry completed successfully")
+					}
+				}
+			}
+		}()
+	}
+}
+
+// ShouldUseNodeLevelCoordinationTest exposes shouldUseNodeLevelCoordination for testing purposes
+func (r *NodeENIReconciler) ShouldUseNodeLevelCoordinationTest(nodeENI *networkingv1alpha1.NodeENI, attachment networkingv1alpha1.ENIAttachment) bool {
+	return r.shouldUseNodeLevelCoordination(nodeENI, attachment)
 }

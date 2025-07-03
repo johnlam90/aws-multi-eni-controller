@@ -50,6 +50,10 @@ type InstanceDescriber interface {
 	// DescribeInstance describes an EC2 instance
 	// Returns nil, nil if the instance doesn't exist
 	DescribeInstance(ctx context.Context, instanceID string) (*EC2Instance, error)
+
+	// GetInstanceENIs gets all ENIs attached to an instance
+	// Returns a map of device index to ENI ID for all attached ENIs
+	GetInstanceENIs(ctx context.Context, instanceID string) (map[int]string, error)
 }
 
 // EC2Interface defines the combined interface for all EC2 operations using AWS SDK v2
