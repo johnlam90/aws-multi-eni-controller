@@ -1,8 +1,6 @@
 module github.com/johnlam90/aws-multi-eni-controller
 
-go 1.23
-
-toolchain go1.24.2
+go 1.25.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.5
@@ -17,7 +15,7 @@ require (
 	github.com/stretchr/testify v1.8.1
 	github.com/vishvananda/netlink v1.3.0
 	go.uber.org/zap v1.24.0
-	golang.org/x/time v0.3.0
+	golang.org/x/time v0.15.0
 	k8s.io/api v0.26.3
 	k8s.io/apimachinery v0.26.3
 	k8s.io/client-go v0.26.3
