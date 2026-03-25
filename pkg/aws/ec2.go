@@ -932,7 +932,11 @@ func (c *EC2Client) configureIMDSWithFallback(ctx context.Context, hopLimit int3
 	}
 
 	// Strategy 4: Configure all instances in the current VPC (last resort)
-	if err := c.tryVPCWideConfiguration(ctx, hopLimit); err == nil {
+	// Resolve VPC ID first to scope the configuration to the correct VPC
+	vpcID, err := c.resolveCurrentVPCID(ctx)
+	if err != nil {
+		c.Logger.Info("Failed to resolve VPC ID, skipping VPC-wide configuration", "error", err.Error())
+	} else if err := c.tryVPCWideConfiguration(ctx, hopLimit, vpcID); err == nil {
 		c.Logger.Info("Successfully configured IMDS hop limit using VPC-wide approach")
 		return nil
 	}
@@ -1125,7 +1129,11 @@ func (c *EC2Client) tryPrivateIPBasedConfiguration(ctx context.Context, hopLimit
 }
 
 // tryVPCWideConfiguration attempts to configure IMDS for all instances in the VPC (last resort)
-func (c *EC2Client) tryVPCWideConfiguration(ctx context.Context, hopLimit int32) error {
+func (c *EC2Client) tryVPCWideConfiguration(ctx context.Context, hopLimit int32, vpcID string) error {
+	if vpcID == "" {
+		return fmt.Errorf("cannot perform VPC-wide configuration without a VPC ID")
+	}
+
 	// Check if aggressive configuration is enabled
 	aggressiveConfig := os.Getenv("IMDS_AGGRESSIVE_CONFIGURATION")
 	if aggressiveConfig != "true" {
@@ -1136,14 +1144,18 @@ func (c *EC2Client) tryVPCWideConfiguration(ctx context.Context, hopLimit int32)
 	// This is a last resort strategy - configure IMDS for all instances that might need it
 	// We'll look for instances that have hop limit 1 and are in running state
 
-	c.Logger.Info("Attempting VPC-wide IMDS configuration as last resort")
+	c.Logger.Info("Attempting VPC-wide IMDS configuration as last resort", "vpcID", vpcID)
 
-	// Get all running instances in the region
+	// Get all running instances in the VPC
 	input := &ec2.DescribeInstancesInput{
 		Filters: []types.Filter{
 			{
 				Name:   aws.String("instance-state-name"),
 				Values: []string{"running"},
+			},
+			{
+				Name:   aws.String("vpc-id"),
+				Values: []string{vpcID},
 			},
 		},
 	}
@@ -1199,6 +1211,68 @@ func (c *EC2Client) tryVPCWideConfiguration(ctx context.Context, hopLimit int32)
 
 	c.Logger.Info("VPC-wide IMDS configuration completed", "configuredCount", configuredCount)
 	return nil
+}
+
+// resolveCurrentVPCID determines the VPC ID of the current instance by looking up its private IP
+func (c *EC2Client) resolveCurrentVPCID(ctx context.Context) (string, error) {
+	if c.EC2 == nil {
+		return "", fmt.Errorf("EC2 client is not initialized")
+	}
+
+	privateIP, err := c.getPrivateIPFromNetworkInterface()
+	if err != nil {
+		return "", fmt.Errorf("failed to get private IP for VPC resolution: %v", err)
+	}
+
+	if privateIP == "" {
+		return "", fmt.Errorf("no private IP found for VPC resolution")
+	}
+
+	c.Logger.V(1).Info("Resolving VPC ID using private IP", "privateIP", privateIP)
+
+	input := &ec2.DescribeInstancesInput{
+		Filters: []types.Filter{
+			{
+				Name:   aws.String("private-ip-address"),
+				Values: []string{privateIP},
+			},
+			{
+				Name:   aws.String("instance-state-name"),
+				Values: []string{"running", "pending"},
+			},
+		},
+	}
+
+	result, err := c.EC2.DescribeInstances(ctx, input)
+	if err != nil {
+		return "", fmt.Errorf("failed to describe instances for VPC resolution: %v", err)
+	}
+
+	// Collect unique VPC IDs to detect ambiguity from overlapping CIDRs
+	vpcIDs := make(map[string]struct{})
+	for _, reservation := range result.Reservations {
+		for _, instance := range reservation.Instances {
+			if instance.VpcId != nil {
+				vpcIDs[*instance.VpcId] = struct{}{}
+			}
+		}
+	}
+
+	if len(vpcIDs) == 0 {
+		return "", fmt.Errorf("no VPC ID found for instance with private IP %s", privateIP)
+	}
+
+	if len(vpcIDs) > 1 {
+		return "", fmt.Errorf("ambiguous VPC resolution: private IP %s matched instances in %d different VPCs", privateIP, len(vpcIDs))
+	}
+
+	// Exactly one VPC matched
+	for vpcID := range vpcIDs {
+		c.Logger.V(1).Info("Resolved VPC ID", "vpcID", vpcID, "privateIP", privateIP)
+		return vpcID, nil
+	}
+
+	return "", fmt.Errorf("no VPC ID found for instance with private IP %s", privateIP)
 }
 
 // configureInstanceIMDS configures IMDS hop limit for a specific instance

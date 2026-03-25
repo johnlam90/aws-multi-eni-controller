@@ -88,8 +88,10 @@ The AWS Multi-ENI Controller requires specific IAM permissions to function prope
         "ec2:DescribeNetworkInterfaces",
         "ec2:AttachNetworkInterface",
         "ec2:DetachNetworkInterface",
+        "ec2:DescribeInstances",
         "ec2:DescribeSubnets",
-        "ec2:DescribeSecurityGroups"
+        "ec2:DescribeSecurityGroups",
+        "ec2:ModifyInstanceMetadataOptions"
       ],
       "Resource": "*"
     }
