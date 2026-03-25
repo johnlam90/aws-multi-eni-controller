@@ -2,7 +2,6 @@ package aws
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/go-logr/logr/testr"
@@ -29,8 +28,8 @@ func TestTryVPCWideConfiguration_EmptyVPCID(t *testing.T) {
 // TestTryVPCWideConfiguration_AggressiveDisabled verifies that tryVPCWideConfiguration
 // returns an error when aggressive configuration is disabled.
 func TestTryVPCWideConfiguration_AggressiveDisabled(t *testing.T) {
-	// Ensure aggressive configuration is disabled
-	os.Unsetenv("IMDS_AGGRESSIVE_CONFIGURATION")
+	// t.Setenv automatically restores the original value after the test
+	t.Setenv("IMDS_AGGRESSIVE_CONFIGURATION", "false")
 
 	client := &EC2Client{
 		Logger: testr.New(t),
@@ -47,21 +46,20 @@ func TestTryVPCWideConfiguration_AggressiveDisabled(t *testing.T) {
 	}
 }
 
-// TestResolveCurrentVPCID_NoPrivateIP verifies that resolveCurrentVPCID
-// returns an error when no private IP can be determined.
-func TestResolveCurrentVPCID_NoPrivateIP(t *testing.T) {
-	// Ensure PRIVATE_IP env var is not set so the lookup relies on network interfaces
-	os.Unsetenv("PRIVATE_IP")
-
+// TestResolveCurrentVPCID_NilEC2Client verifies that resolveCurrentVPCID
+// returns a clear error when the EC2 client is not initialized.
+func TestResolveCurrentVPCID_NilEC2Client(t *testing.T) {
 	client := &EC2Client{
 		Logger: testr.New(t),
 	}
 
-	// This will fail because there's no EC2 client and the network interface
-	// lookup will either return a local IP or fail - either way, without a
-	// real EC2 client the DescribeInstances call would fail.
 	_, err := client.resolveCurrentVPCID(context.Background())
 	if err == nil {
-		t.Fatal("expected error when resolving VPC ID without AWS credentials, got nil")
+		t.Fatal("expected error when EC2 client is nil, got nil")
+	}
+
+	expected := "EC2 client is not initialized"
+	if err.Error() != expected {
+		t.Errorf("expected error %q, got %q", expected, err.Error())
 	}
 }

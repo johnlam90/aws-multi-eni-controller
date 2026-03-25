@@ -1215,6 +1215,10 @@ func (c *EC2Client) tryVPCWideConfiguration(ctx context.Context, hopLimit int32,
 
 // resolveCurrentVPCID determines the VPC ID of the current instance by looking up its private IP
 func (c *EC2Client) resolveCurrentVPCID(ctx context.Context) (string, error) {
+	if c.EC2 == nil {
+		return "", fmt.Errorf("EC2 client is not initialized")
+	}
+
 	privateIP, err := c.getPrivateIPFromNetworkInterface()
 	if err != nil {
 		return "", fmt.Errorf("failed to get private IP for VPC resolution: %v", err)
@@ -1244,13 +1248,28 @@ func (c *EC2Client) resolveCurrentVPCID(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to describe instances for VPC resolution: %v", err)
 	}
 
+	// Collect unique VPC IDs to detect ambiguity from overlapping CIDRs
+	vpcIDs := make(map[string]struct{})
 	for _, reservation := range result.Reservations {
 		for _, instance := range reservation.Instances {
 			if instance.VpcId != nil {
-				c.Logger.V(1).Info("Resolved VPC ID", "vpcID", *instance.VpcId, "privateIP", privateIP)
-				return *instance.VpcId, nil
+				vpcIDs[*instance.VpcId] = struct{}{}
 			}
 		}
+	}
+
+	if len(vpcIDs) == 0 {
+		return "", fmt.Errorf("no VPC ID found for instance with private IP %s", privateIP)
+	}
+
+	if len(vpcIDs) > 1 {
+		return "", fmt.Errorf("ambiguous VPC resolution: private IP %s matched instances in %d different VPCs", privateIP, len(vpcIDs))
+	}
+
+	// Exactly one VPC matched
+	for vpcID := range vpcIDs {
+		c.Logger.V(1).Info("Resolved VPC ID", "vpcID", vpcID, "privateIP", privateIP)
+		return vpcID, nil
 	}
 
 	return "", fmt.Errorf("no VPC ID found for instance with private IP %s", privateIP)
